@@ -5,7 +5,9 @@ build/
 dist/
 wheels/
 *.egg-info
-
+*/__pycache__/
+*.claude
+*.venv
 # Virtual environments
 .venv
 .qoder
@@ -13,4 +15,8 @@ wheels/
 /pdf/*
 /csv/*ß
 *.ignore
+*/*.csv
+*/*.png
+.DS_Store
+.env
 

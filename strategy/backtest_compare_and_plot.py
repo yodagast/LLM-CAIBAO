@@ -333,20 +333,29 @@ def plot_results(all_runs: list[StrategyRun], bh_run: StrategyRun, band_run: Str
         print("[跳过] matplotlib 不可用。")
         return
 
-    # 中文字体 (macOS 可用 PingFang SC / Heiti SC)
-    for font_name in ["PingFang SC", "Heiti SC", "Apple SD Gothic Neo",
-                       "WenQuanYi Micro Hei", "Noto Sans CJK SC", "SimHei",
-                       "DejaVu Sans"]:
+    # 中文字体: 使用 font_manager 检测系统中实际可用的字体
+    import matplotlib.font_manager as fm
+    candidate_fonts = [
+        "PingFang HK", "PingFang SC", "Heiti TC", "Heiti SC",
+        "Songti SC", "Hiragino Sans GB", "Hiragino Sans",
+        "Source Han Sans CN", "Apple SD Gothic Neo",
+        "WenQuanYi Micro Hei", "Noto Sans CJK SC", "SimHei",
+    ]
+    chosen = None
+    for font_name in candidate_fonts:
         try:
-            plt.rcParams["font.sans-serif"] = [font_name]
-            plt.rcParams["axes.unicode_minus"] = False
-            # 验证字体可用
-            fig_test, ax_test = plt.subplots(figsize=(1, 1))
-            ax_test.set_title("测试中文")
-            plt.close(fig_test)
+            fp = fm.findfont(font_name, fallback_to_default=False)
+            # findfont 在找不到时返回 DejaVu Sans 而非抛出异常，需判断返回值
+            if "DejaVuSans" in fp:
+                continue
+            chosen = font_name
             break
         except Exception:
             continue
+    if chosen is None:
+        chosen = "DejaVu Sans"  # 最终 fallback
+    plt.rcParams["font.sans-serif"] = [chosen]
+    plt.rcParams["axes.unicode_minus"] = False
 
     fig, ax = plt.subplots(figsize=(14, 7))
 

@@ -38,40 +38,40 @@ SUB_CASH = 10_000.0          # 每份资金
 GAIN_THRESHOLD = 20.0        # 涨幅阈值 (%)
 START_DATE = "20170101"
 END_DATE = "20260728"
-N_VALUES = [5, 20, 60, 250]
+N_VALUES = [5, 20, 60]
 
 # 股票配置
 STOCK_CONFIGS = {
-    # "000858.SZ": {
-    #     "name": "五粮液",
-    #     "buy_max": 75.0,       # 买入限价
-    #     "sell_floor": 65.0,    # 低价策略卖出底价
-    #     "band_buy": 75.0,      # 区间交易买入价
-    #     "band_sell": 150.0,    # 区间交易卖出价
-    #     "is_etf": False,
-    # },
-    # "600036.SH": {
-    #     "name": "招商银行",
-    #     "buy_max": 30.0,
-    #     "sell_floor": 26.0,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 30.0,
-    #     "band_sell": 40.0,
-    #     "is_etf": False,
-    # },
+    "000858.SZ": {
+        "name": "五粮液",
+        "buy_max": 75.0,       # 买入限价
+        "sell_floor": 65.0,    # 低价策略卖出底价
+        "band_buy": 75.0,      # 区间交易买入价
+        "band_sell": 150.0,    # 区间交易卖出价
+        "is_etf": False,
+    },
+    "600036.SH": {
+        "name": "招商银行",
+        "buy_max": 30.0,
+        "sell_floor": 26.0,    # 招行比例 ≈ 65/75*30
+        "band_buy": 30.0,
+        "band_sell": 40.0,
+        "is_etf": False,
+    },
     "601166.SH": {
         "name": "兴业银行",
-        "buy_max": 18.0,
+        "buy_max": 17.0,
         "sell_floor": 15.0,    # 招行比例 ≈ 65/75*30
-        "band_buy": 18.0,
+        "band_buy": 17.0,
         "band_sell": 25.0,
         "is_etf": False,
     },
     "002142.SZ": {
         "name": "宁波银行",
         "buy_max": 24,
-        "sell_floor": 32,    # 招行比例 ≈ 65/75*30
+        "sell_floor": 30,    # 招行比例 ≈ 65/75*30
         "band_buy": 24,
-        "band_sell": 32,
+        "band_sell": 30,
         "is_etf": False,
     },
     "601658.SH": {
@@ -82,24 +82,32 @@ STOCK_CONFIGS = {
         "band_sell": 6.0,
         "is_etf": False,
     },
+    "510300.SH": {
+        "name": "沪深300ETF",
+        "buy_max": 3.5,
+        "sell_floor": 3.3,    # 招行比例 ≈ 65/75*30
+        "band_buy": 3.5,
+        "band_sell": 4.6,
+        "is_etf": True,
+    },
+     "510050.SH": {
+        "name": "上证50ETF",
+        "buy_max": 2.2,
+        "sell_floor": 2.0,    # 招行比例 ≈ 65/75*30
+        "band_buy": 2.2,
+        "band_sell": 3.0,
+        "is_etf": True,
+    },
+    "512500.SH": {
+        "name": "中证500ETF",
+        "buy_max": 5.0,
+        "sell_floor": 4.5,    # 招行比例 ≈ 65/75*30
+        "band_buy": 5.0,
+        "band_sell": 7.5,
+        "is_etf": True,
+    },
     # "513050.SH": {
     #     "name": "中概互联ETF",
-    #     "buy_max": 1.1,
-    #     "sell_floor": 1.0,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 1.1,
-    #     "band_sell": 1.5,
-    #     "is_etf": True,
-    # },
-    #  "510050.SH": {
-    #     "name": "上证50ETF",
-    #     "buy_max": 2.0,
-    #     "sell_floor": 1.0,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 1.1,
-    #     "band_sell": 1.5,
-    #     "is_etf": True,
-    # },
-    # "512500.SH": {
-    #     "name": "中证500ETF",
     #     "buy_max": 1.1,
     #     "sell_floor": 1.0,    # 招行比例 ≈ 65/75*30
     #     "band_buy": 1.1,
@@ -199,7 +207,7 @@ def _strat_low_price(
     买入: 当日收盘价为 N 日最低价 且 价格 ≤ buy_max
     卖出条件 (任一):
       A. 当日收盘价为 N 日最高价
-      B. 持仓涨幅 > 20% 且 价格 ≥ sell_floor
+      B. 持仓涨幅 > GAIN_THRESHOLD
     """
     shares = 0.0
     total_cost = 0.0
@@ -229,10 +237,10 @@ def _strat_low_price(
                 else:
                     gain_pct = 0.0
 
-                cond_nday_high = (close == n_day_high)
-                cond_gain = (gain_pct > GAIN_THRESHOLD) and (close >= sell_floor)
+                #cond_nday_high = (close == n_day_high)
+                cond_gain = (gain_pct > GAIN_THRESHOLD)
 
-                if cond_nday_high or cond_gain:
+                if cond_gain:
                     # 全部卖出
                     sell_amount = shares * close
                     # 至少保留 1 万底舱? 但总仓位才 1 万, 全部卖出
@@ -275,22 +283,14 @@ def run_one_stock_hybrid(
 
     daily = [{"date": d, "value": v} for d, v in sorted(merged.items())]
 
-    # 计算单只股票统计
-    final_val = daily[-1]["value"] if daily else init_per_stock
-    total_ret = (final_val / init_per_stock - 1) * 100
-    years = (datetime.strptime(END_DATE, "%Y%m%d") -
-             datetime.strptime(START_DATE, "%Y%m%d")).days / 365.25
-    ann_ret = (pow(final_val / init_per_stock, 1 / years) - 1) * 100 if years > 0 else 0.0
-
-    peak = init_per_stock
-    mdd = 0.0
-    for dv in daily:
-        v = dv["value"]
-        if v > peak:
-            peak = v
-        dd = (peak - v) / peak * 100
-        if dd > mdd:
-            mdd = dd
+    # 计算单只股票统计 (复用 _calc_result)
+    stock_result = _calc_result(daily, cfg["name"], total_init=init_per_stock)
+    total_ret = stock_result["ret"]
+    ann_ret = stock_result["ann"]
+    mdd = stock_result["mdd"]
+    calmar = stock_result["calmar"]
+    sharpe = stock_result["sharpe"]
+    final_val = stock_result["portfolio"][-1]["value"] if stock_result["portfolio"] else init_per_stock
 
     # 子策略单独统计
     sub_stats = []
@@ -305,6 +305,8 @@ def run_one_stock_hybrid(
         "总收益率": total_ret,
         "年化收益率": ann_ret,
         "最大回撤": mdd,
+        "卡玛比率": calmar,
+        "夏普比率": sharpe,
         "最终资产": final_val,
         "子策略": sub_stats,
     }
@@ -358,18 +360,30 @@ def run_band_only_portfolio() -> dict:
     return _calc_result(portfolio, "全部区间交易")
 
 
-def _calc_result(portfolio: list[dict], label: str) -> dict:
-    """计算收益率、年化、最大回撤。"""
-    total_init = len(STOCK_CONFIGS) * SUB_CASH * 3
+def _calc_result(portfolio: list[dict], label: str, total_init: float | None = None) -> dict:
+    """
+    计算收益率、年化、最大回撤、卡玛比率、夏普比率。
+
+    Parameters
+    ----------
+    total_init : float | None
+        初始总资金。为 None 时自动用全局配置计算。
+    """
+    if total_init is None:
+        total_init = len(STOCK_CONFIGS) * SUB_CASH * 3
     if not portfolio:
-        return {"label": label, "portfolio": [], "ret": 0, "ann": 0, "mdd": 0}
+        return {"label": label, "portfolio": [], "ret": 0, "ann": 0, "mdd": 0,
+                "calmar": 0.0, "sharpe": 0.0}
     final = portfolio[-1]["value"]
 
     years = (datetime.strptime(END_DATE, "%Y%m%d") -
              datetime.strptime(START_DATE, "%Y%m%d")).days / 365.25
+    # 总收益率 (百分比)
     ret = (final / total_init - 1) * 100
+    # 年化收益率 (百分比)
     ann = (pow(final / total_init, 1 / years) - 1) * 100 if years > 0 else 0.0
 
+    # --- 最大回撤 ---
     peak = total_init
     mdd = 0.0
     for dv in portfolio:
@@ -380,7 +394,27 @@ def _calc_result(portfolio: list[dict], label: str) -> dict:
         if dd > mdd:
             mdd = dd
 
-    return {"label": label, "portfolio": portfolio, "ret": ret, "ann": ann, "mdd": mdd}
+    # --- 卡玛比率 = 年化收益率 / 最大回撤 (绝对值) ---
+    calmar = ann / mdd if mdd > 0 else 0.0
+
+    # --- 夏普比率 = (年化收益率 - 无风险利率) / 年化波动率 ---
+    RISK_FREE_RATE = 0.0  # 简化处理，无风险利率设为 0%
+    # 计算每日收益率
+    values = [dv["value"] for dv in portfolio]
+    daily_returns = []
+    for i in range(1, len(values)):
+        if values[i - 1] > 0:
+            daily_returns.append(values[i] / values[i - 1] - 1)
+    if daily_returns:
+        import numpy as np
+        ann_vol = np.std(daily_returns, ddof=1) * np.sqrt(252)  # 年化波动率
+        # 用小数形式计算夏普
+        sharpe = ((ann - RISK_FREE_RATE) / 100) / ann_vol if ann_vol > 0 else 0.0
+    else:
+        sharpe = 0.0
+
+    return {"label": label, "portfolio": portfolio, "ret": ret, "ann": ann, "mdd": mdd,
+            "calmar": calmar, "sharpe": sharpe}
 
 
 # ---------------------------------------------------------------------------
@@ -402,24 +436,28 @@ def plot_and_print(results: list[dict], benchmarks: list[dict]) -> None:
     print(f"  回测区间: {START_DATE} ~ {END_DATE}")
     print(f"  股票: {', '.join(c['name'] for c in STOCK_CONFIGS.values())}")
     print(f"{sep}")
-    print(f"  {'策略':<28} {'总收益率':>10} {'年化':>8} {'最大回撤':>8}")
-    print(f"  {'-' * 56}")
+    print(f"  {'策略':<28} {'总收益率':>10} {'年化':>8} {'回撤':>8} {'卡玛':>7} {'夏普':>7}")
+    print(f"  {'-' * 68}")
 
     for r in results:
-        print(f"  {r['label']:<28} {r['ret']:>+9.2f}% {r['ann']:>+7.2f}% {r['mdd']:>7.2f}%")
+        print(f"  {r['label']:<28} {r['ret']:>+9.2f}% {r['ann']:>+7.2f}% {r['mdd']:>7.2f}%"
+              f" {r['calmar']:>6.2f} {r['sharpe']:>6.2f}")
 
-    print(f"  {'-' * 56}")
+    print(f"  {'-' * 68}")
     for b in benchmarks:
-        print(f"  {b['label']:<28} {b['ret']:>+9.2f}% {b['ann']:>+7.2f}% {b['mdd']:>7.2f}%")
+        print(f"  {b['label']:<28} {b['ret']:>+9.2f}% {b['ann']:>+7.2f}% {b['mdd']:>7.2f}%"
+              f" {b['calmar']:>6.2f} {b['sharpe']:>6.2f}")
     print(f"{sep}")
 
     # ====== 每只股票明细 ======
     for r in results:
         print(f"\n  ── {r['label']} 各股票明细 ──")
-        print(f"  {'股票':<14} {'总收益率':>10} {'年化':>8} {'回撤':>8} {'终值':>10}")
-        print(f"  {'-' * 52}")
+        print(f"  {'股票':<14} {'总收益率':>10} {'年化':>8} {'回撤':>8} {'卡玛':>7} {'夏普':>7} {'终值':>10}")
+        print(f"  {'-' * 64}")
         for s in r.get("stock_details", []):
-            print(f"  {s['name']+'('+s['ts_code'][:6]+')':<14} {s['总收益率']:>+9.2f}% {s['年化收益率']:>+7.2f}% {s['最大回撤']:>7.2f}% {s['最终资产']:>9,.0f}")
+            print(f"  {s['name']+'('+s['ts_code'][:6]+')':<14}"
+                  f" {s['总收益率']:>+9.2f}% {s['年化收益率']:>+7.2f}% {s['最大回撤']:>7.2f}%"
+                  f" {s['卡玛比率']:>6.2f} {s['夏普比率']:>6.2f} {s['最终资产']:>9,.0f}")
         # 子策略明细
         for s in r.get("stock_details", []):
             print(f"    ├ {s['name']} 子策略:")
@@ -430,7 +468,8 @@ def plot_and_print(results: list[dict], benchmarks: list[dict]) -> None:
     rows = []
     for r in results + benchmarks:
         rows.append({"策略": r["label"], "总收益率%": round(r["ret"], 2),
-                     "年化收益率%": round(r["ann"], 2), "最大回撤%": round(r["mdd"], 2)})
+                     "年化收益率%": round(r["ann"], 2), "最大回撤%": round(r["mdd"], 2),
+                     "卡玛比率": round(r["calmar"], 2), "夏普比率": round(r["sharpe"], 2)})
     pd.DataFrame(rows).to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
     print(f"\n[CSV] {CSV_PATH}")
 
@@ -439,17 +478,27 @@ def plot_and_print(results: list[dict], benchmarks: list[dict]) -> None:
         print("[跳过] matplotlib 不可用。")
         return
 
-    for font_name in ["PingFang SC", "Heiti SC", "Apple SD Gothic Neo",
-                       "WenQuanYi Micro Hei", "Noto Sans CJK SC", "SimHei", "DejaVu Sans"]:
+    import matplotlib.font_manager as fm
+    candidate_fonts = [
+        "PingFang HK", "PingFang SC", "Heiti TC", "Heiti SC",
+        "Songti SC", "Hiragino Sans GB", "Hiragino Sans",
+        "Source Han Sans CN", "Apple SD Gothic Neo",
+        "WenQuanYi Micro Hei", "Noto Sans CJK SC", "SimHei",
+    ]
+    chosen = None
+    for font_name in candidate_fonts:
         try:
-            plt.rcParams["font.sans-serif"] = [font_name]
-            plt.rcParams["axes.unicode_minus"] = False
-            fig_t, ax_t = plt.subplots(figsize=(1, 1))
-            ax_t.set_title("T")
-            plt.close(fig_t)
+            fp = fm.findfont(font_name, fallback_to_default=False)
+            if "DejaVuSans" in fp:
+                continue
+            chosen = font_name
             break
         except Exception:
             continue
+    if chosen is None:
+        chosen = "DejaVu Sans"
+    plt.rcParams["font.sans-serif"] = [chosen]
+    plt.rcParams["axes.unicode_minus"] = False
 
     fig, ax = plt.subplots(figsize=(14, 7))
 

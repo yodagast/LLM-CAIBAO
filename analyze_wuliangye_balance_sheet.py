@@ -9,7 +9,26 @@ from pathlib import Path
 import numpy as np
 
 # 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+import matplotlib.font_manager as fm
+_candidate_fonts = [
+    "PingFang HK", "PingFang SC", "Heiti TC", "Heiti SC",
+    "Songti SC", "Hiragino Sans GB", "Hiragino Sans",
+    "Source Han Sans CN", "Apple SD Gothic Neo",
+    "WenQuanYi Micro Hei", "Noto Sans CJK SC", "SimHei",
+]
+_chosen = None
+for _fn in _candidate_fonts:
+    try:
+        _fp = fm.findfont(_fn, fallback_to_default=False)
+        if "DejaVuSans" in _fp:
+            continue
+        _chosen = _fn
+        break
+    except Exception:
+        continue
+if _chosen is None:
+    _chosen = "DejaVu Sans"
+plt.rcParams['font.sans-serif'] = [_chosen]
 plt.rcParams['axes.unicode_minus'] = False
 
 # 读取数据

@@ -42,14 +42,14 @@ N_VALUES = [5, 20, 60]
 
 # 股票配置
 STOCK_CONFIGS = {
-    "000858.SZ": {
-        "name": "五粮液",
-        "buy_max": 75.0,       # 买入限价
-        "sell_floor": 65.0,    # 低价策略卖出底价
-        "band_buy": 75.0,      # 区间交易买入价
-        "band_sell": 150.0,    # 区间交易卖出价
-        "is_etf": False,
-    },
+    # "000858.SZ": {
+    #     "name": "五粮液",
+    #     "buy_max": 75.0,       # 买入限价
+    #     "sell_floor": 65.0,    # 低价策略卖出底价
+    #     "band_buy": 75.0,      # 区间交易买入价
+    #     "band_sell": 150.0,    # 区间交易卖出价
+    #     "is_etf": False,
+    # },
     "600036.SH": {
         "name": "招商银行",
         "buy_max": 30.0,
@@ -74,38 +74,78 @@ STOCK_CONFIGS = {
         "band_sell": 30,
         "is_etf": False,
     },
-    "601658.SH": {
-        "name": "邮储银行",
-        "buy_max": 4.6,
-        "sell_floor": 4.2,    # 招行比例 ≈ 65/75*30
-        "band_buy": 4.6,
-        "band_sell": 6.0,
+    "000001.SZ": {
+        "name": "平安银行",
+        "buy_max": 10,
+        "sell_floor": 8,    # 招行比例 ≈ 65/75*30
+        "band_buy": 10,
+        "band_sell": 15,
         "is_etf": False,
     },
-    "510300.SH": {
-        "name": "沪深300ETF",
-        "buy_max": 3.5,
-        "sell_floor": 3.3,    # 招行比例 ≈ 65/75*30
-        "band_buy": 3.5,
-        "band_sell": 4.6,
-        "is_etf": True,
+    "600529.SH": {
+        "name": "山东药玻",
+        "buy_max": 20,
+        "sell_floor": 17,    # 招行比例 ≈ 65/75*30
+        "band_buy": 20,
+        "band_sell": 30,
+        "is_etf": False,
     },
-     "510050.SH": {
-        "name": "上证50ETF",
-        "buy_max": 2.2,
-        "sell_floor": 2.0,    # 招行比例 ≈ 65/75*30
-        "band_buy": 2.2,
-        "band_sell": 3.0,
-        "is_etf": True,
-    },
-    "512500.SH": {
-        "name": "中证500ETF",
-        "buy_max": 5.0,
-        "sell_floor": 4.5,    # 招行比例 ≈ 65/75*30
-        "band_buy": 5.0,
-        "band_sell": 7.5,
-        "is_etf": True,
-    },
+    # "601658.SH": {
+    #     "name": "邮储银行",
+    #     "buy_max": 4.6,
+    #     "sell_floor": 4.2,    # 招行比例 ≈ 65/75*30
+    #     "band_buy": 4.6,
+    #     "band_sell": 6.0,
+    #     "is_etf": False,
+    # },
+    #  "601601.SH": {
+    #     "name": "中国太保",
+    #     "buy_max": 26,
+    #     "sell_floor": 24,    # 招行比例 ≈ 65/75*30
+    #     "band_buy": 26,
+    #     "band_sell": 35,
+    #     "is_etf": False,
+    # },
+    #  "601318.SH": {
+    #     "name": "中国平安",
+    #     "buy_max": 50,
+    #     "sell_floor": 45,    # 招行比例 ≈ 65/75*30
+    #     "band_buy": 50,
+    #     "band_sell": 70,
+    #     "is_etf": False,
+    # },
+    #  "600309.SH": {
+    #     "name": "万华化学",  #zhouqi. not good ≈ 65/75*30
+    #     "buy_max": 60,
+    #     "sell_floor": 50,    
+    #     "band_buy": 60,
+    #     "band_sell": 90,
+    #     "is_etf": False,
+    # },
+    # "510300.SH": {
+    #     "name": "沪深300ETF",
+    #     "buy_max": 3.5,
+    #     "sell_floor": 3.3,    # 招行比例 ≈ 65/75*30
+    #     "band_buy": 3.5,
+    #     "band_sell": 4.6,
+    #     "is_etf": True,
+    # },
+    #  "510050.SH": {
+    #     "name": "上证50ETF",
+    #     "buy_max": 2.2,
+    #     "sell_floor": 2.0,    # 招行比例 ≈ 65/75*30
+    #     "band_buy": 2.2,
+    #     "band_sell": 3.0,
+    #     "is_etf": True,
+    # },
+    # "512500.SH": {
+    #     "name": "中证500ETF",
+    #     "buy_max": 5.0,
+    #     "sell_floor": 4.5,    # 招行比例 ≈ 65/75*30
+    #     "band_buy": 5.0,
+    #     "band_sell": 7.5,
+    #     "is_etf": True,
+    # },
     # "513050.SH": {
     #     "name": "中概互联ETF",
     #     "buy_max": 1.1,

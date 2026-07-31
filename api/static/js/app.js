@@ -53,7 +53,7 @@
         const r = await fetch(`/api/stock/search?keyword=${encodeURIComponent(kw)}`);
         const data = await r.json();
         stockList.innerHTML = (data.items || [])
-          .map((it) => `<option value="${it.ts_code}">${it.name} (${it.symbol})</option>`)
+          .map((it) => `<option value="${it.ts_code}">${it.name} ${it.kind === "fund" ? "[ETF]" : ""} (${it.symbol})</option>`)
           .join("");
       } catch (e) { /* 忽略联想失败 */ }
     }, 300);

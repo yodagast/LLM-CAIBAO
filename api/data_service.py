@@ -113,8 +113,18 @@ def resolve_code(code: str) -> dict:
     raise ValueError(f"未找到代码 [{ts_code}] 对应的股票/基金。")
 
 
+# A股股票代码前缀: 6(SH) 0/3(SZ) 4/8(北交所); 其余 1/5 开头多为基金/ETF
+FUND_PREFIXES = ("51", "56", "58", "50", "15", "16", "18", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169", "180", "181", "182", "183", "184", "185", "186", "187", "188", "189")
+
+
+def _is_fund_code(ts_code: str) -> bool:
+    """判断 ts_code (如 513050.SH) 是否为基金/ETF 代码。"""
+    symbol = ts_code.split(".")[0]
+    return symbol.startswith(FUND_PREFIXES)
+
+
 def search_stock(keyword: str, limit: int = 20) -> list[dict]:
-    """按代码或名称模糊搜索股票, 供前端联想使用。"""
+    """按代码或名称模糊搜索股票/基金, 供前端联想使用。"""
     keyword = (keyword or "").strip()
     if not keyword:
         return []
@@ -125,10 +135,25 @@ def search_stock(keyword: str, limit: int = 20) -> list[dict]:
         | stocks["name"].str.contains(keyword, na=False)
     )
     hits = stocks[mask].head(limit)
-    return [
-        {"ts_code": row["ts_code"], "symbol": row["symbol"], "name": row["name"]}
+    items = [
+        {"ts_code": row["ts_code"], "symbol": row["symbol"], "name": row["name"], "kind": "stock"}
         for _, row in hits.iterrows()
     ]
+
+    # 若股票结果不足, 补充基金/ETF (常见于输入 5/1 开头代码或基金名称)
+    if len(items) < limit:
+        funds = _fund_basic()
+        fmask = (
+            funds["symbol"].str.contains(keyword, na=False)
+            | funds["ts_code"].str.contains(keyword, na=False)
+            | funds["name"].str.contains(keyword, na=False)
+        )
+        fund_items = [
+            {"ts_code": row["ts_code"], "symbol": row["symbol"], "name": row["name"], "kind": "fund"}
+            for _, row in funds[fmask].head(limit - len(items)).iterrows()
+        ]
+        items.extend(fund_items)
+    return items[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +173,7 @@ def get_daily(ts_code: str, kind: str = "stock",
 
     pro = _init_pro()
     df = pd.DataFrame()
-    if kind == "fund" or ts_code.startswith(("51", "50", "15", "16", "18")):
+    if kind == "fund" or _is_fund_code(ts_code):
         try:
             df = pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
         except Exception:

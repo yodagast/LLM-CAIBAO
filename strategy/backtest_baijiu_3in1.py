@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 """
-三分组合策略回测 + 曲线绘制。
+行业 全行业三合一策略回测 + 曲线绘制。
 
-每只股票投入 30,000 元, 等分为 3 份 (各 10,000 元), 每份独立运行:
+基于 backtest_hybrid_3in1.py 的三合一思路, 应用到指定行业全部上市公司:
 
-  策略 A (买入并持有): 开盘即买入, 一直持有
-  策略 B (区间交易):  低于限价买入全部, 高于限价卖出全部
-  策略 C (低价突破):  买入: N日最低 + 价格低于买入限价
-                      卖出: N日最高 或 (涨幅>20%且价格≥卖出底价)
+  每只股票投入 30,000 元, 等分为 3 份 (各 10,000 元), 每份独立运行:
 
-股票: 五粮液(000858.SZ), 招商银行(600036.SH), 中概互联ETF(513050.SH)
+    策略 A (买入并持有): 开盘即买入, 一直持有
+    策略 B (区间交易):   价格 ≤ 买入价 买入全部; 价格 ≥ 卖出价 或 价格 ≤ 止损价 卖出全部
+    策略 C (低价突破):   买入: N日最低 且 价格 ≤ 买入价
+                         卖出: 价格 ≥ 卖出价 或 (涨幅>阈值) 或 价格 ≤ 止损价
+
+价格参数基于 2026-07-30 收盘价 (ref_close) 动态生成:
+    买入价  = ref_close
+    卖出价  = ref_close * 1.3
+    止损价  = ref_close * 0.8
+
+股票: 指定行业全部上市公司, 通过 tushare 自动获取 (东财行业分类)。
+      支持命令行指定行业:  python backtest_baijiu_3in1.py --industry 银行
+      常用行业名: 白酒(19) 银行(42) 煤炭开采(25) 机场(5) 保险(5) 证券(50) 等
 """
 
+import argparse
 import os
 from collections import deque, defaultdict
 from datetime import datetime
@@ -35,130 +45,28 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 SUB_CASH = 10_000.0          # 每份资金
-GAIN_THRESHOLD = 20.0        # 涨幅阈值 (%)
+GAIN_THRESHOLD = 20.0        # 策略C 涨幅阈值 (%)
 START_DATE = "20170101"
-END_DATE = "20260728"
+END_DATE = "20260730"        # 数据截至 2026-07-30
+REF_DATE = "20260730"        # 参考日期: 用于计算买入/卖出/止损价
+SELL_MULT = 1.3              # 卖出价 = 参考收盘价 * 1.3
+STOP_MULT = 0.8              # 止损价 = 参考收盘价 * 0.8
 N_VALUES = [5, 20, 60]
 
-# 股票配置
-STOCK_CONFIGS = {
-    # "000858.SZ": {
-    #     "name": "五粮液",
-    #     "buy_max": 75.0,       # 买入限价
-    #     "sell_floor": 65.0,    # 低价策略卖出底价
-    #     "band_buy": 75.0,      # 区间交易买入价
-    #     "band_sell": 150.0,    # 区间交易卖出价
-    #     "is_etf": False,
-    # },
-    "600036.SH": {
-        "name": "招商银行",
-        "buy_max": 30.0,
-        "sell_floor": 26.0,    # 招行比例 ≈ 65/75*30
-        "band_buy": 30.0,
-        "band_sell": 40.0,
-        "is_etf": False,
-    },
-    "601166.SH": {
-        "name": "兴业银行",
-        "buy_max": 17.0,
-        "sell_floor": 15.0,    # 招行比例 ≈ 65/75*30
-        "band_buy": 17.0,
-        "band_sell": 25.0,
-        "is_etf": False,
-    },
-    "002142.SZ": {
-        "name": "宁波银行",
-        "buy_max": 24,
-        "sell_floor": 30,    # 招行比例 ≈ 65/75*30
-        "band_buy": 24,
-        "band_sell": 30,
-        "is_etf": False,
-    },
-    "000001.SZ": {
-        "name": "平安银行",
-        "buy_max": 10,
-        "sell_floor": 8,    # 招行比例 ≈ 65/75*30
-        "band_buy": 10,
-        "band_sell": 15,
-        "is_etf": False,
-    },
-    "600529.SH": {
-        "name": "山东药玻",
-        "buy_max": 20,
-        "sell_floor": 17,    # 招行比例 ≈ 65/75*30
-        "band_buy": 20,
-        "band_sell": 30,
-        "is_etf": False,
-    },
-    # "601658.SH": {
-    #     "name": "邮储银行",
-    #     "buy_max": 4.6,
-    #     "sell_floor": 4.2,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 4.6,
-    #     "band_sell": 6.0,
-    #     "is_etf": False,
-    # },
-    #  "601601.SH": {
-    #     "name": "中国太保",
-    #     "buy_max": 26,
-    #     "sell_floor": 24,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 26,
-    #     "band_sell": 35,
-    #     "is_etf": False,
-    # },
-    #  "601318.SH": {
-    #     "name": "中国平安",
-    #     "buy_max": 50,
-    #     "sell_floor": 45,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 50,
-    #     "band_sell": 70,
-    #     "is_etf": False,
-    # },
-    #  "600309.SH": {
-    #     "name": "万华化学",  #zhouqi. not good ≈ 65/75*30
-    #     "buy_max": 60,
-    #     "sell_floor": 50,    
-    #     "band_buy": 60,
-    #     "band_sell": 90,
-    #     "is_etf": False,
-    # },
-    # "510300.SH": {
-    #     "name": "沪深300ETF",
-    #     "buy_max": 3.5,
-    #     "sell_floor": 3.3,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 3.5,
-    #     "band_sell": 4.6,
-    #     "is_etf": True,
-    # },
-    #  "510050.SH": {
-    #     "name": "上证50ETF",
-    #     "buy_max": 2.2,
-    #     "sell_floor": 2.0,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 2.2,
-    #     "band_sell": 3.0,
-    #     "is_etf": True,
-    # },
-    # "512500.SH": {
-    #     "name": "中证500ETF",
-    #     "buy_max": 5.0,
-    #     "sell_floor": 4.5,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 5.0,
-    #     "band_sell": 7.5,
-    #     "is_etf": True,
-    # },
-    # "513050.SH": {
-    #     "name": "中概互联ETF",
-    #     "buy_max": 1.1,
-    #     "sell_floor": 1.0,    # 招行比例 ≈ 65/75*30
-    #     "band_buy": 1.1,
-    #     "band_sell": 1.5,
-    #     "is_etf": True,
-    # },
-}
+INDUSTRY = "化工原料"  # 回测行业: 白酒/银行/煤炭开采 等 (可用 --industry 覆盖)
+
+# 股票配置: 运行时由 build_stock_configs() 自动填充指定行业全部股票
+STOCK_CONFIGS: dict = {}
 
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
-PLOT_PATH = os.path.join(OUTPUT_DIR, "backtest_hybrid_3in1.png")
-CSV_PATH = os.path.join(OUTPUT_DIR, "backtest_hybrid_3in1.csv")
+
+
+def _csv_path() -> str:
+    return os.path.join(OUTPUT_DIR, f"backtest_{INDUSTRY}_3in1.csv")
+
+
+def _plot_path() -> str:
+    return os.path.join(OUTPUT_DIR, f"backtest_{INDUSTRY}_3in1.png")
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +112,58 @@ def get_daily(ts_code: str, is_etf: bool) -> pd.DataFrame:
     return df
 
 
+def build_stock_configs() -> dict:
+    """
+    获取指定行业全部股票, 并基于 REF_DATE 收盘价生成买入/卖出/止损价。
+
+    行业匹配策略 (东财行业分类):
+      1. 精确匹配 INDUSTRY (如 白酒/银行/机场)
+      2. 若精确匹配为空, 则按子串匹配 (如 煤炭 → 煤炭开采)
+      3. 仍为空则报错并列出可用行业。
+    """
+    pro = _init_pro()
+    sb = pro.stock_basic(exchange="", list_status="L", fields="ts_code,symbol,name,industry")
+
+    exact = sb[sb["industry"] == INDUSTRY]
+    if exact.empty:
+        fuzzy = sb[sb["industry"].str.contains(INDUSTRY, na=False)]
+        if fuzzy.empty:
+            avail = "、".join(sorted(sb["industry"].dropna().unique().tolist()))
+            raise RuntimeError(f"行业 [{INDUSTRY}] 未找到对应股票。可用行业名示例:\n{avail}")
+        print(f"  行业 [{INDUSTRY}] 精确匹配为空, 按子串匹配到: "
+              f"{'、'.join(sorted(fuzzy['industry'].unique()))} ({len(fuzzy)} 只)")
+        industry_df = fuzzy.sort_values("ts_code")
+    else:
+        print(f"  行业 [{INDUSTRY}] 精确匹配 {len(exact)} 只股票")
+        industry_df = exact.sort_values("ts_code")
+
+    configs: dict = {}
+    for _, row in industry_df.iterrows():
+        ts_code = row["ts_code"]
+        try:
+            df = get_daily(ts_code, is_etf=False)
+        except Exception as e:
+            print(f"  ! 获取 {ts_code}({row['name']}) 日线失败: {e}")
+            continue
+
+        ref = df[df["trade_date"] <= REF_DATE]
+        if ref.empty:
+            print(f"  ! {ts_code}({row['name']}) 在 {REF_DATE} 前无数据, 跳过")
+            continue
+        ref_close = float(ref.iloc[-1]["close"])
+
+        configs[ts_code] = {
+            "name": row["name"],
+            "buy_max": ref_close,                       # 买入价
+            "sell_floor": round(ref_close * SELL_MULT, 4),  # 卖出价
+            "band_buy": ref_close,                      # 区间交易买入价
+            "band_sell": round(ref_close * SELL_MULT, 4),   # 区间交易卖出价
+            "stop_loss": round(ref_close * STOP_MULT, 4),   # 止损价
+            "is_etf": False,
+        }
+    return configs
+
+
 # ---------------------------------------------------------------------------
 # 三个子策略
 # ---------------------------------------------------------------------------
@@ -218,8 +178,13 @@ def _strat_buy_hold(df: pd.DataFrame, cash: float) -> list[dict]:
     return daily
 
 
-def _strat_band_trade(df: pd.DataFrame, cash: float, buy_price: float, sell_price: float) -> list[dict]:
-    """策略B: 区间交易 — 低于 buy_price 买入全部, 高于 sell_price 卖出全部。"""
+def _strat_band_trade(df: pd.DataFrame, cash: float, buy_price: float,
+                      sell_price: float, stop_loss: float) -> list[dict]:
+    """
+    策略B: 区间交易 — 价格 ≤ buy_price 买入全部;
+                     价格 ≥ sell_price 卖出全部;
+                     价格 ≤ stop_loss 止损卖出。
+    """
     shares = 0.0
     daily = []
     bought = False
@@ -233,21 +198,26 @@ def _strat_band_trade(df: pd.DataFrame, cash: float, buy_price: float, sell_pric
             cash = shares * close
             shares = 0.0
             bought = False
+        elif bought and close <= stop_loss:
+            cash = shares * close
+            shares = 0.0
+            bought = False
         daily.append({"date": row["trade_date"], "value": cash + shares * close})
     return daily
 
 
 def _strat_low_price(
     df: pd.DataFrame, cash: float,
-    lookback_days: int, buy_max: float, sell_floor: float,
+    lookback_days: int, buy_max: float, sell_floor: float, stop_loss: float,
 ) -> list[dict]:
     """
     策略C: 低价突破策略。
 
-    买入: 当日收盘价为 N 日最低价 且 价格 ≤ buy_max
+    买入: 当日收盘价为 N 日最低价 且 价格 ≤ buy_max (买入价)
     卖出条件 (任一):
-      A. 当日收盘价为 N 日最高价
+      A. 当日收盘价 ≥ sell_floor (卖出价)
       B. 持仓涨幅 > GAIN_THRESHOLD
+      C. 当日收盘价 ≤ stop_loss (止损价)
     """
     shares = 0.0
     total_cost = 0.0
@@ -264,7 +234,6 @@ def _strat_low_price(
 
         if len(window) == lookback_days:
             n_day_low = min(window)
-            n_day_high = max(window)
 
             # --- 买入: N日最低 + 价格低于限价 ---
             if close == n_day_low and close <= buy_max and cash >= SUB_CASH:
@@ -277,13 +246,12 @@ def _strat_low_price(
                 else:
                     gain_pct = 0.0
 
-                #cond_nday_high = (close == n_day_high)
+                cond_target = (close >= sell_floor)   # 达到卖出价
                 cond_gain = (gain_pct > GAIN_THRESHOLD)
+                cond_stop = (close <= stop_loss)      # 触发止损
 
-                if cond_gain:
-                    # 全部卖出
+                if cond_target or cond_gain or cond_stop:
                     sell_amount = shares * close
-                    # 至少保留 1 万底舱? 但总仓位才 1 万, 全部卖出
                     sell_signal = True
 
         if buy_signal:
@@ -312,8 +280,8 @@ def run_one_stock_hybrid(
     init_per_stock = SUB_CASH * 3  # 30,000
 
     a = _strat_buy_hold(df, SUB_CASH)
-    b = _strat_band_trade(df, SUB_CASH, cfg["band_buy"], cfg["band_sell"])
-    c = _strat_low_price(df, SUB_CASH, lookback_days, cfg["buy_max"], cfg["sell_floor"])
+    b = _strat_band_trade(df, SUB_CASH, cfg["band_buy"], cfg["band_sell"], cfg["stop_loss"])
+    c = _strat_low_price(df, SUB_CASH, lookback_days, cfg["buy_max"], cfg["sell_floor"], cfg["stop_loss"])
 
     # 合并三份
     merged: dict[str, float] = defaultdict(float)
@@ -342,6 +310,9 @@ def run_one_stock_hybrid(
     stats = {
         "name": cfg["name"],
         "ts_code": ts_code,
+        "买入价": cfg["buy_max"],
+        "卖出价": cfg["sell_floor"],
+        "止损价": cfg["stop_loss"],
         "总收益率": total_ret,
         "年化收益率": ann_ret,
         "最大回撤": mdd,
@@ -369,7 +340,7 @@ def run_hybrid_portfolio(lookback_days: int) -> dict:
             all_merged[dv["date"]] += dv["value"]
 
     portfolio = [{"date": d, "value": v} for d, v in sorted(all_merged.items())]
-    result = _calc_result(portfolio, f"三分组合 N={lookback_days}")
+    result = _calc_result(portfolio, f"{INDUSTRY}三合一 N={lookback_days}")
     result["stock_details"] = stock_details
     return result
 
@@ -389,11 +360,11 @@ def run_buy_hold_portfolio() -> dict:
 
 
 def run_band_only_portfolio() -> dict:
-    """对照组: 全部资金做简单区间交易。"""
+    """对照组: 全部资金做区间交易 (含止损)。"""
     merged: dict[str, float] = defaultdict(float)
     for ts_code, cfg in STOCK_CONFIGS.items():
         df = get_daily(ts_code, cfg["is_etf"])
-        sub = _strat_band_trade(df, SUB_CASH * 3, cfg["band_buy"], cfg["band_sell"])
+        sub = _strat_band_trade(df, SUB_CASH * 3, cfg["band_buy"], cfg["band_sell"], cfg["stop_loss"])
         for dv in sub:
             merged[dv["date"]] += dv["value"]
     portfolio = [{"date": d, "value": v} for d, v in sorted(merged.items())]
@@ -472,9 +443,9 @@ def plot_and_print(results: list[dict], benchmarks: list[dict]) -> None:
 
     # ====== 组合总览 ======
     print(f"\n{sep}")
-    print(f"  三分组合策略回测对比 (合计初始: {total_init:,.0f} 元)")
-    print(f"  回测区间: {START_DATE} ~ {END_DATE}")
-    print(f"  股票: {', '.join(c['name'] for c in STOCK_CONFIGS.values())}")
+    print(f"  {INDUSTRY}行业三合一策略回测对比 (合计初始: {total_init:,.0f} 元, 共 {len(STOCK_CONFIGS)} 只股票)")
+    print(f"  回测区间: {START_DATE} ~ {END_DATE}  参考价: {REF_DATE} 收盘")
+    print(f"  价格参数: 买入价=参考收盘 卖出价=参考收盘x{SELL_MULT} 止损价=参考收盘x{STOP_MULT}")
     print(f"{sep}")
     print(f"  {'策略':<28} {'总收益率':>10} {'年化':>8} {'回撤':>8} {'卡玛':>7} {'夏普':>7}")
     print(f"  {'-' * 68}")
@@ -489,20 +460,22 @@ def plot_and_print(results: list[dict], benchmarks: list[dict]) -> None:
               f" {b['calmar']:>6.2f} {b['sharpe']:>6.2f}")
     print(f"{sep}")
 
-    # ====== 每只股票明细 ======
-    for r in results:
-        print(f"\n  ── {r['label']} 各股票明细 ──")
-        print(f"  {'股票':<14} {'总收益率':>10} {'年化':>8} {'回撤':>8} {'卡玛':>7} {'夏普':>7} {'终值':>10}")
-        print(f"  {'-' * 64}")
-        for s in r.get("stock_details", []):
-            print(f"  {s['name']+'('+s['ts_code'][:6]+')':<14}"
-                  f" {s['总收益率']:>+9.2f}% {s['年化收益率']:>+7.2f}% {s['最大回撤']:>7.2f}%"
-                  f" {s['卡玛比率']:>6.2f} {s['夏普比率']:>6.2f} {s['最终资产']:>9,.0f}")
-        # 子策略明细
-        for s in r.get("stock_details", []):
-            print(f"    ├ {s['name']} 子策略:")
-            for sub in s["子策略"]:
-                print(f"    │  ├ {sub['子策略']:8s} 终值 {sub['终值']:>7,.0f}  收益 {sub['收益']:>+6.2f}%")
+    # ====== 每只股票明细 (取第一个 N 的结果展示) ======
+    detail = results[0]
+    print(f"\n  ── {detail['label']} 各股票明细 ──")
+    print(f"  {'股票':<16} {'买入价':>8} {'卖出价':>8} {'止损价':>8}"
+          f" {'总收益':>9} {'年化':>8} {'回撤':>8} {'卡玛':>7} {'夏普':>7} {'终值':>10}")
+    print(f"  {'-' * 96}")
+    for s in detail.get("stock_details", []):
+        print(f"  {s['name']+'('+s['ts_code'][:6]+')':<16}"
+              f" {s['买入价']:>7.2f} {s['卖出价']:>7.2f} {s['止损价']:>7.2f}"
+              f" {s['总收益率']:>+8.2f}% {s['年化收益率']:>+7.2f}% {s['最大回撤']:>7.2f}%"
+              f" {s['卡玛比率']:>6.2f} {s['夏普比率']:>6.2f} {s['最终资产']:>9,.0f}")
+    # 子策略明细
+    for s in detail.get("stock_details", []):
+        print(f"    ├ {s['name']} 子策略:")
+        for sub in s["子策略"]:
+            print(f"    │  ├ {sub['子策略']:8s} 终值 {sub['终值']:>7,.0f}  收益 {sub['收益']:>+6.2f}%")
 
     # CSV
     rows = []
@@ -510,8 +483,16 @@ def plot_and_print(results: list[dict], benchmarks: list[dict]) -> None:
         rows.append({"策略": r["label"], "总收益率%": round(r["ret"], 2),
                      "年化收益率%": round(r["ann"], 2), "最大回撤%": round(r["mdd"], 2),
                      "卡玛比率": round(r["calmar"], 2), "夏普比率": round(r["sharpe"], 2)})
-    pd.DataFrame(rows).to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
-    print(f"\n[CSV] {CSV_PATH}")
+    for s in detail.get("stock_details", []):
+        rows.append({"策略": s["name"] + "(" + s["ts_code"][:6] + ")",
+                     "买入价": s["买入价"], "卖出价": s["卖出价"], "止损价": s["止损价"],
+                     "总收益率%": round(s["总收益率"], 2),
+                     "年化收益率%": round(s["年化收益率"], 2),
+                     "最大回撤%": round(s["最大回撤"], 2),
+                     "卡玛比率": round(s["卡玛比率"], 2),
+                     "夏普比率": round(s["夏普比率"], 2)})
+    pd.DataFrame(rows).to_csv(_csv_path(), index=False, encoding="utf-8-sig")
+    print(f"\n[CSV] {_csv_path()}")
 
     # ---- 绘图 ----
     if not HAVE_MPL:
@@ -557,7 +538,8 @@ def plot_and_print(results: list[dict], benchmarks: list[dict]) -> None:
         ax.plot(dates, p, label=b["label"], color="#888888", linewidth=2.5, linestyle=ls, alpha=0.8)
 
     stocks_str = "+".join(c["name"] for c in STOCK_CONFIGS.values())
-    ax.set_title(f"三分组合策略回测对比 ({stocks_str}, 各3万等分3份)", fontsize=13, fontweight="bold")
+    ax.set_title(f"{INDUSTRY}行业三合一策略回测对比 ({len(STOCK_CONFIGS)}只, 买入=收盘 卖出=1.3x 止损=0.8x, 各3万等分3份)",
+                 fontsize=13, fontweight="bold")
     ax.set_ylabel("累计收益率 (%)", fontsize=12)
     ax.set_xlabel("日期", fontsize=12)
     ax.yaxis.set_major_formatter(FuncFormatter(_fmt_pct))
@@ -566,15 +548,27 @@ def plot_and_print(results: list[dict], benchmarks: list[dict]) -> None:
     ax.grid(True, alpha=0.3)
     fig.autofmt_xdate()
     plt.tight_layout()
-    plt.savefig(PLOT_PATH, dpi=150, bbox_inches="tight")
+    plt.savefig(_plot_path(), dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"[图表] {PLOT_PATH}")
+    print(f"[图表] {_plot_path()}")
+
 
 def main() -> None:
-    print("正在获取数据...")
+    global STOCK_CONFIGS, INDUSTRY
+
+    parser = argparse.ArgumentParser(description="行业三合一策略回测 (买入=参考收盘 卖出=1.3x 止损=0.8x)")
+    parser.add_argument("--industry", default=INDUSTRY,
+                        help="回测行业名称, 如: 白酒/银行/煤炭/机场/保险/证券 等 (默认: 白酒)")
+    args = parser.parse_args()
+    INDUSTRY = args.industry
+
+    print(f"正在获取 [{INDUSTRY}] 行业股票列表...")
+    STOCK_CONFIGS = build_stock_configs()
+    if not STOCK_CONFIGS:
+        raise RuntimeError(f"未获取到 [{INDUSTRY}] 行业股票, 请检查行业名称 / tushare token / 网络。")
+    print(f"  共 {len(STOCK_CONFIGS)} 只 {INDUSTRY} 股参与回测:")
     for ts_code, cfg in STOCK_CONFIGS.items():
-        get_daily(ts_code, cfg["is_etf"])
-        print(f"  ✓ {cfg['name']}({ts_code})")
+        print(f"    ✓ {cfg['name']}({ts_code}) 买{cfg['buy_max']:.2f} 卖{cfg['sell_floor']:.2f} 损{cfg['stop_loss']:.2f}")
 
     print("\n正在运行回测...")
 
@@ -582,12 +576,12 @@ def main() -> None:
     for n in N_VALUES:
         r = run_hybrid_portfolio(lookback_days=n)
         results.append(r)
-        print(f"  ✓ 三分组合 N={n}")
+        print(f"  ✓ {INDUSTRY}三合一 N={n}")
 
     bh = run_buy_hold_portfolio()
     band = run_band_only_portfolio()
-    print(f"  ✓ 全部买入持有")
-    print(f"  ✓ 全部区间交易")
+    print("  ✓ 全部买入持有")
+    print("  ✓ 全部区间交易")
 
     plot_and_print(results, [bh, band])
 

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>单股三策略回测系统</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=2" />
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-logo">📈</span>
+        <div>
+          <h1>单股三策略回测系统</h1>
+          <p>数据源 tushare · 买入持有 / 区间交易 / 低价买入</p>
+        </div>
+      </div>
+      <div class="health" id="health"><span class="dot"></span><span id="health-text">连接检测中…</span></div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- 输入表单 -->
+    <section class="card form-card">
+      <div class="card-title">
+        <h2>回测参数</h2>
+        <span class="hint">输入股票代码与价格参数, 系统自动拉取日线数据运行三策略回测</span>
+      </div>
+      <form id="backtest-form" autocomplete="off">
+        <div class="grid">
+          <div class="field">
+            <label for="ts_code">股票代码 <em>*</em></label>
+            <input type="text" id="ts_code" name="ts_code" list="stock-list"
+                   placeholder="如 000858 或 600036.SH" required />
+            <datalist id="stock-list"></datalist>
+            <div class="field-tip" id="ts-tip"></div>
+          </div>
+          <div class="field">
+            <label for="buy_price">买入价 <em>*</em></label>
+            <input type="number" id="buy_price" name="buy_price" step="0.001" min="0.01"
+                   placeholder="如 75.0" required />
+          </div>
+          <div class="field">
+            <label for="sell_price">卖出价 <em>*</em></label>
+            <input type="number" id="sell_price" name="sell_price" step="0.001" min="0.01"
+                   placeholder="如 150.0" required />
+          </div>
+          <div class="field">
+            <label for="stop_price">止损价 <em>*</em></label>
+            <input type="number" id="stop_price" name="stop_price" step="0.001" min="0.01"
+                   placeholder="如 60.0" required />
+          </div>
+          <div class="field">
+            <label for="lookback_days">低价买入 N 日窗口</label>
+            <input type="number" id="lookback_days" name="lookback_days" value="20" min="2" max="250" />
+          </div>
+          <div class="field">
+            <label for="initial_capital">初始资金 (元)</label>
+            <input type="number" id="initial_capital" name="initial_capital" value="100000" min="1000" step="1000" />
+          </div>
+          <div class="field">
+            <label for="start_date">起始日期</label>
+            <input type="text" id="start_date" name="start_date" value="20170101" placeholder="YYYYMMDD" />
+          </div>
+          <div class="field">
+            <label for="gain_threshold">低价策略涨幅卖出 (%)</label>
+            <input type="number" id="gain_threshold" name="gain_threshold" value="20" min="1" max="500" />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="run-btn">
+            <span class="btn-icon">▶</span> 开始回测
+          </button>
+          <button type="button" class="btn-ghost" id="reset-btn">重置</button>
+          <span class="range-hint" id="range-hint"></span>
+        </div>
+      </form>
+    </section>
+
+    <!-- 加载 / 错误 -->
+    <div class="loading hidden" id="loading">
+      <div class="spinner"></div>
+      <span>正在拉取数据并回测…</span>
+    </div>
+    <div class="error hidden" id="error"></div>
+
+    <!-- 结果区 -->
+    <section class="result hidden" id="result">
+      <div class="result-head">
+        <h2 id="result-title">回测结果</h2>
+        <span class="hint" id="result-sub"></span>
+      </div>
+
+      <!-- 汇总指标卡 -->
+      <div class="metric-cards" id="metric-cards"></div>
+
+      <!-- 收益曲线图 -->
+      <div class="card chart-card">
+        <div class="card-title">
+          <h3>三种策略累计收益曲线 (%)</h3>
+          <span class="hint">以初始资金为基准的累计收益率</span>
+        </div>
+        <div id="chart" class="chart"></div>
+      </div>
+
+      <!-- 指标对比表 -->
+      <div class="card table-card">
+        <div class="card-title"><h3>指标对比</h3></div>
+        <div class="table-wrap">
+          <table id="metrics-table">
+            <thead>
+              <tr>
+                <th>策略</th>
+                <th>总收益率</th>
+                <th>年化收益率</th>
+                <th>最大回撤</th>
+                <th>卡玛比率</th>
+                <th>夏普比率</th>
+                <th>最终资产</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>单股三策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
+  </footer>
+
+  <script src="/static/js/app.js?v=2"></script>
+</body>
+</html>

@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -191,3 +191,12 @@ def get_daily(ts_code: str, kind: str = "stock",
     df = df.sort_values("trade_date").reset_index(drop=True)
     _DAILY_CACHE[cache_key] = df
     return df
+
+
+def get_quote(ts_code: str, kind: str = "stock", days: int = 120) -> pd.DataFrame:
+    """获取最近 N 个交易日的行情数据 (升序), 供前端绘制行情曲线。"""
+    end_date = datetime.now().strftime("%Y%m%d")
+    # 按约 2.5 倍自然日预取, 以覆盖 N 个交易日
+    start = (datetime.now() - timedelta(days=int(days * 2.5) + 30)).strftime("%Y%m%d")
+    df = get_daily(ts_code, kind, start_date=start, end_date=end_date)
+    return df.tail(days).reset_index(drop=True)

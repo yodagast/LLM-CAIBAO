@@ -178,6 +178,13 @@ body {
 .metric.accent3 { border-top-color: #059669; }
 
 .chart { width: 100%; height: 420px; }
+/* 行情 K 线图: 高度自适应浏览器视口, 便于在 Chrome 中观察 120 日行情 */
+.quote-chart {
+  height: clamp(380px, 56vh, 720px);
+  min-height: 380px;
+  max-height: 720px;
+}
+.quote-card { border-top: 3px solid #0ea5e9; }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }

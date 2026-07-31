@@ -29,6 +29,10 @@ uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 
 输出：三种策略的**累计收益曲线**与指标表（总收益率 / 年化收益率 / **最大回撤** / **卡玛比率** / **夏普比率** / 最终资产）。
 
+在回测结果前，页面会自动展示所查股票/ETF 的**最近行情 K 线图**（近 120 个交易日，
+含 MA5/MA20 均线与成交量，支持滚轮缩放与滑块）。K 线图高度自适应浏览器视口
+（`clamp(380px, 56vh, 720px)`），窗口缩放时自动重排，方便在 Chrome 中观察；默认显示全部 120 日，输入有效代码后即显示，无需先运行回测。
+
 ### ETF 回测
 
 - 支持沪深两市 ETF/LOF：沪市 `51/56/58/50` 开头，深市 `15/16/18` 开头。
@@ -43,6 +47,7 @@ uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 | GET | `/api/health` | 健康检查 |
 | GET | `/api/stock/search?keyword=五粮` | 股票/基金联想搜索 |
 | GET | `/api/stock/{code}` | 解析股票代码 |
+| GET | `/api/quote/{code}?days=120` | 最近 N 交易日行情 (K线) |
 | POST | `/api/backtest` | 运行三策略回测 |
 | GET | `/` | 回测页面 |
 

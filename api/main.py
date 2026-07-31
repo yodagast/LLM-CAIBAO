@@ -86,6 +86,42 @@ def stock_info(code: str) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/quote/{code}")
+def quote(code: str, days: int = Query(120, ge=10, le=500)) -> dict:
+    """获取股票/ETF 最近 N 个交易日行情 (K线), 供前端绘制行情曲线。"""
+    try:
+        info = data_service.resolve_code(code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    try:
+        df = data_service.get_quote(info["ts_code"], kind=info["kind"], days=days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取行情数据失败: {e}")
+
+    bars = []
+    for _, row in df.iterrows():
+        bars.append({
+            "date": row["trade_date"],
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "pct_chg": float(row.get("pct_chg", 0.0) or 0.0),
+            "vol": float(row.get("vol", 0.0) or 0.0),
+        })
+
+    return {
+        "info": info,
+        "days": len(bars),
+        "start": bars[0]["date"] if bars else "",
+        "end": bars[-1]["date"] if bars else "",
+        "bars": bars,
+    }
+
+
 @app.post("/api/backtest")
 def backtest(req: BacktestRequest) -> dict:
     """运行单只股票三策略回测。"""

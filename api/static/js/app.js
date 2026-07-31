@@ -13,6 +13,7 @@
   const tsTip = $("#ts-tip");
 
   let chart = null;
+  let quoteChart = null;
   let searchTimer = null;
 
   // ---------- 工具 ----------
@@ -59,10 +60,10 @@
     }, 300);
   });
 
-  // 输入代码后尝试解析显示名称
+  // 输入代码后尝试解析显示名称 + 加载最近行情
   stockInput.addEventListener("change", async () => {
     const code = stockInput.value.trim();
-    if (!code) { tsTip.textContent = ""; return; }
+    if (!code) { tsTip.textContent = ""; hideQuote(); return; }
     try {
       const r = await fetch(`/api/stock/${encodeURIComponent(code)}`);
       if (r.ok) {
@@ -70,14 +71,17 @@
         tsTip.classList.add("ok");
         tsTip.classList.remove("err");
         tsTip.textContent = `✓ ${info.name} · ${info.ts_code} · ${info.kind === "fund" ? "基金/ETF" : "股票"}`;
+        loadQuote(info.ts_code);
       } else {
         const err = await r.json();
         tsTip.classList.add("err");
         tsTip.classList.remove("ok");
         tsTip.textContent = `✗ ${err.detail || "未找到该代码"}`;
+        hideQuote();
       }
     } catch (e) {
       tsTip.textContent = "";
+      hideQuote();
     }
   });
 
@@ -119,6 +123,7 @@
       if (!res.ok) throw new Error(data.detail || "回测失败");
 
       renderResult(data);
+      loadQuote(data.info.ts_code);
     } catch (err) {
       showError(err.message || "请求失败, 请检查后端服务。");
     } finally {
@@ -126,6 +131,115 @@
       runBtn.disabled = false;
     }
   });
+
+  // ---------- 最近行情 K 线 ----------
+  function ma(arr, n) {
+    const out = [];
+    for (let i = 0; i < arr.length; i++) {
+      if (i < n - 1) { out.push("-"); continue; }
+      let sum = 0;
+      for (let j = i - n + 1; j <= i; j++) sum += arr[j];
+      out.push(+(sum / n).toFixed(3));
+    }
+    return out;
+  }
+
+  async function loadQuote(tsCode) {
+    const section = $("#quote-section");
+    try {
+      const r = await fetch(`/api/quote/${encodeURIComponent(tsCode)}?days=120`);
+      if (!r.ok) throw new Error();
+      const data = await r.json();
+      if (!data.bars || !data.bars.length) throw new Error();
+      // 先显示容器, 再初始化图表, 确保 ECharts 拿到正确的宽高
+      section.classList.remove("hidden");
+      renderQuote(data);
+    } catch (e) {
+      hideQuote();
+    }
+  }
+
+  function hideQuote() {
+    const section = $("#quote-section");
+    if (section) section.classList.add("hidden");
+  }
+
+  function renderQuote(data) {
+    const el = $("#quote-chart");
+    if (!quoteChart) quoteChart = echarts.init(el);
+
+    const bars = data.bars;
+    const dates = bars.map((b) => fmtDate(b.date));
+    const kData = bars.map((b) => [b.open, b.close, b.low, b.high]);
+    const closes = bars.map((b) => b.close);
+    const vols = bars.map((b) => b.vol);
+    const volColors = bars.map((b) =>
+      b.close >= b.open ? "rgba(230, 80, 80, .7)" : "rgba(38, 166, 154, .7)");
+
+    $("#quote-title").textContent = `最近行情 · ${data.info.name} (${data.info.ts_code})`;
+    $("#quote-sub").textContent =
+      `${fmtDate(data.start)} ~ ${fmtDate(data.end)} · ${data.days} 个交易日` +
+      ` · 最新收盘 ${closes[closes.length - 1].toFixed(3)}` +
+      ` · ${data.info.kind === "fund" ? "基金/ETF" : "股票"}`;
+
+    quoteChart.setOption({
+      animation: false,
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "cross" },
+        formatter: (params) => {
+          const i = params[0].dataIndex;
+          const b = bars[i];
+          let html = `<b>${fmtDate(b.date)}</b><br/>`;
+          html += `开盘 ${b.open.toFixed(3)}　收盘 <b>${b.close.toFixed(3)}</b><br/>`;
+          html += `最高 ${b.high.toFixed(3)}　最低 ${b.low.toFixed(3)}<br/>`;
+          html += `涨跌 <b style="color:${b.pct_chg >= 0 ? "#e65050" : "#26a69a"}">${b.pct_chg >= 0 ? "+" : ""}${b.pct_chg.toFixed(2)}%</b>`;
+          return html;
+        },
+      },
+      axisPointer: { link: [{ xAxisIndex: "all" }] },
+      legend: { top: 4, data: ["K线", "MA5", "MA20", "成交量"], textStyle: { fontSize: 12 } },
+      grid: [
+        { left: 62, right: 20, top: 36, height: "54%" },
+        { left: 62, right: 20, top: "74%", height: "14%" },
+      ],
+      xAxis: [
+        { type: "category", data: dates, boundaryGap: true,
+          axisLine: { lineStyle: { color: "#e5e7eb" } },
+          axisLabel: { color: "#9ca3af", fontSize: 10, hideOverlap: true,
+                       formatter: (v) => v.slice(5) } },
+        { type: "category", gridIndex: 1, data: dates, boundaryGap: true,
+          axisLabel: { show: false }, axisLine: { lineStyle: { color: "#e5e7eb" } } },
+      ],
+      yAxis: [
+        { scale: true, axisLabel: { color: "#9ca3af", fontSize: 10 },
+          splitLine: { lineStyle: { color: "#f1f5f9" } } },
+        { gridIndex: 1, splitNumber: 2, axisLabel: { show: false },
+          splitLine: { show: false } },
+      ],
+      dataZoom: [
+        { type: "inside", xAxisIndex: [0, 1], start: 0, end: 100,
+          zoomOnMouseWheel: true, moveOnMouseMove: true },
+        { type: "slider", xAxisIndex: [0, 1], top: "93%", height: 18,
+          start: 0, end: 100, showDetail: true },
+      ],
+      series: [
+        {
+          name: "K线", type: "candlestick", data: kData,
+          itemStyle: { color: "#e65050", color0: "#26a69a",
+                       borderColor: "#e65050", borderColor0: "#26a69a" },
+        },
+        { name: "MA5", type: "line", data: ma(closes, 5), smooth: true,
+          symbol: "none", lineStyle: { width: 1, color: "#f59e0b" } },
+        { name: "MA20", type: "line", data: ma(closes, 20), smooth: true,
+          symbol: "none", lineStyle: { width: 1, color: "#3b82f6" } },
+        { name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1,
+          data: vols, itemStyle: { color: (p) => volColors[p.dataIndex] || "#e65050" } },
+      ],
+    }, true);
+    // 容器刚由隐藏转为可见, 下一帧重算尺寸, 保证自适应
+    requestAnimationFrame(() => quoteChart && quoteChart.resize());
+  }
 
   // ---------- 渲染 ----------
   function renderResult(data) {
@@ -242,7 +356,6 @@
       },
       series,
     }, true);
-    window.addEventListener("resize", () => chart && chart.resize());
   }
 
   function showError(msg) {
@@ -263,7 +376,18 @@
     tsTip.textContent = "";
     stockList.innerHTML = "";
     resultBox.classList.add("hidden");
+    hideQuote();
     hideError();
+  });
+
+  // 窗口尺寸变化时, 防抖自适应两个图表
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (chart) chart.resize();
+      if (quoteChart) quoteChart.resize();
+    }, 150);
   });
 
   checkHealth();

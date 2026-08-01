@@ -1,4 +1,4 @@
-"""单只股票三策略回测 Web 系统 (FastAPI)。
+"""单只股票四策略回测 Web 系统 (FastAPI)。
 
 启动:
     cd LLM-CAIBAO
@@ -21,9 +21,9 @@ from . import backtest_engine, data_service
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(
-    title="单股三策略回测系统",
-    description="基于 tushare 数据源, 对单只股票运行 买入持有 / 区间交易 / 低价买入 三种策略回测。",
-    version="1.0.0",
+    title="单股四策略回测系统",
+    description="基于 tushare 数据源, 对单只股票运行 买入持有 / 限价买入持有 / 区间交易 / 低价买入 四种策略回测。",
+    version="1.1.0",
 )
 
 # 静态资源 (前端页面)
@@ -124,7 +124,7 @@ def quote(code: str, days: int = Query(120, ge=10, le=500)) -> dict:
 
 @app.post("/api/backtest")
 def backtest(req: BacktestRequest) -> dict:
-    """运行单只股票三策略回测。"""
+    """运行单只股票四策略回测。"""
     try:
         info = data_service.resolve_code(req.ts_code)
     except ValueError as e:

@@ -1,13 +1,14 @@
-"""单只股票三策略回测引擎。
+"""单只股票四策略回测引擎。
 
 参考 strategy/backtest_baijiu_3in1.py 的三合一策略逻辑, 对单只股票分别运行:
 
   策略A (买入持有): 开盘即买入全部资金, 一直持有
-  策略B (区间交易): 收盘价 ≤ 买入价 买入全部; 收盘价 ≥ 卖出价 或 ≤ 止损价 卖出全部
-  策略C (低价买入): 买入: N 日最低价 且 收盘价 ≤ 买入价
+  策略B (限价买入持有): 收盘价 ≤ 限价(买入价) 才买入全部资金, 之后一直持有
+  策略C (区间交易): 收盘价 ≤ 买入价 买入全部; 收盘价 ≥ 卖出价 或 ≤ 止损价 卖出全部
+  策略D (低价买入): 买入: N 日最低价 且 收盘价 ≤ 买入价
                     卖出: 收盘价 ≥ 卖出价 或 (持仓涨幅 > 阈值) 或 收盘价 ≤ 止损价
 
-输出: 三条每日收益曲线 + 指标 (总收益率 / 年化 / 最大回撤 / 卡玛 / 夏普)。
+输出: 四条每日收益曲线 + 指标 (总收益率 / 年化 / 最大回撤 / 卡玛 / 夏普)。
 """
 
 from __future__ import annotations
@@ -34,6 +35,24 @@ def strat_buy_hold(df: pd.DataFrame, capital: float) -> list[dict]:
     daily = []
     for _, row in df.iterrows():
         daily.append({"date": row["trade_date"], "value": shares * float(row["close"])})
+    return daily
+
+
+def strat_limit_buy_hold(df: pd.DataFrame, capital: float, buy_price: float) -> list[dict]:
+    """策略D: 限价买入持有 — 收盘价 ≤ 限价(buy_price) 时买入全部资金, 之后一直持有。
+
+    与普通买入持有不同, 该策略在价格回落至限价以内之前不建仓;
+    一旦买入即持有至期末。若整个区间价格始终高于限价则始终空仓。
+    """
+    shares = 0.0
+    cash = capital
+    daily = []
+    for _, row in df.iterrows():
+        close = float(row["close"])
+        if shares == 0.0 and close <= buy_price and close > 0:
+            shares = cash / close
+            cash = 0.0
+        daily.append({"date": row["trade_date"], "value": cash + shares * close})
     return daily
 
 
@@ -168,16 +187,17 @@ def _calc_metrics(daily: list[dict], capital: float) -> dict:
 # 汇总回测入口
 # ---------------------------------------------------------------------------
 
-STRATEGIES = ("买入持有", "区间交易", "低价买入")
+STRATEGIES = ("买入持有", "限价买入持有", "区间交易", "低价买入")
 
 
 def run_backtest(df: pd.DataFrame, capital: float,
                  buy_price: float, sell_price: float, stop_loss: float,
                  lookback_days: int = 20,
                  gain_threshold: float = DEFAULT_GAIN_THRESHOLD) -> list[dict]:
-    """对单只股票运行三种策略, 返回各策略的每日净值曲线与指标。"""
+    """对单只股票运行四种策略, 返回各策略的每日净值曲线与指标。"""
     strategies = [
         {"name": "买入持有", "daily": strat_buy_hold(df, capital)},
+        {"name": "限价买入持有", "daily": strat_limit_buy_hold(df, capital, buy_price)},
         {"name": "区间交易", "daily": strat_band_trade(df, capital, buy_price, sell_price, stop_loss)},
         {"name": "低价买入", "daily": strat_low_price(df, capital, lookback_days,
                                                        buy_price, sell_price, stop_loss, gain_threshold)},

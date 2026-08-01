@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>单股三策略回测系统</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=6" />
+  <title>单股四策略回测系统</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=7" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 </head>
 <body>
@@ -13,8 +13,8 @@
       <div class="brand">
         <span class="brand-logo">📈</span>
         <div>
-          <h1>单股三策略回测系统</h1>
-          <p>数据源 tushare · 买入持有 / 区间交易 / 低价买入</p>
+          <h1>单股四策略回测系统</h1>
+          <p>数据源 tushare · 买入持有 / 限价买入持有 / 区间交易 / 低价买入</p>
         </div>
       </div>
       <div class="health" id="health"><span class="dot"></span><span id="health-text">连接检测中…</span></div>
@@ -26,7 +26,7 @@
     <section class="card form-card">
       <div class="card-title">
         <h2>回测参数</h2>
-        <span class="hint">输入股票代码与价格参数, 系统自动拉取日线数据运行三策略回测</span>
+        <span class="hint">输入股票代码与价格参数, 系统自动拉取日线数据运行四策略回测</span>
       </div>
       <form id="backtest-form" autocomplete="off">
         <div class="grid">
@@ -108,7 +108,7 @@
       <!-- 收益曲线图 -->
       <div class="card chart-card">
         <div class="card-title">
-          <h3>三种策略累计收益曲线 (%)</h3>
+          <h3>四种策略累计收益曲线 (%)</h3>
           <span class="hint">以初始资金为基准的累计收益率</span>
         </div>
         <div id="chart" class="chart"></div>
@@ -138,9 +138,9 @@
   </main>
 
   <footer class="footer">
-    <span>单股三策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
+    <span>单股四策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=6"></script>
+  <script src="/static/js/app.js?v=7"></script>
 </body>
 </html>

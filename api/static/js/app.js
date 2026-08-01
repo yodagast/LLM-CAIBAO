@@ -1,4 +1,4 @@
-/* 单股三策略回测系统 - 前端逻辑 */
+/* 单股四策略回测系统 - 前端逻辑 */
 (function () {
   "use strict";
 
@@ -246,7 +246,7 @@
     const { info, params, range, strategies } = data;
     resultBox.classList.remove("hidden");
 
-    $("#result-title").textContent = `${info.name} (${info.ts_code}) · 三策略回测`;
+    $("#result-title").textContent = `${info.name} (${info.ts_code}) · 四策略回测`;
     $("#result-sub").textContent =
       `${fmtDate(range.start)} ~ ${fmtDate(range.end)} · ${range.bars} 个交易日 · ` +
       `参考价区间 ${range.first_close.toFixed(2)} ~ ${range.last_close.toFixed(2)} · ` +
@@ -295,7 +295,7 @@
   }
 
   function renderTable(data) {
-    const tags = { "买入持有": "bh", "区间交易": "band", "低价买入": "low" };
+    const tags = { "买入持有": "bh", "限价买入持有": "lbh", "区间交易": "band", "低价买入": "low" };
     const body = data.strategies.map((s) => {
       const m = s.metrics;
       return `
@@ -315,7 +315,7 @@
   function renderChart(data) {
     const el = $("#chart");
     if (!chart) chart = echarts.init(el);
-    const colors = ["#4f46e5", "#ea580c", "#059669"];
+    const colors = ["#4f46e5", "#0891b2", "#ea580c", "#059669"];
     const series = data.strategies.map((s, i) => ({
       name: s.name,
       type: "line",

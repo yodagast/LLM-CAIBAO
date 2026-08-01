@@ -203,6 +203,7 @@ td.neg { color: var(--red); }
   font-size: 12px; font-weight: 600;
 }
 .tag.bh { background: #eef2ff; color: #4338ca; }
+.tag.lbh { background: #ecfeff; color: #0e7490; }
 .tag.band { background: #fff7ed; color: #c2410c; }
 .tag.low { background: #ecfdf5; color: #047857; }
 

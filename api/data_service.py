@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -200,3 +201,152 @@ def get_quote(ts_code: str, kind: str = "stock", days: int = 120) -> pd.DataFram
     start = (datetime.now() - timedelta(days=int(days * 2.5) + 30)).strftime("%Y%m%d")
     df = get_daily(ts_code, kind, start_date=start, end_date=end_date)
     return df.tail(days).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# 基本面选股 (资产负债率 / ROE / 分红率)
+# ---------------------------------------------------------------------------
+
+MAX_SCAN_STOCKS = 500      # 未指定行业时最多扫描的股票数 (避免全市场逐只查询过慢)
+_SCAN_SLEEP = 0.12         # 逐只查询 tushare 的时间间隔 (秒), 防频率限制
+
+
+def _to_float(v) -> float | None:
+    """安全转 float, 无效值返回 None。"""
+    try:
+        f = float(v)
+        if pd.isna(f):
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
+def _fina_latest(pro, ts_code: str, period: str = "") -> dict | None:
+    """获取单只股票最新一期 (或指定报告期) 财务指标。
+
+    未指定 period 时优先取最新年报 (end_date 以 1231 结尾), 保证 ROE 为全年口径;
+    若无年报数据则退回最新一期。返回含 roe/debt_to_assets/dt_eps/end_date 的 dict。
+    """
+    try:
+        if period:
+            df = pro.fina_indicator(ts_code=ts_code, period=period)
+        else:
+            df = pro.fina_indicator(ts_code=ts_code)
+    except Exception:
+        return None
+    if df is None or df.empty:
+        return None
+    df = df.sort_values("end_date", ascending=False).reset_index(drop=True)
+    if not period:
+        annual = df[df["end_date"].astype(str).str.endswith("1231")]
+        if not annual.empty:
+            df = annual
+    row = df.iloc[0]
+    return {
+        "end_date": str(row.get("end_date") or ""),
+        "debt_to_assets": _to_float(row.get("debt_to_assets")),
+        "roe": _to_float(row.get("roe")),
+        "dt_eps": _to_float(row.get("dt_eps")),
+        "fcff": _to_float(row.get("fcff")),
+    }
+
+
+def _dividend_latest(pro, ts_code: str) -> dict | None:
+    """获取单只股票最近一次实施的分红记录。
+
+    dividend 接口返回同一分红年度的多条流程记录 (预案/股东大会/实施),
+    优先取 div_proc='实施' 的记录; 若无实施记录则取该年度 cash_div 最大的记录。
+    """
+    try:
+        dv = pro.dividend(ts_code=ts_code)
+    except Exception:
+        return None
+    if dv is None or dv.empty:
+        return None
+    dv = dv.sort_values("end_date", ascending=False).reset_index(drop=True)
+    end = str(dv.iloc[0]["end_date"])
+    yearly = dv[dv["end_date"].astype(str) == end].copy()
+    yearly["_cash"] = pd.to_numeric(yearly.get("cash_div"), errors="coerce")
+    impl = yearly[yearly["div_proc"] == "实施"]
+    if not impl.empty:
+        row = impl.sort_values("_cash", ascending=False).iloc[0]
+    else:
+        row = yearly.sort_values("_cash", ascending=False).iloc[0]
+    return {"end_date": end, "cash_div": _to_float(row.get("cash_div"))}
+
+
+def screen_by_fundamentals(industry: str = "", period: str = "",
+                           max_debt_to_assets: float = 60.0,
+                           min_roe: float = 10.0,
+                           min_payout_ratio: float = 30.0,
+                           max_stocks: int = 100,
+                           limit: int = 100) -> dict:
+    """按 资产负债率 ≤ / ROE ≥ / 分红率 ≥ 筛选股票。
+
+    - industry: 东财行业名称, 空串表示全市场 (最多扫描 max_stocks 只)
+    - period: 报告期 YYYYMMDD, 空串表示每只取最新年报 (无年报则最新一期)
+    - 分红率 (%) = 每股现金红利 / 每股收益 (dt_eps) × 100
+    """
+    pro = _init_pro()
+    stocks = _stock_basic()
+
+    if industry:
+        cand = stocks[stocks["industry"].str.contains(industry, na=False)].copy()
+    else:
+        cand = stocks.copy()
+    cand = cand.head(min(int(max_stocks) or MAX_SCAN_STOCKS, len(cand)))
+
+    results = []
+    scanned = 0
+    for _, row in cand.iterrows():
+        ts_code = row["ts_code"]
+        fina = _fina_latest(pro, ts_code, period)
+        scanned += 1
+        if fina is None:
+            continue
+
+        debt = fina["debt_to_assets"]
+        roe = fina["roe"]
+        eps = fina["dt_eps"]
+
+        # 分红率 = 每股现金红利 / 每股收益 × 100
+        payout = None
+        div = _dividend_latest(pro, ts_code)
+        if div is not None and div["cash_div"] is not None:
+            if eps and eps > 0:
+                payout = div["cash_div"] / eps * 100.0
+
+        # --- 过滤 ---
+        if max_debt_to_assets is not None and debt is not None and debt > max_debt_to_assets:
+            continue
+        if min_roe is not None and roe is not None and roe < min_roe:
+            continue
+        # 要求分红率时, 数据缺失视为不满足
+        if min_payout_ratio:
+            if payout is None or payout < min_payout_ratio:
+                continue
+
+        results.append({
+            "ts_code": ts_code,
+            "symbol": row["symbol"],
+            "name": row["name"],
+            "industry": row.get("industry", ""),
+            "end_date": fina["end_date"],
+            "debt_to_assets": debt,
+            "roe": roe,
+            "payout_ratio": payout,
+        })
+
+        time.sleep(_SCAN_SLEEP)
+
+    # 排序: ROE 高者优先, 缺失排后
+    results.sort(key=lambda x: (x["roe"] is not None, x["roe"] if x["roe"] is not None else -1),
+                 reverse=True)
+
+    return {
+        "scanned": scanned,
+        "matched": len(results),
+        "industry": industry,
+        "items": results[:limit],
+    }

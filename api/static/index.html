@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>单股四策略回测系统</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=7" />
+  <title>选股回测系统</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=13" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 </head>
 <body>
@@ -22,6 +22,15 @@
   </header>
 
   <main class="container">
+    <!-- Tab 导航 -->
+    <nav class="tabs">
+      <button type="button" class="tab active" data-tab="backtest">📊 策略回测</button>
+      <button type="button" class="tab" data-tab="fundamental">🔍 基本面选股</button>
+      <button type="button" class="tab" data-tab="redlowvol">💰 红利低波选股</button>
+    </nav>
+
+    <!-- ================= Tab: 策略回测 ================= -->
+    <section id="tab-backtest">
     <!-- 输入表单 -->
     <section class="card form-card">
       <div class="card-title">
@@ -135,12 +144,195 @@
         </div>
       </div>
     </section>
+    </section><!-- /tab-backtest -->
+
+    <!-- ================= Tab: 基本面选股 ================= -->
+    <section id="tab-fundamental" class="hidden">
+      <div class="card">
+        <div class="card-title">
+          <h2>基本面选股 </h2>
+          <span class="hint">输入行业 + 年份范围, 输出 净利润率/总资产周转率/权益乘数/毛利率 等指标 (数据存入 PostgreSQL, 点表头排序)</span>
+        </div>
+        <form id="screen-form" autocomplete="off">
+          <div class="grid">
+            <div class="field">
+              <label for="sc_industry">行业 (东财分类)</label>
+              <input type="text" id="sc_industry" placeholder="如 白酒 / 银行 / 煤炭 / 空=全市场" />
+            </div>
+            <div class="field">
+              <label for="sc_year_start">起始年份 <em>*</em></label>
+              <input type="number" id="sc_year_start" value="2024" min="2000" max="2100" step="1" required />
+            </div>
+            <div class="field">
+              <label for="sc_year_end">结束年份 <em>*</em></label>
+              <input type="number" id="sc_year_end" value="2025" min="2000" max="2100" step="1" required />
+            </div>
+          </div>
+
+          <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
+          <div class="grid">
+            <div class="field">
+              <label for="sc_f_roe">ROE ≥ (%)</label>
+              <input type="number" id="sc_f_roe" placeholder="如 15" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="sc_f_debt">资产负债率 ≤ (%)</label>
+              <input type="number" id="sc_f_debt" placeholder="如 60" min="0" max="100" step="1" />
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="screen-btn">
+              <span class="btn-icon">▶</span> 开始筛选
+            </button>
+            <button type="button" class="btn-ghost" id="screen-resync-btn">重新同步数据</button>
+            <span class="range-hint" id="screen-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="loading hidden" id="screen-loading">
+        <div class="spinner"></div>
+        <span>正在逐只拉取财务数据并写入数据库… (行业模式约 20~60 秒, 首次较慢)</span>
+      </div>
+      <div class="error hidden" id="screen-error"></div>
+
+      <section class="result hidden" id="screen-result">
+        <div class="result-head">
+          <h2 id="screen-title">基本面筛选结果</h2>
+          <span class="hint" id="screen-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap">
+            <table id="screen-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>行业</th>
+                  <th class="sortable" data-sort="close">最近价<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="net_margin">净利润率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="assets_turn">总资产周转率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="equity_multiplier">权益乘数<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_cur_assets">流动资产<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="money_cap">现金<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="invturn_days">存货周转天数<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="arturn_days">应收周转天数<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ================= Tab: 红利低波选股 ================= -->
+    <section id="tab-redlowvol" class="hidden">
+      <div class="card">
+        <div class="card-title">
+          <h2>红利低波选股</h2>
+          <span class="hint">对指定行业 + 年份的全部公司计算 股息率/波动率/每股分红/自由现金流 等并排序 (数据存入 PostgreSQL)</span>
+        </div>
+        <form id="rlv-form" autocomplete="off">
+          <div class="grid">
+            <div class="field">
+              <label for="rlv_industry">行业 (东财分类)</label>
+              <input type="text" id="rlv_industry" placeholder="如 白酒 / 银行 / 煤炭 / 空=全市场" />
+            </div>
+            <div class="field">
+              <label for="rlv_year_start">起始年份 <em>*</em></label>
+              <input type="number" id="rlv_year_start" value="2020" min="2000" max="2100" step="1" required />
+            </div>
+            <div class="field">
+              <label for="rlv_year_end">结束年份 <em>*</em></label>
+              <input type="number" id="rlv_year_end" value="2025" min="2000" max="2100" step="1" required />
+            </div>
+          </div>
+
+          <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
+          <div class="grid">
+            <div class="field">
+              <label for="rlv_f_dy">股息率 ≥ (%)</label>
+              <input type="number" id="rlv_f_dy" placeholder="如 5" min="0" step="0.1" />
+            </div>
+            <div class="field">
+              <label for="rlv_f_vol">波动率 ≤ (%)</label>
+              <input type="number" id="rlv_f_vol" placeholder="如 25" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="rlv_f_div">每股分红 ≥ (元)</label>
+              <input type="number" id="rlv_f_div" placeholder="如 1.0" min="0" step="0.1" />
+            </div>
+            <div class="field">
+              <label for="rlv_f_roe">ROE ≥ (%)</label>
+              <input type="number" id="rlv_f_roe" placeholder="如 15" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="rlv_f_debt">资产负债率 ≤ (%)</label>
+              <input type="number" id="rlv_f_debt" placeholder="如 60" min="0" max="100" step="1" />
+            </div>
+            <div class="field">
+              <label for="rlv_f_payout">分红率 ≥ (%)</label>
+              <input type="number" id="rlv_f_payout" placeholder="如 30" min="0" step="1" />
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="rlv-btn">
+              <span class="btn-icon">▶</span> 开始选股
+            </button>
+            <button type="button" class="btn-ghost" id="rlv-resync-btn">重新同步数据</button>
+            <span class="range-hint" id="rlv-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="loading hidden" id="rlv-loading">
+        <div class="spinner"></div>
+        <span>正在逐只拉取行情与财务数据并写入数据库… (行业模式约 20~60 秒, 首次较慢)</span>
+      </div>
+      <div class="error hidden" id="rlv-error"></div>
+
+      <section class="result hidden" id="rlv-result">
+        <div class="result-head">
+          <h2 id="rlv-title">红利低波排序</h2>
+          <span class="hint" id="rlv-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap">
+            <table id="rlv-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>行业</th>
+                  <th class="sortable" data-sort="dividend_yield">股息率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="volatility">波动率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="div_per_share">每股分红<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="free_cashflow">自由现金流<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="eps">EPS<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="payout_ratio">分红率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </section>
   </main>
 
   <footer class="footer">
     <span>单股四策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=7"></script>
+  <script src="/static/js/app.js?v=13"></script>
 </body>
 </html>

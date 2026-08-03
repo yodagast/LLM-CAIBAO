@@ -17,14 +17,25 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import backtest_engine, data_service
+from . import fundamental_service, pg_service, redlowvol_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(
     title="单股四策略回测系统",
     description="基于 tushare 数据源, 对单只股票运行 买入持有 / 限价买入持有 / 区间交易 / 低价买入 四种策略回测。",
-    version="1.1.0",
+    version="1.3.0",
 )
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    """启动时确保 PG 表结构存在 (失败不阻塞服务启动)。"""
+    try:
+        pg_service.init_schema()
+        pg_service.init_fundamental_schema()
+    except Exception:
+        pass
 
 # 静态资源 (前端页面)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -44,6 +55,32 @@ class BacktestRequest(BaseModel):
     end_date: str = Field("", description="结束日期 YYYYMMDD, 空表示最新")
     initial_capital: float = Field(100000.0, gt=0, description="初始资金")
     gain_threshold: float = Field(20.0, gt=0, description="低价策略涨幅卖出阈值 (%)")
+
+
+class ScreenRequest(BaseModel):
+    """基本面选股请求 (ROE 杜邦拆分)。"""
+    industry: str = Field("", description="行业名称(东财分类), 空表示全市场")
+    years: list[int] = Field(..., min_length=1, max_length=15,
+                             description="年度列表, 如 [2024,2025]")
+    sort_by: str = Field("roe", description="排序字段 (ROE/净利润率/毛利率等)")
+    order: str = Field("desc", description="排序方向: asc / desc")
+    filters: dict = Field(default_factory=dict,
+                          description="筛选条件 {字段: {min: x, max: y}}, 如 {'roe': {'min': 15}, 'debt_to_assets': {'max': 60}}")
+    max_stocks: int = Field(500, ge=1, le=500, description="同步时最多扫描股票数(全市场时生效)")
+    limit: int = Field(1000, ge=1, le=2000, description="返回数量上限")
+
+
+class RedLowVolRequest(BaseModel):
+    """红利低波选股请求。"""
+    industry: str = Field("", description="行业名称(东财分类), 空表示全市场")
+    years: list[int] = Field(..., min_length=1, max_length=15,
+                             description="年度列表, 如 [2020,2021,2022,2023,2024,2025]")
+    sort_by: str = Field("dividend_yield", description="排序字段 (股息率/波动率/每股分红/自由现金流等)")
+    order: str = Field("desc", description="排序方向: asc / desc")
+    filters: dict = Field(default_factory=dict,
+                          description="筛选条件 {字段: {min: x, max: y}}, 如 {'dividend_yield': {'min': 5}}")
+    max_stocks: int = Field(500, ge=1, le=500, description="同步时最多扫描股票数")
+    limit: int = Field(500, ge=1, le=1000, description="返回数量上限")
 
 
 # ---------------------------------------------------------------------------
@@ -174,4 +211,77 @@ def backtest(req: BacktestRequest) -> dict:
             "last_close": last_close,
         },
         "strategies": strategies,
+    }
+
+
+@app.post("/api/fundamental/screen")
+def screen_fundamental(req: ScreenRequest) -> dict:
+    """基本面选股 (ROE 杜邦拆分): 确保数据入库后, 按行业+多年份查询, 支持筛选与排序。"""
+    industry = req.industry.strip()
+    try:
+        sync_info = fundamental_service.ensure_data(industry, req.years, req.max_stocks)
+        items = fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
+                                           order=req.order, filters=req.filters, limit=req.limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"基本面选股失败: {e}")
+    return {
+        "industry": industry,
+        "years": req.years,
+        "sync": sync_info,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@app.post("/api/fundamental/init")
+def fundamental_init(req: ScreenRequest) -> dict:
+    """初始化基本面数据: 按行业(空=全市场)+多个年份计算全部指标并入库 (幂等 upsert)。"""
+    try:
+        result = fundamental_service.sync_industry_years(
+            req.industry.strip(), req.years, max_stocks=req.max_stocks)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"基本面数据初始化失败: {e}")
+    return result
+
+
+@app.post("/api/fundamental/verify")
+def fundamental_verify(req: ScreenRequest) -> dict:
+    """校验 ROE 杜邦拆分正确性: roe ≈ 净利润率 × 总资产周转率 × 权益乘数。"""
+    industry = req.industry.strip()
+    try:
+        items = fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
+                                           order=req.order, filters=req.filters, limit=req.limit)
+        result = fundamental_service.verify_roe(items)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"校验失败: {e}")
+    return result
+
+
+@app.post("/api/redlowvol/sync")
+def redlowvol_sync(req: RedLowVolRequest) -> dict:
+    """按行业+多个年份计算红利低波指标并写入 PostgreSQL (幂等 upsert)。"""
+    try:
+        result = redlowvol_service.sync_industry_years(
+            req.industry.strip(), req.years, max_stocks=req.max_stocks)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"红利低波数据同步失败: {e}")
+    return result
+
+
+@app.post("/api/redlowvol/screen")
+def redlowvol_screen(req: RedLowVolRequest) -> dict:
+    """红利低波选股: 确保数据已入库后, 按行业+多年份查询, 支持阈值筛选与排序。"""
+    industry = req.industry.strip()
+    try:
+        sync_info = redlowvol_service.ensure_data(industry, req.years, max_stocks=req.max_stocks)
+        items = redlowvol_service.screen(industry, req.years, sort_by=req.sort_by,
+                                         order=req.order, filters=req.filters, limit=req.limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"红利低波选股失败: {e}")
+    return {
+        "industry": industry,
+        "years": req.years,
+        "sync": sync_info,
+        "count": len(items),
+        "items": items,
     }

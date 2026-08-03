@@ -332,8 +332,8 @@
         <td class="num">${it.year}</td>
         <td>${it.ts_code}</td>
         <td><b>${it.name}</b></td>
-        <td>${it.industry || "—"}</td>
         <td class="num">${it.close == null ? "—" : Number(it.close).toFixed(2)}</td>
+        <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
         <td class="num ${cls(it.net_margin || 0)}">${fmtPctVal(it.net_margin)}</td>
         <td class="num">${it.assets_turn == null ? "—" : Number(it.assets_turn).toFixed(2)}</td>
         <td class="num">${it.equity_multiplier == null ? "—" : Number(it.equity_multiplier).toFixed(2)}</td>

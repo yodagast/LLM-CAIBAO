@@ -126,23 +126,23 @@ def upsert_rows(rows: list[dict]) -> int:
 # ---------------------------------------------------------------------------
 
 def has_data(industry: str, year: int) -> bool:
-    """该行业+年份是否已有数据。"""
+    """该行业+年份是否已有数据 (行业子串匹配)。"""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM red_low_vol WHERE industry = %s AND year = %s LIMIT 1;",
-                (industry, year),
+                "SELECT 1 FROM red_low_vol WHERE industry LIKE %s AND year = %s LIMIT 1;",
+                (f"%{industry}%", year),
             )
             return cur.fetchone() is not None
 
 
 def count_by_industry_year(industry: str, year: int) -> int:
-    """该行业+年份的记录数。"""
+    """该行业+年份的记录数 (行业子串匹配, 与同步 str.contains 一致)。"""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT count(*) FROM red_low_vol WHERE industry = %s AND year = %s;",
-                (industry, year),
+                "SELECT count(*) FROM red_low_vol WHERE industry LIKE %s AND year = %s;",
+                (f"%{industry}%", year),
             )
             return int(cur.fetchone()[0])
 
@@ -161,8 +161,9 @@ def query_screen(industry: str, years: list[int], sort_by: str = "dividend_yield
     conds: list[str] = []
     params: list = []
     if industry:
-        conds.append("industry = %s")
-        params.append(industry)
+        # 子串匹配, 与同步逻辑 str.contains 一致 (如输入"电力"匹配"新型电力")
+        conds.append("industry LIKE %s")
+        params.append(f"%{industry}%")
     if years:
         conds.append("year = ANY(%s)")
         params.append([int(y) for y in years])
@@ -283,11 +284,12 @@ def upsert_fundamental_rows(rows: list[dict]) -> int:
 
 
 def count_fundamental_by_industry_year(industry: str, year: int) -> int:
+    """该行业+年份的记录数 (行业子串匹配)。"""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT count(*) FROM fundamental_screen WHERE industry = %s AND year = %s;",
-                (industry, year),
+                "SELECT count(*) FROM fundamental_screen WHERE industry LIKE %s AND year = %s;",
+                (f"%{industry}%", year),
             )
             return int(cur.fetchone()[0])
 
@@ -302,8 +304,9 @@ def query_fundamental(industry: str, years: list[int], sort_by: str = "roe",
     conds: list[str] = []
     params: list = []
     if industry:
-        conds.append("industry = %s")
-        params.append(industry)
+        # 子串匹配, 与同步逻辑 str.contains 一致
+        conds.append("industry LIKE %s")
+        params.append(f"%{industry}%")
     if years:
         conds.append("year = ANY(%s)")
         params.append([int(y) for y in years])

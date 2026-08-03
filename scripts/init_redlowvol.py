@@ -1,7 +1,7 @@
 """全市场红利低波数据初始化脚本。
 
 用法:
-  python scripts/init_redlowvol.py                        # 全市场 2024~2025
+  python scripts/init_redlowvol.py  --max-stocks 1500                      # 全市场 2024~2025
   python scripts/init_redlowvol.py --industry 白酒 --start 2020 --end 2025
   python scripts/init_redlowvol.py --industry 煤炭 --start 2024 --end 2024 --max-stocks 500
 

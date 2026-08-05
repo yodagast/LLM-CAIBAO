@@ -283,6 +283,9 @@ thead th.sortable { cursor: pointer; user-select: none; transition: background .
 thead th.sortable:hover { background: var(--primary-light); color: var(--primary-dark); }
 thead th.sortable .sort-arrow { color: var(--primary); font-size: 11px; margin-left: 3px; }
 thead th.sortable.sorted { color: var(--primary); }
+thead th[data-key] { cursor: pointer; user-select: none; transition: background .15s, color .15s; }
+thead th[data-key]:hover { background: var(--primary-light); color: var(--primary-dark); }
+thead th[data-key].sort-active { color: var(--primary); }
 tbody td { padding: 11px 14px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }
 tbody tr:hover { background: #f8fafc; }
 td.num { font-variant-numeric: tabular-nums; }

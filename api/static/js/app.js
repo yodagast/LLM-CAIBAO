@@ -46,6 +46,17 @@
   const caibaoInput = $("#caibao_ts_code");
   const caibaoTip = $("#caibao-ts-tip");
 
+  // 每日推荐元素
+  const dailyForm = $("#daily-form");
+  const dailyScanBtn = $("#daily-scan-btn");
+  const dailyRefreshBtn = $("#daily-refresh-btn");
+  const dailyLoading = $("#daily-loading");
+  const dailyError = $("#daily-error");
+  const dailyResult = $("#daily-result");
+  const dailyTable = $("#daily-table");
+  let dailyItems = [];
+  let dailySort = { key: "close", order: "desc" };
+
   let chart = null;
   let quoteChart = null;
   let bandChart = null;
@@ -152,6 +163,7 @@
   }
   bindIndustrySuggest($("#sc_industry"), $("#sc-ind-panel"));
   bindIndustrySuggest($("#rlv_industry"), $("#rlv-ind-panel"));
+  bindIndustrySuggest($("#daily_industry"), $("#daily-ind-panel"));
 
   // 输入代码后尝试解析显示名称 + 加载最近行情
   stockInput.addEventListener("change", async () => {
@@ -1226,6 +1238,141 @@
       downloadMarkdown(data.markdown || "", `${data.info.name}-${data.info.ts_code.split(".")[0]}_财报分析.md`);
     caibaoResult.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  // ---------- 每日公司推荐 ----------
+  function _sortedDaily() {
+    const k = dailySort.key;
+    const arr = dailyItems.slice();
+    arr.sort((a, b) => {
+      let va = a[k], vb = b[k];
+      let cmp;
+      if (k === "achieved") {
+        cmp = (va ? 1 : 0) - (vb ? 1 : 0);
+      } else if (typeof va === "number" && typeof vb === "number") {
+        cmp = va - vb;
+      } else {
+        const na = parseFloat(va), nb = parseFloat(vb);
+        cmp = (!isNaN(na) && !isNaN(nb)) ? na - nb : String(va).localeCompare(String(vb), "zh");
+      }
+      return dailySort.order === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }
+
+  function _renderDailyTable() {
+    const body = _sortedDaily().map((it) => `
+      <tr>
+        <td>${it.ts_code}</td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
+        <td>${it.kind === "fund" ? "基金" : "股票"}</td>
+        <td class="num">${Number(it.close).toFixed(2)}</td>
+        <td class="num">${Number(it.buy_price).toFixed(2)}</td>
+        <td class="num">${Number(it.sell_price).toFixed(2)}</td>
+        <td class="num">${Number(it.stop_price).toFixed(2)}</td>
+        <td class="num ${cls(it.total_return)}">${fmtPct(it.total_return)}</td>
+        <td class="num">${Number(it.sharpe).toFixed(2)}</td>
+        <td class="num">${it.trades}</td>
+        <td>${it.achieved ? "✅" : "—"}</td>
+      </tr>`).join("")
+      || `<tr><td colspan="11" style="text-align:center;color:var(--text-soft)">暂无推荐, 请先扫描</td></tr>`;
+    $("#daily-table tbody").innerHTML = body;
+    // 表头排序指示
+    dailyTable.querySelectorAll("th[data-key]").forEach((th) => {
+      const active = th.dataset.key === dailySort.key;
+      th.classList.toggle("sort-active", active);
+      th.textContent = th.textContent.replace(/\s*[▲▼]\s*$/, "");
+      if (active) th.textContent = `${th.textContent} ${dailySort.order === "asc" ? "▲" : "▼"}`;
+    });
+  }
+
+  function renderDaily(data) {
+    dailyResult.classList.remove("hidden");
+    $("#daily-title").textContent = "每日公司推荐 (买入价 ≥ 当日收盘价)";
+    const scanInfo = data.recommend_count !== undefined
+      ? ` · 扫描 ${data.scanned} 只 / 入库 ${data.stored} 行` : "";
+    const dateRange = data.start_date
+      ? ` · 区间 ${data.start_date}~${data.end_date || "最新"}` : "";
+    const indTag = data.industry ? ` · 行业 ${data.industry}` : "";
+    $("#daily-sub").textContent =
+      `计算日 ${data.calc_date || "—"} · 推荐 ${data.count} 只${indTag}${scanInfo}${dateRange}`;
+    dailyItems = data.items || [];
+    _renderDailyTable();
+    dailyResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  async function runDailyScan(payload) {
+    dailyError.classList.add("hidden");
+    dailyResult.classList.add("hidden");
+    dailyScanBtn.disabled = true;
+    dailyRefreshBtn.disabled = true;
+    dailyLoading.classList.remove("hidden");
+    $("#daily-hint").textContent = "";
+    try {
+      const res = await fetch("/api/dailyrecommend/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "扫描失败");
+      $("#daily-hint").textContent = data.cached
+        ? `✓ 命中缓存 (计算日 ${data.calc_date} 已有数据): 推荐 ${data.recommend_count} 只, 直接读取 pgsql`
+        : `扫描完成: 推荐 ${data.recommend_count} 只, 已入库 ${data.stored} 行 (计算日 ${data.calc_date}, 区间 ${data.start_date}~${data.end_date || "最新"})`;
+      await loadDailyRecommend();
+    } catch (err) {
+      dailyError.textContent = err.message || "请求失败, 请检查后端服务。";
+      dailyError.classList.remove("hidden");
+    } finally {
+      dailyLoading.classList.add("hidden");
+      dailyScanBtn.disabled = false;
+      dailyRefreshBtn.disabled = false;
+    }
+  }
+
+  async function loadDailyRecommend() {
+    dailyError.classList.add("hidden");
+    try {
+      const ind = encodeURIComponent($("#daily_industry").value.trim());
+      const res = await fetch(`/api/dailyrecommend/list?industry=${ind}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "获取失败");
+      renderDaily(data);
+    } catch (err) {
+      dailyError.textContent = err.message || "请求失败, 请检查后端服务。";
+      dailyError.classList.remove("hidden");
+    }
+  }
+
+  dailyForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const payload = {
+      ts_codes: "",
+      industry: $("#daily_industry").value.trim(),
+      limit: parseInt($("#daily_limit").value, 10) || 0,
+      objective: $("#daily_objective").value,
+      max_trades: parseInt($("#daily_max_trades").value, 10) || 100,
+      start_date: $("#daily_start").value.trim() || "20170101",
+      end_date: $("#daily_end").value.trim(),
+      use_cache: true,
+    };
+    runDailyScan(payload);
+  });
+
+  // 表格表头点击排序
+  dailyTable.querySelectorAll("th[data-key]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      if (dailySort.key === key) {
+        dailySort.order = dailySort.order === "asc" ? "desc" : "asc";
+      } else {
+        dailySort.key = key;
+        dailySort.order = "desc";
+      }
+      _renderDailyTable();
+    });
+  });
+
+  dailyRefreshBtn.addEventListener("click", loadDailyRecommend);
 
   // 窗口尺寸变化时, 防抖自适应图表
   let resizeTimer = null;

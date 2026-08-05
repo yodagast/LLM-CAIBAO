@@ -8,6 +8,7 @@
   python scripts/estimate_band_params.py --industry 白酒          # 行业全部股票
   python scripts/estimate_band_params.py --industry 银行 --limit 20
   python scripts/estimate_band_params.py --objective drawdown --min-sharpe 1.2 --start 2020 --end 2025
+  python scripts/estimate_band_params.py --sort sharpe --order desc   # 结果排序 (默认按夏普降序)
   python scripts/estimate_band_params.py --csv band_params.csv    # 保存结果 CSV
 
 说明:
@@ -88,6 +89,22 @@ def print_row(row: dict) -> None:
           f"交易 {row['trades']:>3} 达标={'✅' if row['achieved'] else '❌'}")
 
 
+def _sort_rows(rows: list, sort: str, order: str) -> list:
+    """按指定字段排序结果 (数值/字符串/布尔自适应, order=asc/desc)。"""
+    if not sort:
+        return rows
+
+    def key(r: dict):
+        v = r.get(sort)
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, (int, float)):
+            return v
+        return str(v)
+
+    return sorted(rows, key=key, reverse=(order == "desc"))
+
+
 def main() -> None:
     _load_env()
     parser = argparse.ArgumentParser(description="区间交易参数估算 (复用区间交易 tab 逻辑)")
@@ -105,6 +122,10 @@ def main() -> None:
                         help="交易次数上限 (每笔=买入→卖出完整周期, 超限参数被淘汰; 默认100, 0=不限)")
     parser.add_argument("--csv", default="", help="结果 CSV 保存路径 (如 band_params.csv)")
     parser.add_argument("--sleep", type=float, default=0.0, help="每只标的间隔秒数")
+    parser.add_argument("--sort", default="",
+                        help="结果排序字段: " + ",".join(CSV_HEADERS) + " (如 sharpe/total_return_pct); 空=不排序")
+    parser.add_argument("--order", default="desc", choices=["asc", "desc"],
+                        help="排序方向 (默认 desc, 降序)")
     args = parser.parse_args()
 
     # max-trades: 0 表示不限制
@@ -132,10 +153,18 @@ def main() -> None:
             row = estimate_one(ts_code, args.capital, args.start, args.end,
                                args.objective, args.min_sharpe, max_trades, args.sleep)
             results.append(row)
-            print_row(row)
         except Exception as e:
             print(f"  ✗ {ts_code} 估算失败: {e}")
         print(f"  [{i}/{len(stocks)}] 完成, 累计 {(time.time() - t0):.0f}s")
+
+    # 排序 (输出 + CSV 一致)
+    if args.sort:
+        results = _sort_rows(results, args.sort, args.order)
+        print(f"已按 {args.sort} {args.order} 排序")
+
+    # 输出 (按排序后顺序)
+    for row in results:
+        print_row(row)
 
     # 汇总
     ok = sum(1 for r in results if r["achieved"])

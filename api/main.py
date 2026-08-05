@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import backtest_engine, band_service, caibao_service, data_service
+from . import backtest_engine, band_service, caibao_service, data_service, daily_recommend_service
 from . import fundamental_service, pg_service, redlowvol_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -35,6 +35,7 @@ def _startup() -> None:
         pg_service.init_schema()
         pg_service.init_fundamental_schema()
         pg_service.init_financial_schema()
+        pg_service.init_daily_rec_schema()
     except Exception:
         pass
 
@@ -105,6 +106,19 @@ class CaibaoRequest(BaseModel):
     start_year: int = Field(2022, ge=2000, le=2100, description="起始年份")
     end_year: int = Field(2024, ge=2000, le=2100, description="结束年份")
     use_llm: bool = Field(False, description="是否使用 LLM 深度分析 (默认 False=基于 TUSHARE 财报数据规则化分析; True 且 .env 配置了 API Key 时用 LLM)")
+
+
+class DailyRecRequest(BaseModel):
+    """每日公司推荐扫描请求。"""
+    ts_codes: str = Field("", description="指定代码(逗号分隔), 空=按行业或全市场")
+    industry: str = Field("", description="行业名称(东财分类), 空=全市场")
+    limit: int = Field(0, ge=0, le=20000, description="限制计算数量(0=不限, 全市场约5200只耗时数小时)")
+    objective: str = Field("balanced", description="优化目标")
+    min_sharpe: float = Field(1.0, ge=0, le=10, description="目标夏普下限")
+    max_trades: int = Field(100, ge=1, le=2000, description="交易次数上限")
+    start_date: str = Field("20170101", description="回测起始日期 YYYYMMDD")
+    end_date: str = Field("", description="回测结束日期 YYYYMMDD, 空=最新")
+    use_cache: bool = Field(True, description="行业扫描时若 pgsql 已有当天数据则直接读取(不重复计算)")
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +401,30 @@ def caibao_analyze(req: CaibaoRequest) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"财报分析失败: {e}")
     return result
+
+
+@app.post("/api/dailyrecommend/scan")
+def dailyrecommend_scan(req: DailyRecRequest) -> dict:
+    """每日推荐扫描: 批量估算区间交易参数并入库, 筛选 买入价>=当日收盘价 的公司。"""
+    try:
+        result = daily_recommend_service.scan_all(
+            codes=req.ts_codes, industry=req.industry, limit=req.limit,
+            objective=req.objective, min_sharpe=req.min_sharpe, max_trades=req.max_trades,
+            start_date=req.start_date, end_date=req.end_date, use_cache=req.use_cache)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"每日推荐扫描失败: {e}")
+    return result
+
+
+@app.get("/api/dailyrecommend/list")
+def dailyrecommend_list(calc_date: str = Query("", description="计算日 YYYYMMDD, 空=最近一天"),
+                        industry: str = Query("", description="行业名称(东财分类), 空=全部"),
+                        limit: int = Query(500, ge=1, le=2000)) -> dict:
+    """查询最近计算日的每日推荐 (buy_price >= close), 可按行业过滤。"""
+    try:
+        return daily_recommend_service.get_recommendations(calc_date, limit, industry)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取每日推荐失败: {e}")
 
 
 @app.post("/api/redlowvol/sync")

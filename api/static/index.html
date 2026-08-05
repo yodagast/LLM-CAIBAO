@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>选股回测系统</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=21" />
+  <link rel="stylesheet" href="/static/css/style.css?v=25" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -30,6 +30,7 @@
       <button type="button" class="tab" data-tab="redlowvol">💰 红利低波选股</button>
       <button type="button" class="tab" data-tab="band">🎯 区间交易</button>
       <button type="button" class="tab" data-tab="caibao">📚 财报分析</button>
+      <button type="button" class="tab" data-tab="daily">📅 每日推荐</button>
     </nav>
 
     <!-- ================= Tab: 策略回测 ================= -->
@@ -537,12 +538,91 @@
         </div>
       </section>
     </section>
+
+    <!-- ================= Tab: 每日推荐 ================= -->
+    <section id="tab-daily" class="hidden">
+      <section class="card form-card">
+        <div class="card-title">
+          <h2>每日公司推荐</h2>
+          <span class="hint">全市场区间交易参数估算, 筛选 买入价 ≥ 当日收盘价 的公司 (结果保存至 PostgreSQL)</span>
+        </div>
+        <form id="daily-form" autocomplete="off">
+          <div class="grid">
+            <div class="field">
+              <label for="daily_limit">计算数量 (0=全市场)</label>
+              <input type="number" id="daily_limit" value="0" min="0" max="20000" />
+            </div>
+            <div class="field field-suggest">
+              <label for="daily_industry">行业 (可选)</label>
+              <input type="text" id="daily_industry" placeholder="如 白酒 / 银行 / 煤炭, 空=全市场" autocomplete="off" />
+              <div class="ind-panel hidden" id="daily-ind-panel"></div>
+            </div>
+            <div class="field">
+              <label for="daily_objective">优化目标</label>
+              <select id="daily_objective">
+                <option value="balanced" selected>综合平衡</option>
+                <option value="return">收益优先</option>
+                <option value="sharpe">夏普优先</option>
+                <option value="drawdown">回撤最小</option>
+                <option value="calmar">卡玛优先</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="daily_max_trades">最大交易次数</label>
+              <input type="number" id="daily_max_trades" value="100" min="1" max="2000" />
+            </div>
+            <div class="field">
+              <label for="daily_start">起始日期 (可选)</label>
+              <input type="text" id="daily_start" value="20170101" placeholder="YYYYMMDD, 如 20200101" />
+            </div>
+            <div class="field">
+              <label for="daily_end">结束日期 (可选)</label>
+              <input type="text" id="daily_end" value="" placeholder="YYYYMMDD, 空=最新" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="daily-scan-btn">
+              <span class="btn-icon">📅</span> 扫描全市场
+            </button>
+            <button type="button" class="btn-ghost" id="daily-refresh-btn">↻ 刷新推荐</button>
+            <span class="range-hint" id="daily-hint"></span>
+          </div>
+        </form>
+      </section>
+
+      <div class="loading hidden" id="daily-loading">
+        <div class="spinner"></div>
+        <span>正在扫描全市场并估算参数…</span>
+      </div>
+      <div class="error hidden" id="daily-error"></div>
+
+      <section class="result hidden" id="daily-result">
+        <div class="result-head">
+          <h2 id="daily-title">每日公司推荐</h2>
+          <span class="hint" id="daily-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap" style="max-height:520px;overflow:auto;">
+            <table id="daily-table">
+              <thead>
+                <tr>
+                  <th data-key="ts_code">代码</th><th data-key="name">名称</th><th data-key="kind">类型</th><th data-key="close">收盘价</th>
+                  <th data-key="buy_price">买入价</th><th data-key="sell_price">卖出价</th><th data-key="stop_price">止损价</th>
+                  <th data-key="total_return">总收益</th><th data-key="sharpe">夏普</th><th data-key="trades">交易</th><th data-key="achieved">达标</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </section>
   </main>
 
   <footer class="footer">
     <span>单股四策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=21"></script>
+  <script src="/static/js/app.js?v=25"></script>
 </body>
 </html>

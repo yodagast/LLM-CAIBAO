@@ -463,3 +463,141 @@ def query_financial_by_code(ts_code: str, years: list[int]) -> list[dict]:
                 (ts_code, [int(y) for y in years]))
             rows = cur.fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# 每日区间交易推荐表 daily_band_recommend (全市场每日参数估算结果)
+# ---------------------------------------------------------------------------
+
+DAILY_REC_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS daily_band_recommend (
+    id             BIGSERIAL PRIMARY KEY,
+    calc_date      VARCHAR(16)  NOT NULL,    -- 计算/收盘日 YYYYMMDD
+    ts_code        VARCHAR(16)  NOT NULL,
+    name           VARCHAR(64)  DEFAULT '',
+    kind           VARCHAR(8)   DEFAULT 'stock',
+    close          DOUBLE PRECISION,        -- 当日收盘价 (前复权)
+    buy_price      DOUBLE PRECISION,
+    sell_price     DOUBLE PRECISION,
+    stop_price     DOUBLE PRECISION,
+    total_return   DOUBLE PRECISION,        -- 总收益率 %
+    annual_return  DOUBLE PRECISION,
+    max_drawdown   DOUBLE PRECISION,
+    sharpe         DOUBLE PRECISION,
+    calmar         DOUBLE PRECISION,
+    trades         INTEGER,
+    objective      VARCHAR(16)  DEFAULT 'balanced',
+    industry       VARCHAR(64)  DEFAULT '',   -- 东财行业 (如 白酒/银行), 用于按行业隔离
+    achieved       BOOLEAN      DEFAULT FALSE,  -- 夏普是否达标
+    updated_at     TIMESTAMP    DEFAULT now(),
+    UNIQUE (calc_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_dbr_date ON daily_band_recommend (calc_date);
+"""
+
+DAILY_REC_COLS = [
+    "calc_date", "ts_code", "name", "kind", "close",
+    "buy_price", "sell_price", "stop_price",
+    "total_return", "annual_return", "max_drawdown", "sharpe", "calmar",
+    "trades", "objective", "industry", "achieved",
+]
+
+_DR_UPSERT_SQL = f"""
+INSERT INTO daily_band_recommend ({", ".join(DAILY_REC_COLS)})
+VALUES ({", ".join("%(" + c + ")s" for c in DAILY_REC_COLS)})
+ON CONFLICT (calc_date, ts_code) DO UPDATE SET
+{", ".join(f"{c} = EXCLUDED.{c}" for c in DAILY_REC_COLS if c not in ("calc_date", "ts_code"))},
+updated_at = now();
+"""
+
+
+def init_daily_rec_schema() -> None:
+    """创建 daily_band_recommend 表与索引 (幂等), 旧表自动补 industry 列。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(DAILY_REC_SCHEMA_DDL)
+            # 旧表迁移: 补 industry 列
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'daily_band_recommend' AND column_name = 'industry'
+            """)
+            if cur.fetchone() is None:
+                cur.execute("ALTER TABLE daily_band_recommend ADD COLUMN industry VARCHAR(64) DEFAULT ''")
+        conn.commit()
+
+
+def upsert_daily_rec_rows(rows: list[dict]) -> int:
+    """按 (calc_date, ts_code) upsert 写入每日推荐, 返回行数。"""
+    if not rows:
+        return 0
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for r in rows:
+                cur.execute(_DR_UPSERT_SQL, {c: r.get(c) for c in DAILY_REC_COLS})
+        conn.commit()
+    return len(rows)
+
+
+def has_daily_rec(calc_date: str, industry: str = "") -> int:
+    """统计某计算日 (可选行业) 已入库的每日推荐行数; 用于缓存命中判断。"""
+    if not calc_date:
+        return 0
+    sql = "SELECT COUNT(*) FROM daily_band_recommend WHERE calc_date = %s"
+    params: list = [calc_date]
+    if industry.strip():
+        sql += " AND industry LIKE %s"
+        params.append(f"%{industry.strip()}%")
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return int(cur.fetchone()[0] or 0)
+
+
+def backfill_daily_rec_industry(ts_code_industry: dict) -> int:
+    """回填 daily_band_recommend 中 industry 为空的行 (按 ts_code 映射), 返回更新行数。"""
+    if not ts_code_industry:
+        return 0
+    n = 0
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, ts_code FROM daily_band_recommend "
+                        "WHERE industry IS NULL OR industry = ''")
+            for row_id, ts_code in cur.fetchall():
+                ind = ts_code_industry.get(str(ts_code), "")
+                if ind:
+                    cur.execute("UPDATE daily_band_recommend SET industry=%s WHERE id=%s",
+                                (ind, row_id))
+                    n += 1
+        conn.commit()
+    return n
+
+
+def latest_calc_date() -> str:
+    """最近一次计算的 calc_date。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT max(calc_date) FROM daily_band_recommend;")
+            return str(cur.fetchone()[0] or "")
+
+
+def query_daily_recommend(calc_date: str | None = None, buy_above_close: bool = True,
+                          limit: int = 500, industry: str = "") -> list[dict]:
+    """查询某计算日的推荐 (buy_price >= close), 按 close 降序; industry 非空时按行业子串过滤。"""
+    if not calc_date:
+        calc_date = latest_calc_date()
+    if not calc_date:
+        return []
+    sql = "SELECT * FROM daily_band_recommend WHERE calc_date = %s"
+    params: list = [calc_date]
+    if buy_above_close:
+        sql += " AND buy_price >= close"
+    if industry.strip():
+        sql += " AND industry LIKE %s"
+        params.append(f"%{industry.strip()}%")
+    sql += " ORDER BY close DESC LIMIT %s"
+    params.append(int(limit))
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]

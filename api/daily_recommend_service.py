@@ -17,20 +17,14 @@ import time
 from . import band_service, data_service, pg_service
 
 
-def _all_stocks(limit: int = 0, include_funds: bool = False) -> list:
-    """全市场沪深 A 股 + 可选 ETF 列表 [(ts_code, name)]。"""
-    stocks: list = []
+def _all_stocks(limit: int = 0) -> list:
+    """全市场沪深 A 股列表 [(ts_code, name)]。"""
     df = data_service._stock_basic()
     df = df[df["ts_code"].astype(str).str.endswith((".SH", ".SZ"))]
     df = df.sort_values("ts_code")
-    stocks.extend((str(r["ts_code"]), str(r["name"])) for _, r in df.iterrows())
-    if include_funds:
-        f = data_service._fund_basic()
-        f = f.sort_values("ts_code")
-        stocks.extend((str(r["ts_code"]), str(r["name"])) for _, r in f.iterrows())
     if limit and limit > 0:
-        stocks = stocks[:limit]
-    return stocks
+        df = df.head(limit)
+    return [(str(r["ts_code"]), str(r["name"])) for _, r in df.iterrows()]
 
 
 def _industry_stocks(industry: str, limit: int = 0) -> list:
@@ -73,13 +67,15 @@ def scan_all(codes: str = "", industry: str = "", limit: int = 0,
              objective: str = "balanced", min_sharpe: float = 1.0,
              max_trades: int | None = 100, sleep: float = 0.0,
              start_date: str = "20170101", end_date: str = "",
-             use_cache: bool = True, include_funds: bool = False) -> dict:
+             use_cache: bool = True, skip_existing: bool = False,
+             batch: int = 0) -> dict:
     """批量估算区间交易参数并入库, 返回筛选结果 (buy_price >= close)。
 
     codes: 逗号分隔代码 (空则用 industry 或全市场); limit: 0=不限(全市场约5200只, 耗时数小时)。
     start_date/end_date: 回测历史区间 (YYYYMMDD, end 空=最新)。
     use_cache: 行业扫描时若 pgsql 已有当天(calc_date)+该行业数据则直接读取, 不重复计算。
-    include_funds: 全市场扫描时同时包含 ETF/基金 (来自 fund_basic)。
+    skip_existing: 续跑模式, 跳过该 calc_date 已入库的标的 (中断后可续跑)。
+    batch: >0 时分批 upsert 入库 (每 batch 只一次), 中断时已入库数据不丢。
     """
     pg_service.init_daily_rec_schema()
     # 缓存命中: 行业扫描 + 默认区间(20170101~最新) + pgsql 已有当天该行业数据 → 直接读库
@@ -107,12 +103,26 @@ def scan_all(codes: str = "", industry: str = "", limit: int = 0,
     elif industry:
         stocks = _industry_stocks(industry, limit)
     else:
-        stocks = _all_stocks(limit, include_funds=include_funds)
-    ind_map = _stock_industry_map() if industry else {}
+        stocks = _all_stocks(limit)
+    ind_map = _stock_industry_map()  # 总是构建: 全市场扫描也写入行业
+
+    # 续跑: 跳过该 calc_date 已入库的标的
+    skipped = 0
+    if skip_existing:
+        cur = _probe_trade_date()
+        if cur:
+            done = set(pg_service.daily_rec_done_codes(cur))
+            before = len(stocks)
+            stocks = [s for s in stocks if s[0] not in done]
+            skipped = before - len(stocks)
+            if skipped:
+                print(f"续跑: 该计算日已入库 {len(done)} 只, 跳过 {skipped} 只, 待计算 {len(stocks)} 只")
 
     rows: list[dict] = []
+    recommends: list[dict] = []
     calc_date = None
     ok = fail = 0
+    stored = 0
     for i, (ts_code, _n) in enumerate(stocks, 1):
         try:
             info = data_service.resolve_code(ts_code)
@@ -153,20 +163,30 @@ def scan_all(codes: str = "", industry: str = "", limit: int = 0,
             print(f"  ✗ {ts_code} 估算失败: {e}")
         if sleep and sleep > 0:
             time.sleep(sleep)
+        # 分块入库: 每 batch 只 flush 一次, 中断不丢已算数据
+        if batch and batch > 0 and len(rows) >= batch:
+            stored += pg_service.upsert_daily_rec_rows(rows)
+            for r in rows:
+                if r["buy_price"] is not None and r["close"] is not None \
+                        and r["buy_price"] >= r["close"]:
+                    recommends.append(r)
+            rows = []
         if i % 200 == 0:
             print(f"  已处理 {i}/{len(stocks)} ...")
 
-    stored = pg_service.upsert_daily_rec_rows(rows) if rows else 0
+    stored += pg_service.upsert_daily_rec_rows(rows) if rows else 0
     # 筛选: 买入价 >= 当日收盘价 (不低于)
-    recommends = [r for r in rows
-                  if r["buy_price"] is not None and r["close"] is not None
-                  and r["buy_price"] >= r["close"]]
+    for r in rows:
+        if r["buy_price"] is not None and r["close"] is not None \
+                and r["buy_price"] >= r["close"]:
+            recommends.append(r)
     return {
         "calc_date": calc_date,
         "scanned": len(stocks),
         "ok": ok,
         "fail": fail,
         "stored": stored,
+        "skipped": skipped,
         "start_date": start_date,
         "end_date": end_date or "",
         "recommend_count": len(recommends),

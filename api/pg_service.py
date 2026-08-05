@@ -553,6 +553,17 @@ def has_daily_rec(calc_date: str, industry: str = "") -> int:
             return int(cur.fetchone()[0] or 0)
 
 
+def daily_rec_done_codes(calc_date: str) -> list:
+    """某计算日已入库的 ts_code 列表 (用于全市场续跑跳过)。"""
+    if not calc_date:
+        return []
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT ts_code FROM daily_band_recommend WHERE calc_date = %s",
+                        (calc_date,))
+            return [str(r[0]) for r in cur.fetchall()]
+
+
 def backfill_daily_rec_industry(ts_code_industry: dict) -> int:
     """回填 daily_band_recommend 中 industry 为空的行 (按 ts_code 映射), 返回更新行数。"""
     if not ts_code_industry:

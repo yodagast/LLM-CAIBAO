@@ -341,3 +341,125 @@ def query_fundamental(industry: str, years: list[int], sort_by: str = "roe",
             cur.execute(sql, params)
             rows = cur.fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# 财务数据表 financial_data (tushare 年报核心指标, 供财报分析)
+# ---------------------------------------------------------------------------
+
+FINANCIAL_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS financial_data (
+    id                    BIGSERIAL PRIMARY KEY,
+    ts_code               VARCHAR(16)  NOT NULL,
+    name                  VARCHAR(64)  DEFAULT '',
+    year                  INTEGER      NOT NULL,
+    end_date              VARCHAR(16)  DEFAULT '',
+    -- 比率 (tushare fina_indicator 原值)
+    roe                   DOUBLE PRECISION,   -- ROE %
+    net_margin            DOUBLE PRECISION,   -- 净利润率 %
+    gross_margin          DOUBLE PRECISION,   -- 毛利率 %
+    debt_to_assets        DOUBLE PRECISION,   -- 资产负债率 %
+    current_ratio         DOUBLE PRECISION,   -- 流动比率
+    quick_ratio           DOUBLE PRECISION,   -- 速动比率
+    assets_turn           DOUBLE PRECISION,   -- 总资产周转率
+    equity_multiplier     DOUBLE PRECISION,   -- 权益乘数
+    ar_turn               DOUBLE PRECISION,   -- 应收账款周转率
+    inv_turn              DOUBLE PRECISION,   -- 存货周转率
+    or_yoy                DOUBLE PRECISION,   -- 营收同比 %
+    netprofit_yoy         DOUBLE PRECISION,   -- 净利同比 %
+    cash_ratio            DOUBLE PRECISION,   -- 净现比 = 经营现金流/净利润
+    -- 金额 (亿元, 由元 /1e8)
+    total_revenue         DOUBLE PRECISION,
+    operate_cost          DOUBLE PRECISION,
+    n_income              DOUBLE PRECISION,
+    sell_exp              DOUBLE PRECISION,
+    admin_exp             DOUBLE PRECISION,
+    fin_exp               DOUBLE PRECISION,
+    rd_exp                DOUBLE PRECISION,
+    total_assets          DOUBLE PRECISION,
+    total_cur_assets      DOUBLE PRECISION,
+    money_cap             DOUBLE PRECISION,
+    accounts_receiv       DOUBLE PRECISION,
+    inventory             DOUBLE PRECISION,
+    fixed_assets          DOUBLE PRECISION,
+    contract_liab         DOUBLE PRECISION,
+    total_liab            DOUBLE PRECISION,
+    total_cur_liab        DOUBLE PRECISION,
+    ocf                   DOUBLE PRECISION,   -- 经营现金流净额 (亿)
+    icf                   DOUBLE PRECISION,   -- 投资现金流净额 (亿)
+    fncf                  DOUBLE PRECISION,   -- 筹资现金流净额 (亿)
+    -- 估值 (最新快照)
+    close                 DOUBLE PRECISION,
+    pe_ttm                DOUBLE PRECISION,
+    pb                    DOUBLE PRECISION,
+    dv_ratio              DOUBLE PRECISION,
+    total_mv              DOUBLE PRECISION,
+    updated_at            TIMESTAMP    DEFAULT now(),
+    UNIQUE (ts_code, year)
+);
+CREATE INDEX IF NOT EXISTS idx_fin_data_code_year ON financial_data (ts_code, year);
+"""
+
+FINANCIAL_COLS = [
+    "ts_code", "name", "year", "end_date",
+    "roe", "net_margin", "gross_margin", "debt_to_assets",
+    "current_ratio", "quick_ratio", "assets_turn", "equity_multiplier",
+    "ar_turn", "inv_turn", "or_yoy", "netprofit_yoy", "cash_ratio",
+    "total_revenue", "operate_cost", "n_income", "sell_exp", "admin_exp",
+    "fin_exp", "rd_exp", "total_assets", "total_cur_assets", "money_cap",
+    "accounts_receiv", "inventory", "fixed_assets", "contract_liab",
+    "total_liab", "total_cur_liab", "ocf", "icf", "fncf",
+    "close", "pe_ttm", "pb", "dv_ratio", "total_mv",
+]
+
+_FIN_UPSERT_SQL = f"""
+INSERT INTO financial_data ({", ".join(FINANCIAL_COLS)})
+VALUES ({", ".join("%(" + c + ")s" for c in FINANCIAL_COLS)})
+ON CONFLICT (ts_code, year) DO UPDATE SET
+{", ".join(f"{c} = EXCLUDED.{c}" for c in FINANCIAL_COLS if c not in ("ts_code", "year"))},
+updated_at = now();
+"""
+
+
+def init_financial_schema() -> None:
+    """创建 financial_data 表与索引 (幂等)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(FINANCIAL_SCHEMA_DDL)
+        conn.commit()
+
+
+def upsert_financial_rows(rows: list[dict]) -> int:
+    """按 (ts_code, year) upsert 写入财务数据, 返回行数。"""
+    if not rows:
+        return 0
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for r in rows:
+                cur.execute(_FIN_UPSERT_SQL, {c: r.get(c) for c in FINANCIAL_COLS})
+        conn.commit()
+    return len(rows)
+
+
+def has_financial(ts_code: str, year: int) -> bool:
+    """该股票该年份是否已有财务数据。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM financial_data WHERE ts_code=%s AND year=%s LIMIT 1;",
+                        (ts_code, int(year)))
+            return cur.fetchone() is not None
+
+
+def query_financial_by_code(ts_code: str, years: list[int]) -> list[dict]:
+    """查询某股票多年财务数据 (年报)。"""
+    if not years:
+        return []
+    cols = ", ".join(FINANCIAL_COLS)
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"SELECT {cols} FROM financial_data "
+                "WHERE ts_code=%s AND year = ANY(%s) ORDER BY year;",
+                (ts_code, [int(y) for y in years]))
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]

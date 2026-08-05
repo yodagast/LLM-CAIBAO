@@ -25,7 +25,7 @@ import pdfplumber
 import requests
 from bs4 import BeautifulSoup
 
-from . import data_service
+from . import data_service, pg_service
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PDF_ROOT = PROJECT_ROOT / "pdf" / "caibao"
@@ -607,8 +607,8 @@ def _skill_prompt() -> str:
     return "你是一位专业财务分析师, 请对给定的公司财报数据进行分析。"
 
 
-def analyze_llm(info: dict, financials: dict, report_text: str, valuation: dict) -> str:
-    """用 LLM 生成深度分析报告。"""
+def analyze_llm(info: dict, financials: dict, valuation: dict) -> str:
+    """用 LLM 生成深度分析报告 (仅基于 tushare 财务指标, 不依赖 PDF)。"""
     y0 = min(financials.keys()) if financials else ""
     y1 = max(financials.keys()) if financials else ""
     name = info.get("name", "")
@@ -627,8 +627,7 @@ def analyze_llm(info: dict, financials: dict, report_text: str, valuation: dict)
         f"请对上市公司 {name}（{code}）{y0}~{y1} 年度财务报告进行深度分析。\n\n"
         f"## 公司信息\n名称: {name}\n代码: {code}\n行业: {info.get('industry','—')}\n"
         f"最新估值: {valuation if valuation else '暂无'}\n\n"
-        f"## tushare 年度财务指标\n```\n{fin_table}\n```\n\n"
-        f"## 财报原文摘录 (PDF 提取, 可能截断)\n```\n{report_text[:180000]}\n```\n\n"
+        f"## tushare 年度财务指标 (tushare 年报口径, 金额单位: 亿元, 比率: %)\n```\n{fin_table}\n```\n\n"
         "请严格按照上述 skill 的输出格式要求 (1 执行摘要 … 8 投资建议) 生成 Markdown 报告, "
         "务必基于给定数据, 严禁编造数字。"
     )
@@ -636,34 +635,125 @@ def analyze_llm(info: dict, financials: dict, report_text: str, valuation: dict)
 
 
 # ---------------------------------------------------------------------------
+# 5.5) tushare 财务数据入库 / 查询 (pgsql financial_data 表)
+# ---------------------------------------------------------------------------
+
+# financials 指标 key (collect_financials 输出) → financial_data 表列名
+FIN_PG_MAP = {
+    "total_revenue_亿": "total_revenue", "oper_cost_亿": "operate_cost",
+    "net_income_亿": "n_income", "gross_margin_%": "gross_margin",
+    "net_margin_%": "net_margin", "roe_%": "roe", "or_yoy_%": "or_yoy",
+    "netprofit_yoy_%": "netprofit_yoy", "sell_exp_亿": "sell_exp",
+    "admin_exp_亿": "admin_exp", "fin_exp_亿": "fin_exp", "rd_exp_亿": "rd_exp",
+    "total_assets_亿": "total_assets", "total_cur_assets_亿": "total_cur_assets",
+    "money_cap_亿": "money_cap", "accounts_receiv_亿": "accounts_receiv",
+    "inventory_亿": "inventory", "fixed_assets_亿": "fixed_assets",
+    "contract_liab_亿": "contract_liab", "total_liab_亿": "total_liab",
+    "total_cur_liab_亿": "total_cur_liab", "debt_to_assets_%": "debt_to_assets",
+    "current_ratio": "current_ratio", "quick_ratio": "quick_ratio",
+    "ar_turn": "ar_turn", "inv_turn": "inv_turn",
+    "assets_turn": "assets_turn", "equity_multiplier": "equity_multiplier",
+    "ocf_亿": "ocf", "icf_亿": "icf", "fcf_亿": "fncf", "净现比": "cash_ratio",
+}
+FIN_KEY_BY_PG = {v: k for k, v in FIN_PG_MAP.items()}
+
+# 估值快照: financials 估值 dict key → 表列名
+_VAL_PG_MAP = {
+    "close": "close", "pe_ttm": "pe_ttm", "pb": "pb",
+    "dv_ratio_%": "dv_ratio", "total_mv_亿": "total_mv",
+}
+
+
+def financials_to_rows(ts_code: str, name: str, financials: dict,
+                       valuation: dict | None = None) -> list[dict]:
+    """collect_financials 结果 → financial_data 入库行。"""
+    rows = []
+    for y, d in financials.items():
+        row = {"ts_code": ts_code, "name": name, "year": int(y), "end_date": ""}
+        for fin_key, pg_col in FIN_PG_MAP.items():
+            v = d.get(fin_key)
+            row[pg_col] = None if v is None or v != v else float(v)
+        if valuation:
+            for vk, pg in _VAL_PG_MAP.items():
+                row[pg] = valuation.get(vk)
+        rows.append(row)
+    return rows
+
+
+def rows_to_financials(rows: list[dict]) -> dict:
+    """financial_data 查询行 → collect_financials 同结构的 {year: 指标}。"""
+    financials: dict = {}
+    for r in rows:
+        y = int(r.get("year") or 0)
+        if not y:
+            continue
+        d = {"year": y}
+        for fin_key, pg_col in FIN_PG_MAP.items():
+            d[fin_key] = r.get(pg_col)
+        financials[y] = d
+    return financials
+
+
+def sync_stock_financial(ts_code: str, years: list[int]) -> int:
+    """拉取 tushare 财务数据并入库 financial_data (幂等 upsert), 返回入库行数。"""
+    financials = collect_financials(ts_code, years)
+    if not financials:
+        return 0
+    try:
+        info = data_service.resolve_code(ts_code)
+        name = info.get("name", ts_code.split(".")[0])
+    except Exception:
+        name = ts_code.split(".")[0]
+    valuation = _latest_valuation(ts_code)
+    rows = financials_to_rows(ts_code, name, financials, valuation)
+    return pg_service.upsert_financial_rows(rows)
+
+
+def ensure_financials(ts_code: str, years: list[int]) -> tuple[dict, dict]:
+    """确保 financial_data 已有该股票年份数据 (缺失自动拉取 tushare 入库)。
+
+    返回 (financials, valuation): financials 为 {year: 指标} 结构, valuation 为最新估值。
+    """
+    pg_service.init_financial_schema()
+    missing = [y for y in years if not pg_service.has_financial(ts_code, y)]
+    if missing:
+        print(f"  [pgsql] {ts_code} 缺少年份 {missing}, 自动同步 tushare 财务数据入库...")
+        sync_stock_financial(ts_code, missing)
+    rows = pg_service.query_financial_by_code(ts_code, years)
+    financials = rows_to_financials(rows)
+    valuation = {}
+    if rows:
+        last = rows[-1]
+        valuation = {vk: last.get(pg) for vk, pg in _VAL_PG_MAP.items()}
+    return financials, valuation
+
+
+# ---------------------------------------------------------------------------
 # 6) 主入口
 # ---------------------------------------------------------------------------
 
 def analyze(ts_code: str, start_year: int, end_year: int,
-            use_llm: bool = True, save_dir: Path | None = None) -> dict:
-    """下载财报 + 分析, 返回 {meta, files, financials, markdown, llm_used, report_path}。"""
+            use_llm: bool = False, save_dir: Path | None = None) -> dict:
+    """基于 tushare 财报数据 (存 pgsql) 生成分析报告, 不依赖 PDF 下载。
+
+    返回 {info, source, financials, valuation, markdown, llm_used, report_path, range}。
+    """
     info = data_service.resolve_code(ts_code)
     ts = info["ts_code"]  # 带后缀, tushare 接口需要 (如 600036.SH)
     if end_year < start_year:
         start_year, end_year = end_year, start_year
     years = list(range(start_year, end_year + 1))
 
-    # 1) 下载
-    files = download_reports(ts, years, save_dir)
+    # 财务数据 (pgsql 优先, 缺失自动同步 tushare 入库)
+    financials, valuation = ensure_financials(ts, years)
+    if not financials:
+        raise ValueError(f"未能获取 {info['name']} 的财务数据, 请检查年份范围。")
 
-    # 3) 财务指标
-    financials = collect_financials(ts, years)
-    valuation = _latest_valuation(ts)
-
-    # 4) 分析
-    #    - TUSHARE 规则化分析 (默认): 只用 tushare 指标, 无需提取 PDF 文本 (快)
-    #    - LLM 分析: 才需要提取 PDF 文本
+    # 分析
     llm_used = False
-    if use_llm and llm_available() and files:
+    if use_llm and llm_available():
         try:
-            report_text = "\n\n=====\n\n".join(
-                f"[{f['year']}年报 {f['title']}]\n" + extract_pdf_text(f["path"]) for f in files)
-            markdown = analyze_llm(info, financials, report_text, valuation)
+            markdown = analyze_llm(info, financials, valuation)
             llm_used = True
         except Exception as e:
             print(f"LLM 分析失败, 回退规则化: {e}")
@@ -671,7 +761,7 @@ def analyze(ts_code: str, start_year: int, end_year: int,
     else:
         markdown = analyze_rule_based(info, financials, valuation)
 
-    # 5) 保存报告
+    # 保存报告
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     symbol = ts.split(".")[0]
     report_path = REPORT_DIR / f"{info.get('name', symbol)}-{symbol}_财报分析_{start_year}_{end_year}.md"
@@ -679,7 +769,7 @@ def analyze(ts_code: str, start_year: int, end_year: int,
 
     return {
         "info": info,
-        "files": files,
+        "source": "tushare",
         "financials": financials,
         "valuation": valuation,
         "markdown": markdown,

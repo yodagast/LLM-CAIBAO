@@ -34,6 +34,7 @@ def _startup() -> None:
     try:
         pg_service.init_schema()
         pg_service.init_fundamental_schema()
+        pg_service.init_financial_schema()
     except Exception:
         pass
 

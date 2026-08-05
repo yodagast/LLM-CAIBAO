@@ -1212,14 +1212,14 @@
     caibaoResult.classList.remove("hidden");
     $("#caibao-title").textContent = `${data.info.name} (${data.info.ts_code}) · 财报分析`;
     $("#caibao-sub").textContent =
-      `${data.range.start}~${data.range.end} 年 · ${data.files.length} 份年报 PDF · ` +
-      (data.llm_used ? "🤖 LLM 深度分析" : "📊 规则化分析");
+      `${data.range.start}~${data.range.end} 年 · ` +
+      (data.llm_used ? "🤖 LLM 深度分析" : "📊 TUSHARE 财报数据分析");
     $("#caibao-meta").textContent = data.llm_used
       ? "基于财报分析框架由大模型生成, 仅供参考"
-      : "基于财务指标的规则化分析, 仅供参考";
+      : "基于 tushare 财务指标, 仅供参考";
     $("#caibao-report").innerHTML = marked.parse(data.markdown || "");
     $("#caibao-hint").textContent =
-      `已下载 ${data.files.length} 份年报 → ${(data.files[0] && data.files[0].path.split("pdf/caibao/")[1] || "").split("/")[0] || "pdf/caibao/"}`;
+      `数据来源: tushare · 已保存至本地 PostgreSQL (financial_data 表)`;
     $("#caibao-download").onclick = () =>
       downloadMarkdown(data.markdown || "", `${data.info.name}-${data.info.ts_code.split(".")[0]}_财报分析.md`);
     caibaoResult.scrollIntoView({ behavior: "smooth", block: "start" });

@@ -474,7 +474,7 @@
       <section class="card form-card">
         <div class="card-title">
           <h2>财报分析</h2>
-          <span class="hint">输入股票代码与年份区间, 系统基于 tushare 财务数据生成分析报告并保存到本地数据库</span>
+          <span class="hint">输入股票代码与年份区间, 系统下载年报 PDF 并基于财报分析框架生成分析报告</span>
         </div>
         <form id="caibao-form" autocomplete="off">
           <div class="grid">
@@ -492,10 +492,17 @@
               <label for="caibao_end_year">结束年份 <em>*</em></label>
               <input type="number" id="caibao_end_year" value="2024" min="2000" max="2100" required />
             </div>
+            <div class="field">
+              <label for="caibao_use_llm">分析方式</label>
+              <select id="caibao_use_llm">
+                <option value="false" selected>基于 TUSHARE 财报数据分析 (默认)</option>
+                <option value="true">基于 LLM 深度分析 (需 .env 配置 API Key)</option>
+              </select>
+            </div>
           </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary" id="caibao-btn">
-              <span class="btn-icon">📚</span> 生成分析
+              <span class="btn-icon">📚</span> 下载并分析
             </button>
             <span class="range-hint" id="caibao-hint"></span>
           </div>

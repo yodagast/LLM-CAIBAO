@@ -34,7 +34,6 @@ def _startup() -> None:
     try:
         pg_service.init_schema()
         pg_service.init_fundamental_schema()
-        pg_service.init_financial_schema()
     except Exception:
         pass
 
@@ -98,10 +97,11 @@ class BandOptimizeRequest(BaseModel):
 
 
 class CaibaoRequest(BaseModel):
-    """财报分析请求 (基于 tushare 财务数据)。"""
+    """财报分析请求。"""
     ts_code: str = Field(..., description="股票代码, 如 600036.SH 或 600036")
     start_year: int = Field(2022, ge=2000, le=2100, description="起始年份")
     end_year: int = Field(2024, ge=2000, le=2100, description="结束年份")
+    use_llm: bool = Field(False, description="是否使用 LLM 深度分析 (默认 False=基于 TUSHARE 财报数据规则化分析; True 且 .env 配置了 API Key 时用 LLM)")
 
 
 # ---------------------------------------------------------------------------
@@ -374,9 +374,10 @@ def band_optimize(req: BandOptimizeRequest) -> dict:
 
 @app.post("/api/caibao/analyze")
 def caibao_analyze(req: CaibaoRequest) -> dict:
-    """财报分析: 基于 tushare 财务数据 (数据保存到 PG), 生成分析报告。"""
+    """财报分析: 下载年报 PDF + 提取 + 指标计算 + 生成分析报告 (LLM/规则化)。"""
     try:
-        result = caibao_service.analyze(req.ts_code, req.start_year, req.end_year)
+        result = caibao_service.analyze(
+            req.ts_code, req.start_year, req.end_year, use_llm=req.use_llm)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

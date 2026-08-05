@@ -15,7 +15,7 @@
   - 指数退避重试 (网络错误 / 非 200 / 非 PDF 头), 上限由 --max-retries 控制
   - 下载后校验 %PDF 文件头, 无效则丢弃重试
   - 支持代理: 设置 HTTP_PROXY / HTTPS_PROXY 环境变量即可
-  - 断点续跑: 已存在的 PDF 自动跳过
+  - 断点续跑: 按年份通配符检查已下载的有效 PDF 并跳过 (校验 %PDF 头与大小, 损坏自动重下)
 
 输出目录: pdf/财报下载/{股票名称}-{代码}/ (可用 --save-dir 修改)
 """
@@ -249,6 +249,27 @@ def get_stock_list(industry: str = "", limit: int = 0) -> list[tuple]:
 # 主流程
 # ---------------------------------------------------------------------------
 
+MIN_PDF_SIZE = 100 * 1024  # 有效 PDF 最小字节数, 低于此视为损坏/不完整
+
+
+def find_existing_pdf(stock_dir: Path, symbol: str, year: int) -> Path | None:
+    """检查该股票某年份是否已有有效的年报 PDF。
+
+    按 `{symbol}_{year}_*.pdf` 通配符匹配 (新浪标题变化也能识别已下载文件),
+    并校验文件头 `%PDF` 与最小大小; 损坏/不完整的旧文件自动删除以便重新下载。
+    """
+    for f in stock_dir.glob(f"{symbol}_{year}_*.pdf"):
+        try:
+            if f.stat().st_size >= MIN_PDF_SIZE and b"%PDF" in f.read_bytes()[:1024]:
+                return f
+            # 损坏 / 不完整: 删除, 让后续重新下载
+            f.unlink()
+            print(f"    [检查] 检测到损坏文件, 已删除待重下: {f.name}")
+        except OSError:
+            pass
+    return None
+
+
 def download_one(fetcher: Fetcher, ts_code: str, name: str, years: list[int],
                  save_dir: Path, stats: dict) -> None:
     symbol = ts_code.split(".")[0]
@@ -266,8 +287,10 @@ def download_one(fetcher: Fetcher, ts_code: str, name: str, years: list[int],
     for year, detail_url, title in pdf_links:
         safe_title = re.sub(r"[\\/:*?\"<>|]", "_", title)
         save_path = stock_dir / f"{symbol}_{year}_{safe_title}.pdf"
-        if save_path.exists() and save_path.stat().st_size > 0:
-            print(f"  [{year}] {title} - 已存在, 跳过")
+        # 增强: 按年份检查是否已有有效 PDF (标题变化也能识别; 损坏文件被删除后重下)
+        existing = find_existing_pdf(stock_dir, symbol, year)
+        if existing is not None:
+            print(f"  [{year}] 已存在有效年报, 跳过: {existing.name[:44]}")
             stats["skipped"] += 1
             continue
         pdf_url = detail_pdf_url(fetcher, detail_url)
@@ -311,13 +334,23 @@ def main() -> None:
 
     # 股票列表
     if args.codes:
+        # 补全股票名称 (用于输出目录 {名称}-{代码})
+        import tushare as ts
+        ts.set_token(os.getenv("TUSHARE_TOKEN", ""))
+        pro = ts.pro_api()
+        try:
+            _df = pro.stock_basic(list_status="L", fields="ts_code,name")
+            name_map = {str(r["ts_code"]): str(r["name"]) for _, r in _df.iterrows()}
+        except Exception:
+            name_map = {}
         stocks = []
         for c in args.codes.split(","):
             c = c.strip()
             if not c:
                 continue
             sym = c.split(".")[0]
-            stocks.append((c if "." in c else f"{sym}.{'SH' if sym.startswith('6') else 'SZ'}", sym))
+            ts_code = c if "." in c else f"{sym}.{'SH' if sym.startswith('6') else 'SZ'}"
+            stocks.append((ts_code, name_map.get(ts_code, sym)))
     else:
         stocks = get_stock_list(args.industry, args.limit)
     if not stocks:

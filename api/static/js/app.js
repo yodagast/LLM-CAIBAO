@@ -1161,7 +1161,6 @@
       ts_code: caibaoInput.value.trim(),
       start_year: parseInt($("#caibao_start_year").value, 10) || 2022,
       end_year: parseInt($("#caibao_end_year").value, 10) || 2024,
-      use_llm: $("#caibao_use_llm").value === "true",
     };
     if (!payload.ts_code) {
       caibaoError.textContent = "请输入股票代码。";
@@ -1212,14 +1211,12 @@
     caibaoResult.classList.remove("hidden");
     $("#caibao-title").textContent = `${data.info.name} (${data.info.ts_code}) · 财报分析`;
     $("#caibao-sub").textContent =
-      `${data.range.start}~${data.range.end} 年 · ${data.files.length} 份年报 PDF · ` +
-      (data.llm_used ? "🤖 LLM 深度分析" : "📊 规则化分析");
-    $("#caibao-meta").textContent = data.llm_used
-      ? "基于财报分析框架由大模型生成, 仅供参考"
-      : "基于财务指标的规则化分析, 仅供参考";
+      `${data.range.start}~${data.range.end} 年 · 📊 基于 tushare 财务数据分析`;
+    $("#caibao-meta").textContent =
+      `财务数据: 本次新增保存 ${data.saved || 0} 条 / 读取已有 ${data.from_pg || 0} 条 → 本地数据库 financial_data`;
     $("#caibao-report").innerHTML = marked.parse(data.markdown || "");
     $("#caibao-hint").textContent =
-      `已下载 ${data.files.length} 份年报 → ${(data.files[0] && data.files[0].path.split("pdf/caibao/")[1] || "").split("/")[0] || "pdf/caibao/"}`;
+      `报告已保存: ${(data.report_path || "").split("/").pop()}`;
     $("#caibao-download").onclick = () =>
       downloadMarkdown(data.markdown || "", `${data.info.name}-${data.info.ts_code.split(".")[0]}_财报分析.md`);
     caibaoResult.scrollIntoView({ behavior: "smooth", block: "start" });

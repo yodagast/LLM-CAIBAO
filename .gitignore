@@ -11,8 +11,10 @@ wheels/
 .venv
 .qoder
 *.csv
+*/*.md
 /pdf/*
-/csv/*ß
+/reports/*
+/csv/*
 *.ignore
 */*.csv
 */*.png

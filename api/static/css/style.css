@@ -147,6 +147,22 @@ body {
 .field-tip.ok { color: var(--green); }
 .field-tip.err { color: var(--red); }
 
+/* ---------- 行业候选推荐下拉 ---------- */
+.field-suggest { position: relative; }
+.ind-panel {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 60;
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow-lg); max-height: 260px; overflow-y: auto; margin-top: 4px;
+}
+.ind-item {
+  padding: 8px 12px; font-size: 13px; cursor: pointer;
+  display: flex; justify-content: space-between; align-items: center;
+  transition: background .12s;
+}
+.ind-item:hover { background: var(--primary-light); color: var(--primary-dark); }
+.ind-item .ind-count { color: var(--text-soft); font-size: 12px; }
+.ind-empty { padding: 10px 12px; font-size: 13px; color: var(--text-soft); }
+
 .form-actions {
   display: flex; align-items: center; gap: 14px;
   margin-top: 20px; flex-wrap: wrap;
@@ -245,6 +261,11 @@ tbody tr:hover { background: #f8fafc; }
 td.num { font-variant-numeric: tabular-nums; }
 td.pos { color: var(--green); }
 td.neg { color: var(--red); }
+.stock-link {
+  color: var(--primary); text-decoration: none; font-weight: 600;
+  border-bottom: 1px dashed rgba(79, 70, 229, .5);
+}
+.stock-link:hover { color: var(--primary-dark); border-bottom-style: solid; }
 .tag {
   display: inline-block; padding: 3px 10px; border-radius: 999px;
   font-size: 12px; font-weight: 600;

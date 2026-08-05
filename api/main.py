@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import backtest_engine, data_service
+from . import backtest_engine, band_service, data_service
 from . import fundamental_service, pg_service, redlowvol_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -66,7 +66,7 @@ class ScreenRequest(BaseModel):
     order: str = Field("desc", description="排序方向: asc / desc")
     filters: dict = Field(default_factory=dict,
                           description="筛选条件 {字段: {min: x, max: y}}, 如 {'roe': {'min': 15}, 'debt_to_assets': {'max': 60}}")
-    max_stocks: int = Field(500, ge=1, le=500, description="同步时最多扫描股票数(全市场时生效)")
+    max_stocks: int = Field(6000, ge=1, le=20000, description="最多扫描股票数(全市场时生效, 全市场约5536只)")
     limit: int = Field(1000, ge=1, le=2000, description="返回数量上限")
 
 
@@ -79,8 +79,21 @@ class RedLowVolRequest(BaseModel):
     order: str = Field("desc", description="排序方向: asc / desc")
     filters: dict = Field(default_factory=dict,
                           description="筛选条件 {字段: {min: x, max: y}}, 如 {'dividend_yield': {'min': 5}}")
-    max_stocks: int = Field(500, ge=1, le=500, description="同步时最多扫描股票数")
+    max_stocks: int = Field(6000, ge=1, le=20000, description="同步时最多扫描股票数(全市场约5536只)")
     limit: int = Field(500, ge=1, le=1000, description="返回数量上限")
+
+
+class BandOptimizeRequest(BaseModel):
+    """区间交易参数估算请求。"""
+    ts_code: str = Field(..., description="股票代码, 如 000858.SZ 或 000858")
+    start_date: str = Field("20170101", description="历史区间起始日期 YYYYMMDD")
+    end_date: str = Field("", description="历史区间结束日期 YYYYMMDD, 空=最新")
+    initial_capital: float = Field(100000.0, gt=0, description="初始资金")
+    min_sharpe: float = Field(1.0, ge=0, le=10, description="目标夏普比率下限")
+    objective: str = Field("return",
+                           description="优化目标: return 收益优先 / annual 年化收益优先 / "
+                                       "sharpe 夏普优先 / drawdown 回撤最小 / calmar 卡玛优先 / "
+                                       "balanced 综合平衡")
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +121,17 @@ def stock_search(keyword: str = Query("", description="代码或名称关键字"
     try:
         items = data_service.search_stock(keyword, limit)
     except Exception as e:  # token 未配置等
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"items": items}
+
+
+@app.get("/api/industry/search")
+def industry_search(keyword: str = Query("", description="行业关键字, 空=热门行业"),
+                    limit: int = Query(20, ge=1, le=50)) -> dict:
+    """行业模糊搜索: 返回匹配行业及股票数量 (前端候选推荐)。"""
+    try:
+        items = data_service.search_industries(keyword, limit)
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"items": items}
 
@@ -159,6 +183,59 @@ def quote(code: str, days: int = Query(120, ge=10, le=500)) -> dict:
     }
 
 
+@app.get("/api/stock/detail/{code}")
+def stock_detail(code: str, date: str = Query("", description="交易日 YYYYMMDD, 空=最新")) -> dict:
+    """股票详情: K线 + 行情快照(可指定日期) + 52周高低 + PB/PE/股本/市值 + 分红/股息率。"""
+    try:
+        info = data_service.resolve_code(code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
+
+    try:
+        detail = data_service.get_stock_detail(info["ts_code"], kind=info["kind"], date=date.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取股票详情失败: {e}")
+
+    # 补充行业 (resolve_code 不返回行业)
+    try:
+        stocks = data_service._stock_basic()
+        hit = stocks[stocks["ts_code"] == info["ts_code"]]
+        if not hit.empty:
+            info["industry"] = str(hit.iloc[0].get("industry") or "")
+    except Exception:
+        pass
+
+    return {"info": info, **detail}
+
+
+@app.get("/api/stock/kline/{code}")
+def stock_kline(code: str, freq: str = Query("D", description="周期: D日线/W周线/M月线"),
+                adj: str = Query("", description="复权: qfq前复权/hfq后复权/空不复权"),
+                start: str = Query("", description="起始日期 YYYYMMDD, 空=20年前"),
+                end: str = Query("", description="结束日期 YYYYMMDD, 空=最新")) -> dict:
+    """按周期+复权获取 K 线 (供详情页切换日/周/月与复权方式)。"""
+    try:
+        info = data_service.resolve_code(code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
+
+    try:
+        bars = data_service.get_kline(info["ts_code"], kind=info["kind"],
+                                      freq=freq, adj=adj, start_date=start, end_date=end)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取 K 线失败: {e}")
+
+    return {"info": info, "freq": freq, "adj": adj, "count": len(bars), "bars": bars}
+
+
 @app.post("/api/backtest")
 def backtest(req: BacktestRequest) -> dict:
     """运行单只股票四策略回测。"""
@@ -171,7 +248,8 @@ def backtest(req: BacktestRequest) -> dict:
 
     try:
         df = data_service.get_daily(info["ts_code"], kind=info["kind"],
-                                    start_date=req.start_date, end_date=req.end_date)
+                                    start_date=req.start_date, end_date=req.end_date,
+                                    adj="qfq")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取日线数据失败: {e}")
 
@@ -255,6 +333,35 @@ def fundamental_verify(req: ScreenRequest) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"校验失败: {e}")
     return result
+
+
+@app.post("/api/band/optimize")
+def band_optimize(req: BandOptimizeRequest) -> dict:
+    """区间交易参数自动估算: 搜索最优买入/卖出/止损价, 收益最大化且夏普≥目标。"""
+    try:
+        info = data_service.resolve_code(req.ts_code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
+
+    try:
+        df = data_service.get_daily(info["ts_code"], kind=info["kind"],
+                                    start_date=req.start_date, end_date=req.end_date,
+                                    adj="qfq")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取日线数据失败: {e}")
+
+    try:
+        result = band_service.optimize_band(
+            df, capital=req.initial_capital,
+            min_sharpe=req.min_sharpe, objective=req.objective)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"参数估算失败: {e}")
+
+    return {"info": {**info, "ts_code": info["ts_code"]}, **result}
 
 
 @app.post("/api/redlowvol/sync")

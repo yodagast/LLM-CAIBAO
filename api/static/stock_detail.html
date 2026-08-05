@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>股票详情</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=14" />
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+  <style>
+    .detail-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .back-link {
+      color: var(--primary); text-decoration: none; font-size: 14px; font-weight: 600;
+      padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px; background: #fff;
+    }
+    .back-link:hover { background: var(--primary-light); }
+    .detail-title { flex: 1; }
+    .detail-title h1 { font-size: 24px; }
+    .detail-title .code-line { color: var(--text-soft); font-size: 14px; }
+    .detail-price { text-align: right; }
+    .detail-price .price { font-size: 30px; font-weight: 700; }
+    .detail-price .chg { font-size: 15px; margin-left: 6px; }
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+
+    .detail-cards {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px;
+    }
+    .d-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow); padding: 14px 16px;
+    }
+    .d-card .d-label { font-size: 12px; color: var(--text-soft); margin-bottom: 6px; }
+    .d-card .d-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .d-card .d-sub { font-size: 11px; color: var(--text-soft); margin-top: 2px; }
+    .d-card.hl52 { border-left: 3px solid #0ea5e9; }
+    .d-card.hl52 .d-value { font-size: 17px; }
+    .hidden { display: none !important; }
+    .loading, .error { text-align: center; padding: 40px; color: var(--text-soft); }
+    .date-picker {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
+    }
+    .date-picker label { font-size: 13px; font-weight: 600; color: var(--text); }
+    .date-picker input[type="date"] {
+      padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+      font-size: 14px; background: #fafbfd; color: var(--text); outline: none;
+    }
+    .date-picker input[type="date"]:focus {
+      border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, .12);
+    }
+    .snap-cards { margin-bottom: 0; }
+    .kline-toolbar {
+      display: flex; align-items: center; gap: 16px; margin-bottom: 12px; flex-wrap: wrap;
+    }
+    .seg {
+      display: flex; align-items: center; gap: 2px;
+      background: #f1f5f9; border-radius: 8px; padding: 3px;
+    }
+    .seg-label { font-size: 12px; color: var(--text-soft); margin: 0 8px 0 4px; }
+    .seg-btn {
+      padding: 6px 14px; border: none; background: transparent; border-radius: 6px;
+      font-size: 13px; color: var(--text-soft); cursor: pointer; transition: all .15s;
+    }
+    .seg-btn:hover { color: var(--primary-dark); }
+    .seg-btn.active {
+      background: #fff; color: var(--primary); font-weight: 600;
+      box-shadow: 0 1px 3px rgba(16, 24, 40, .10);
+    }
+    .kline-loading { margin-left: auto; }
+    @media (max-width: 960px) { .detail-cards { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-logo">📈</span>
+        <div>
+          <h1>股票详情</h1>
+          <p>K线 · PB/PE · 分红 · 52周高低 · 股本市值</p>
+        </div>
+      </div>
+      <div class="health" id="health"><span class="dot"></span><span id="health-text">连接检测中…</span></div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="loading" id="loading">正在加载股票详情…</div>
+    <div class="error hidden" id="error"></div>
+
+    <div id="content" class="hidden">
+      <div class="detail-head">
+        <a class="back-link" href="/" onclick="history.length>1&&event.preventDefault();history.back();">← 返回</a>
+        <div class="detail-title">
+          <h1 id="d-name">—</h1>
+          <span class="code-line" id="d-code-line"></span>
+        </div>
+        <div class="detail-price">
+          <div><span class="price" id="d-price">—</span><span class="chg" id="d-chg"></span></div>
+          <div class="code-line" id="d-date"></div>
+        </div>
+      </div>
+
+      <div class="detail-cards">
+        <div class="d-card"><div class="d-label">PB (市净率)</div><div class="d-value" id="c-pb">—</div></div>
+        <div class="d-card"><div class="d-label">PE (市盈率 TTM)</div><div class="d-value" id="c-pe">—</div></div>
+        <div class="d-card"><div class="d-label">每股分红 (元)</div><div class="d-value" id="c-div">—</div><div class="d-sub" id="c-div-end"></div></div>
+        <div class="d-card"><div class="d-label">股息率</div><div class="d-value" id="c-dy">—</div></div>
+        <div class="d-card hl52"><div class="d-label">52周最低</div><div class="d-value" id="c-52l">—</div></div>
+        <div class="d-card hl52"><div class="d-label">52周最高</div><div class="d-value" id="c-52h">—</div></div>
+        <div class="d-card"><div class="d-label">总股本</div><div class="d-value" id="c-share">—</div><div class="d-sub" id="c-float-share"></div></div>
+        <div class="d-card"><div class="d-label">总市值</div><div class="d-value" id="c-mv">—</div><div class="d-sub" id="c-circ-mv"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <h3>当日行情</h3>
+          <span class="hint">选择交易日查看不同日期的行情详情 (默认最新)</span>
+        </div>
+        <div class="date-picker">
+          <label for="q-date">交易日</label>
+          <input type="date" id="q-date" />
+          <span class="hint" id="q-date-range"></span>
+        </div>
+        <div class="detail-cards snap-cards">
+          <div class="d-card"><div class="d-label">开盘</div><div class="d-value" id="q-open">—</div></div>
+          <div class="d-card"><div class="d-label">最高</div><div class="d-value" id="q-high">—</div></div>
+          <div class="d-card"><div class="d-label">最低</div><div class="d-value" id="q-low">—</div></div>
+          <div class="d-card"><div class="d-label">收盘</div><div class="d-value" id="q-close">—</div></div>
+          <div class="d-card"><div class="d-label">昨收</div><div class="d-value" id="q-pre">—</div></div>
+          <div class="d-card"><div class="d-label">涨跌额</div><div class="d-value" id="q-chg">—</div></div>
+          <div class="d-card"><div class="d-label">涨跌幅</div><div class="d-value" id="q-pct">—</div></div>
+          <div class="d-card"><div class="d-label">成交量</div><div class="d-value" id="q-vol">—</div><div class="d-sub">手</div></div>
+          <div class="d-card"><div class="d-label">成交额</div><div class="d-value" id="q-amt">—</div><div class="d-sub">元</div></div>
+          <div class="d-card"><div class="d-label">盘后成交量</div><div class="d-value" id="q-after">—</div><div class="d-sub">手</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <h3>K 线 (默认近一年, 可缩放查看最多 20 年)</h3>
+          <span class="hint">MA5 / MA20 · 成交量 · 滚轮/滑块缩放</span>
+        </div>
+        <div class="kline-toolbar">
+          <div class="seg" id="k-freq">
+            <span class="seg-label">周期</span>
+            <button type="button" class="seg-btn active" data-freq="D">日线</button>
+            <button type="button" class="seg-btn" data-freq="W">周线</button>
+            <button type="button" class="seg-btn" data-freq="M">月线</button>
+          </div>
+          <div class="seg" id="k-adj">
+            <span class="seg-label">复权</span>
+            <button type="button" class="seg-btn" data-adj="">不复权</button>
+            <button type="button" class="seg-btn active" data-adj="qfq">前复权</button>
+            <button type="button" class="seg-btn" data-adj="hfq">后复权</button>
+          </div>
+          <span class="hint kline-loading hidden" id="kline-loading">加载中…</span>
+        </div>
+        <div id="kchart" class="chart" style="height:520px"></div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span>股票详情 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
+  </footer>
+
+  <script src="/static/js/stock_detail.js?v=18"></script>
+</body>
+</html>

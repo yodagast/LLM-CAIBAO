@@ -157,6 +157,25 @@ def search_stock(keyword: str, limit: int = 20) -> list[dict]:
     return items[:limit]
 
 
+def search_industries(keyword: str = "", limit: int = 20) -> list[dict]:
+    """行业模糊搜索: 返回匹配的行业及所含股票数量 (供前端候选推荐)。
+
+    按关键词子串匹配行业名, 无关键词时返回股票数最多的热门行业;
+    结果按股票数降序。
+    """
+    stocks = _stock_basic()
+    counts = stocks["industry"].value_counts()
+    keyword = (keyword or "").strip()
+    if keyword:
+        mask = counts.index.str.contains(keyword, na=False)
+        counts = counts[mask]
+    items = [
+        {"industry": str(ind), "count": int(c)}
+        for ind, c in counts.head(limit).items()
+    ]
+    return items
+
+
 # ---------------------------------------------------------------------------
 # 日线数据 (带缓存)
 # ---------------------------------------------------------------------------
@@ -164,11 +183,40 @@ def search_stock(keyword: str, limit: int = 20) -> list[dict]:
 _DAILY_CACHE: dict[str, pd.DataFrame] = {}
 
 
+def _adj_close(df: pd.DataFrame) -> pd.Series:
+    """用 pct_chg 重建前复权连续收盘价, 消除除权除息/份额拆分/分红跳空。
+
+    tushare 的 daily/fund_daily 返回不复权价格, 遇拆分/分红时 close 会跳空
+    (如 512170 2021-02-25 份额拆分 close 2.564→0.818), 直接算净值/收益会产生
+    假暴跌。而 pct_chg 字段是按拆分/分红调整后的正确涨跌幅 (拆分日 pre_close 已
+    同步调整), 从最新价向前累计即可得到连续的前复权价 (最新价=真实价)。
+    """
+    close = df["close"].astype(float)
+    pct = df["pct_chg"].astype(float)
+    n = len(df)
+    out = close.to_numpy().copy()
+    for i in range(n - 2, -1, -1):
+        p = pct.iloc[i + 1]
+        if pd.notna(p):
+            out[i] = out[i + 1] / (1 + p / 100.0)
+        elif close.iloc[i + 1] > 0:
+            out[i] = out[i + 1] * (close.iloc[i] / close.iloc[i + 1])
+        else:
+            out[i] = out[i + 1]
+    return pd.Series(out, index=df.index)
+
+
 def get_daily(ts_code: str, kind: str = "stock",
-              start_date: str = "20170101", end_date: str = "") -> pd.DataFrame:
-    """获取单只股票/ETF 日线 (trade_date 升序), 带内存缓存。"""
+              start_date: str = "20170101", end_date: str = "",
+              adj: str = "") -> pd.DataFrame:
+    """获取单只股票/ETF 日线 (trade_date 升序), 带内存缓存。
+
+    adj: "" 不复权(原始价格) / "qfq" 前复权 (用 pct_chg 重建连续价, 消除拆分/分红跳空)。
+    回测/收益计算建议用 "qfq"; 行情展示用默认不复权。
+    """
     end_date = end_date or datetime.now().strftime("%Y%m%d")
-    cache_key = f"{ts_code}:{kind}:{start_date}:{end_date}"
+    adj_key = str(adj).strip().lower()
+    cache_key = f"{ts_code}:{kind}:{start_date}:{end_date}:{adj_key}"
     if cache_key in _DAILY_CACHE:
         return _DAILY_CACHE[cache_key]
 
@@ -190,6 +238,10 @@ def get_daily(ts_code: str, kind: str = "stock",
         raise ValueError(f"未获取到 {ts_code} 在 {start_date}~{end_date} 的日线数据。")
 
     df = df.sort_values("trade_date").reset_index(drop=True)
+    if adj_key == "qfq":
+        df = df.copy()
+        df["close"] = _adj_close(df)
+        df["pre_close"] = df["close"].shift(1).fillna(df["close"])
     _DAILY_CACHE[cache_key] = df
     return df
 
@@ -201,6 +253,176 @@ def get_quote(ts_code: str, kind: str = "stock", days: int = 120) -> pd.DataFram
     start = (datetime.now() - timedelta(days=int(days * 2.5) + 30)).strftime("%Y%m%d")
     df = get_daily(ts_code, kind, start_date=start, end_date=end_date)
     return df.tail(days).reset_index(drop=True)
+
+
+def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
+              start_date: str = "", end_date: str = "", hist_years: int = 20) -> list[dict]:
+    """获取 K 线 bars (周期: D日/W周/M月; 复权: qfq前复权/hfq后复权/空不复权)。
+
+    基于 tushare pro_bar 接口。返回升序 bars (含 open/high/low/close/pre_close/change/pct_chg/vol/amount)。
+    """
+    end = end_date or datetime.now().strftime("%Y%m%d")
+    start = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
+    adj_param = adj.strip() or None
+    try:
+        df = ts.pro_bar(ts_code=ts_code, freq=freq.upper(), adj=adj_param,
+                        start_date=start, end_date=end)
+    except Exception as e:
+        raise ValueError(f"获取 {ts_code} {freq}线{adj or '不复权'}数据失败: {e}")
+    if df is None or df.empty:
+        raise ValueError(f"未获取到 {ts_code} {freq}线 {adj or '不复权'} 数据")
+    df = df.sort_values("trade_date").reset_index(drop=True)
+    bars = []
+    for _, row in df.iterrows():
+        bars.append({
+            "date": str(row["trade_date"]),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "pre_close": _to_float(row.get("pre_close")),
+            "change": _to_float(row.get("change")),
+            "pct_chg": float(row.get("pct_chg", 0.0) or 0.0),
+            "vol": float(row.get("vol", 0.0) or 0.0),
+            "amount": _to_float(row.get("amount")),
+        })
+    return bars
+
+
+def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
+                     hist_years: int = 20, date: str = "") -> dict:
+    """股票详情聚合: 最多 hist_years 年 K 线 + 52 周高低 + PB/PE/股本/市值 + 分红/股息率。
+
+    date: 指定交易日 (YYYYMMDD) 查看该日行情快照, 空=最新交易日。
+    """
+    pro = _init_pro()
+    end_date = datetime.now().strftime("%Y%m%d")
+    # K 线历史: 最多 hist_years 年 (约 250 交易日/年)
+    start = (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
+    df = get_daily(ts_code, kind, start_date=start, end_date=end_date)
+
+    # 选中目标交易日 (指定日期或最新)
+    if date:
+        target = df[df["trade_date"].astype(str) == str(date)]
+        if target.empty:
+            raise ValueError(f"交易日 {date} 无行情数据 (可能停牌或未上市)")
+        quote_row = target.iloc[0]
+    else:
+        quote_row = df.iloc[-1]
+
+    recent = df.tail(days).reset_index(drop=True)  # 52 周窗口 (用于高低/最新价)
+    last_close = float(quote_row["close"])
+    last_date = str(quote_row["trade_date"])
+    week52_high = float(recent["high"].max())
+    week52_low = float(recent["low"].min())
+
+    # 昨收: 优先 daily.pre_close, 否则取前一交易日收盘
+    pre_close = _to_float(quote_row.get("pre_close"))
+    if pre_close is None:
+        dates = df["trade_date"].astype(str).tolist()
+        pos = dates.index(last_date) if last_date in dates else -1
+        if pos > 0:
+            pre_close = _to_float(df.iloc[pos - 1].get("close"))
+
+    # 当日行情快照 (成交量单位:手, 成交额单位:千元; 盘后成交量 tushare 无此字段)
+    quote = {
+        "trade_date": last_date,
+        "open": _to_float(quote_row.get("open")),
+        "high": _to_float(quote_row.get("high")),
+        "low": _to_float(quote_row.get("low")),
+        "close": _to_float(quote_row.get("close")),
+        "pre_close": pre_close,
+        "change": _to_float(quote_row.get("change")),
+        "pct_chg": _to_float(quote_row.get("pct_chg")),
+        "vol": _to_float(quote_row.get("vol")),
+        "amount": _to_float(quote_row.get("amount")),
+        "after_vol": None,
+    }
+
+    # 最新 daily_basic: PB/PE/股本/市值/股息率 (只需最近数月数据取最新)
+    pb = pe = pe_ttm = total_share = float_share = total_mv = circ_mv = dv_ratio = None
+    try:
+        basic_start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
+        b = pro.daily_basic(
+            ts_code=ts_code, start_date=basic_start, end_date=end_date,
+            fields="trade_date,close,pb,pe,pe_ttm,total_share,float_share,total_mv,circ_mv,dv_ratio,dv_ttm",
+        )
+        if b is not None and not b.empty:
+            b = b.sort_values("trade_date").iloc[-1]
+            pb = _to_float(b.get("pb"))
+            pe = _to_float(b.get("pe"))
+            pe_ttm = _to_float(b.get("pe_ttm"))
+            total_share = _to_float(b.get("total_share"))   # 万股
+            float_share = _to_float(b.get("float_share"))   # 万股
+            total_mv = _to_float(b.get("total_mv"))         # 万元
+            circ_mv = _to_float(b.get("circ_mv"))           # 万元
+            dv_ratio = _to_float(b.get("dv_ratio"))
+    except Exception:
+        pass
+
+    # 分红: 最新年度已实施每股现金红利
+    div_per_share = None
+    dividend_end = ""
+    try:
+        dv = pro.dividend(ts_code=ts_code)
+        if dv is not None and not dv.empty:
+            dv = dv.sort_values("end_date", ascending=False).reset_index(drop=True)
+            end_yr = str(dv.iloc[0]["end_date"])
+            yearly = dv[dv["end_date"].astype(str) == end_yr].copy()
+            if "cash_div" in yearly.columns:
+                yearly["_cash"] = pd.to_numeric(yearly["cash_div"], errors="coerce")
+            else:
+                yearly["_cash"] = 0.0
+            impl = yearly[yearly["div_proc"] == "实施"]
+            row = (impl.sort_values("_cash", ascending=False).iloc[0]
+                   if not impl.empty else yearly.sort_values("_cash", ascending=False).iloc[0])
+            div_per_share = _to_float(row.get("cash_div"))
+            dividend_end = end_yr
+    except Exception:
+        pass
+
+    # 股息率: 优先 daily_basic.dv_ratio, 否则 每股分红/最新价
+    dividend_yield = dv_ratio
+    if div_per_share is not None and last_close:
+        dividend_yield = div_per_share / last_close * 100.0
+
+    # K 线 bars (全部历史, 供前端缩放查看最多 20 年; 含快照字段供日期切换本地取用)
+    bars = []
+    for _, row in df.iterrows():
+        bars.append({
+            "date": str(row["trade_date"]),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "pre_close": _to_float(row.get("pre_close")),
+            "change": _to_float(row.get("change")),
+            "pct_chg": float(row.get("pct_chg", 0.0) or 0.0),
+            "vol": float(row.get("vol", 0.0) or 0.0),
+            "amount": _to_float(row.get("amount")),
+        })
+
+    return {
+        "last_close": last_close,
+        "last_date": last_date,
+        "week52_high": week52_high,
+        "week52_low": week52_low,
+        "hist_years": hist_years,
+        "bars_count": len(bars),
+        "quote": quote,
+        "pb": pb,
+        "pe": pe,
+        "pe_ttm": pe_ttm,
+        "total_share": total_share,
+        "float_share": float_share,
+        "total_mv": total_mv,
+        "circ_mv": circ_mv,
+        "dv_ratio": dv_ratio,
+        "div_per_share": div_per_share,
+        "dividend_end": dividend_end,
+        "dividend_yield": dividend_yield,
+        "bars": bars,
+    }
 
 
 # ---------------------------------------------------------------------------

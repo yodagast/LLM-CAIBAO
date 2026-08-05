@@ -28,8 +28,18 @@
   const rlvError = $("#rlv-error");
   const rlvResult = $("#rlv-result");
 
+  // 区间交易参数估算元素
+  const bandForm = $("#band-form");
+  const bandBtn = $("#band-btn");
+  const bandLoading = $("#band-loading");
+  const bandError = $("#band-error");
+  const bandResult = $("#band-result");
+  const bandInput = $("#band_ts_code");
+  const bandTip = $("#band-ts-tip");
+
   let chart = null;
   let quoteChart = null;
+  let bandChart = null;
   let searchTimer = null;
 
   // ---------- 工具 ----------
@@ -76,6 +86,64 @@
     }, 300);
   });
 
+  // ---------- 行业联想 (基本面选股 / 红利低波选股) ----------
+  // 年份下拉: 2000 ~ 当前年, 默认 2025
+  function fillYearSelect(select, def) {
+    const cur = new Date().getFullYear();
+    let html = "";
+    for (let y = cur; y >= 2000; y--) {
+      html += `<option value="${y}"${y === def ? " selected" : ""}>${y}年</option>`;
+    }
+    select.innerHTML = html;
+  }
+  fillYearSelect($("#sc_year"), 2025);
+  fillYearSelect($("#rlv_year"), 2025);
+
+  function bindIndustrySuggest(input, panel) {
+    let timer = null;
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      const kw = input.value.trim();
+      if (!kw) { panel.innerHTML = ""; panel.classList.add("hidden"); return; }
+      timer = setTimeout(async () => {
+        try {
+          const r = await fetch(`/api/industry/search?keyword=${encodeURIComponent(kw)}&limit=12`);
+          const data = await r.json();
+          const items = data.items || [];
+          panel.innerHTML = items.length
+            ? items.map((it) =>
+                `<div class="ind-item" data-ind="${it.industry}"><span>${it.industry}</span><span class="ind-count">${it.count} 只</span></div>`).join("")
+            : `<div class="ind-empty">无匹配行业</div>`;
+          panel.classList.remove("hidden");
+        } catch (e) { /* 忽略联想失败 */ }
+      }, 200);
+    });
+    panel.addEventListener("click", (e) => {
+      const item = e.target.closest(".ind-item");
+      if (!item) return;
+      input.value = item.dataset.ind;
+      panel.innerHTML = "";
+      panel.classList.add("hidden");
+      input.dispatchEvent(new Event("change"));
+    });
+    document.addEventListener("click", (e) => {
+      if (!input.contains(e.target) && !panel.contains(e.target)) {
+        panel.innerHTML = "";
+        panel.classList.add("hidden");
+      }
+    });
+    // 失焦后延迟关闭, 让点击候选能生效
+    input.addEventListener("blur", () => {
+      setTimeout(() => {
+        if (!panel.contains(document.activeElement)) {
+          panel.classList.add("hidden");
+        }
+      }, 150);
+    });
+  }
+  bindIndustrySuggest($("#sc_industry"), $("#sc-ind-panel"));
+  bindIndustrySuggest($("#rlv_industry"), $("#rlv-ind-panel"));
+
   // 输入代码后尝试解析显示名称 + 加载最近行情
   stockInput.addEventListener("change", async () => {
     const code = stockInput.value.trim();
@@ -99,6 +167,40 @@
       tsTip.textContent = "";
       hideQuote();
     }
+  });
+
+  // 区间交易 tab: 股票联想 (共享 datalist) + 名称解析
+  bandInput.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    const kw = bandInput.value.trim();
+    if (!kw) { stockList.innerHTML = ""; bandTip.textContent = ""; return; }
+    searchTimer = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/stock/search?keyword=${encodeURIComponent(kw)}`);
+        const data = await r.json();
+        stockList.innerHTML = (data.items || [])
+          .map((it) => `<option value="${it.ts_code}">${it.name} ${it.kind === "fund" ? "[ETF]" : ""} (${it.symbol})</option>`)
+          .join("");
+      } catch (e) { /* 忽略联想失败 */ }
+    }, 300);
+  });
+  bandInput.addEventListener("change", async () => {
+    const code = bandInput.value.trim();
+    if (!code) { bandTip.textContent = ""; return; }
+    try {
+      const r = await fetch(`/api/stock/${encodeURIComponent(code)}`);
+      if (r.ok) {
+        const info = await r.json();
+        bandTip.classList.add("ok");
+        bandTip.classList.remove("err");
+        bandTip.textContent = `✓ ${info.name} · ${info.ts_code} · ${info.kind === "fund" ? "基金/ETF" : "股票"}`;
+      } else {
+        const err = await r.json();
+        bandTip.classList.add("err");
+        bandTip.classList.remove("ok");
+        bandTip.textContent = `✗ ${err.detail || "未找到该代码"}`;
+      }
+    } catch (e) { bandTip.textContent = ""; }
   });
 
   // ---------- 提交回测 ----------
@@ -159,6 +261,7 @@
       setTimeout(() => {
         if (chart) chart.resize();
         if (quoteChart) quoteChart.resize();
+        if (bandChart) bandChart.resize();
       }, 80);
     });
   });
@@ -178,10 +281,7 @@
   }
 
   function buildScreenPayload() {
-    const y0 = parseInt($("#sc_year_start").value, 10);
-    const y1 = parseInt($("#sc_year_end").value, 10);
-    const years = [];
-    for (let y = y0; y <= y1; y++) years.push(y);
+    const years = [parseInt($("#sc_year").value, 10)];
 
     const filters = {};
     const roe = parseFloat($("#sc_f_roe").value);
@@ -195,7 +295,7 @@
       sort_by: screenSort.by,
       order: screenSort.order,
       filters,
-      max_stocks: 500,
+      max_stocks: 6000,
       limit: 2000,
     };
   }
@@ -331,8 +431,7 @@
       <tr>
         <td class="num">${it.year}</td>
         <td>${it.ts_code}</td>
-        <td><b>${it.name}</b></td>
-        <td class="num">${it.close == null ? "—" : Number(it.close).toFixed(2)}</td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
         <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
         <td class="num ${cls(it.net_margin || 0)}">${fmtPctVal(it.net_margin)}</td>
         <td class="num">${it.assets_turn == null ? "—" : Number(it.assets_turn).toFixed(2)}</td>
@@ -372,10 +471,7 @@
 
   // 从表单构造红利低波请求 (多年份数组 + 筛选条件 + 当前排序)
   function buildRlvPayload() {
-    const y0 = parseInt($("#rlv_year_start").value, 10);
-    const y1 = parseInt($("#rlv_year_end").value, 10);
-    const years = [];
-    for (let y = y0; y <= y1; y++) years.push(y);
+    const years = [parseInt($("#rlv_year").value, 10)];
 
     const filters = {};
     const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
@@ -392,7 +488,7 @@
       sort_by: rlvSort.by,
       order: rlvSort.order,
       filters,
-      max_stocks: 500,
+      max_stocks: 6000,
       limit: 1000,
     };
   }
@@ -772,6 +868,145 @@
     }, true);
   }
 
+  // ---------- 区间交易参数估算 ----------
+  bandForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const payload = {
+      ts_code: bandInput.value.trim(),
+      start_date: $("#band_start_date").value.trim() || "20170101",
+      end_date: $("#band_end_date").value.trim() || "",
+      initial_capital: parseFloat($("#band_capital").value) || 100000,
+      min_sharpe: parseFloat($("#band_min_sharpe").value) || 1.0,
+      objective: $("#band_objective").value,
+    };
+    if (!payload.ts_code) {
+      bandError.textContent = "请输入股票代码。";
+      bandError.classList.remove("hidden");
+      return;
+    }
+    bandError.classList.add("hidden");
+    bandResult.classList.add("hidden");
+    bandBtn.disabled = true;
+    bandLoading.classList.remove("hidden");
+    $("#band-range-hint").textContent = "";
+    try {
+      const res = await fetch("/api/band/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "估算失败");
+      renderBand(data);
+    } catch (err) {
+      bandError.textContent = err.message || "请求失败, 请检查后端服务。";
+      bandError.classList.remove("hidden");
+    } finally {
+      bandLoading.classList.add("hidden");
+      bandBtn.disabled = false;
+    }
+  });
+
+  function renderBand(data) {
+    const { info, params, search, range, band, baseline } = data;
+    bandResult.classList.remove("hidden");
+
+    $("#band-result-title").textContent = `${info.name} (${info.ts_code}) · 区间交易最优参数`;
+    const achievedTxt = search.achieved ? "✅ 夏普达标" : "⚠️ 未达目标夏普 (已取折中)";
+    $("#band-result-sub").textContent =
+      `${fmtDate(range.start)} ~ ${fmtDate(range.end)} · ${range.bars} 个交易日 · ` +
+      `目标 ${search.objective_label || "收益优先"} · ` +
+      `搜索 ${search.tried} 组参数 · 目标夏普 ≥ ${search.min_sharpe} · ${achievedTxt}`;
+    $("#band-range-hint").textContent =
+      `数据区间 ${fmtDate(range.start)} ~ ${fmtDate(range.end)} (${range.bars} 根)`;
+
+    // 参数卡
+    const m = band.metrics;
+    const sellUp = ((params.sell_price / params.buy_price - 1) * 100).toFixed(0);
+    const stopDown = ((1 - params.stop_price / params.buy_price) * 100).toFixed(0);
+    $("#band-param-cards").innerHTML = `
+      <div class="metric accent1">
+        <div class="m-label">最优买入价</div>
+        <div class="m-value">¥ ${params.buy_price.toFixed(2)}</div>
+        <div class="m-sub">收盘价 ≤ 买入价 全仓买入</div>
+      </div>
+      <div class="metric accent2">
+        <div class="m-label">最优卖出价</div>
+        <div class="m-value">¥ ${params.sell_price.toFixed(2)}</div>
+        <div class="m-sub">收盘价 ≥ 卖出价 清仓 (约 +${sellUp}%)</div>
+      </div>
+      <div class="metric accent3">
+        <div class="m-label">最优止损价</div>
+        <div class="m-value">¥ ${params.stop_price.toFixed(2)}</div>
+        <div class="m-sub">收盘价 ≤ 止损价 清仓 (约 -${stopDown}%)</div>
+      </div>
+      <div class="metric ${cls(m.total_return)}">
+        <div class="m-label">区间交易 · 总收益率</div>
+        <div class="m-value">${fmtPct(m.total_return)}</div>
+        <div class="m-sub">夏普 ${m.sharpe.toFixed(2)} · 回撤 ${m.max_drawdown.toFixed(2)}% · 卡玛 ${m.calmar.toFixed(2)}</div>
+      </div>`;
+
+    // 指标对比表
+    const rows = [
+      ["区间交易", "band", band],
+      ["买入持有", "bh", baseline],
+    ];
+    $("#band-table tbody").innerHTML = rows.map(([name, tag, d]) => {
+      const mm = d.metrics;
+      return `<tr>
+        <td><span class="tag ${tag}">${name}</span></td>
+        <td class="num ${cls(mm.total_return)}">${fmtPct(mm.total_return)}</td>
+        <td class="num ${cls(mm.annual_return)}">${fmtPct(mm.annual_return)}</td>
+        <td class="num ${cls(-mm.max_drawdown)}">${mm.max_drawdown.toFixed(2)}%</td>
+        <td class="num">${mm.calmar.toFixed(2)}</td>
+        <td class="num">${mm.sharpe.toFixed(2)}</td>
+        <td class="num">¥ ${fmtNum(mm.final_value)}</td>
+      </tr>`;
+    }).join("");
+
+    renderBandChart(band, baseline);
+    bandResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function renderBandChart(band, baseline) {
+    const el = $("#band-chart");
+    if (!bandChart) bandChart = echarts.init(el);
+    const dates = band.dates.map(fmtDate);
+    const colors = ["#ea580c", "#4f46e5"];
+    bandChart.setOption({
+      animationDuration: 500,
+      tooltip: {
+        trigger: "axis",
+        formatter: (params) => {
+          let html = `<b>${params[0].axisValue}</b><br/>`;
+          params.forEach((p) => {
+            html += `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${p.color};margin-right:6px"></span>${p.seriesName}: <b>${p.value >= 0 ? "+" : ""}${p.value.toFixed(2)}%</b><br/>`;
+          });
+          return html;
+        },
+      },
+      legend: { top: 4, textStyle: { fontSize: 13 } },
+      grid: { left: 14, right: 20, top: 44, bottom: 36, containLabel: true },
+      xAxis: {
+        type: "category",
+        data: dates,
+        boundaryGap: false,
+        axisLabel: { color: "#6b7280", fontSize: 11 },
+        axisLine: { lineStyle: { color: "#e5e7eb" } },
+      },
+      yAxis: {
+        type: "value",
+        axisLabel: { color: "#6b7280", formatter: "{value}%" },
+        splitLine: { lineStyle: { color: "#f1f5f9" } },
+      },
+      series: [
+        { name: "区间交易", type: "line", data: band.returns_pct, showSymbol: false, smooth: true, lineStyle: { width: 2.4, color: colors[0] }, itemStyle: { color: colors[0] }, areaStyle: { opacity: 0.07 } },
+        { name: "买入持有", type: "line", data: baseline.returns_pct, showSymbol: false, smooth: true, lineStyle: { width: 2.2, color: colors[1] }, itemStyle: { color: colors[1] }, areaStyle: { opacity: 0.04 } },
+      ],
+    }, true);
+    requestAnimationFrame(() => bandChart && bandChart.resize());
+  }
+
   function showError(msg) {
     errorBox.textContent = msg;
     errorBox.classList.remove("hidden");
@@ -794,13 +1029,14 @@
     hideError();
   });
 
-  // 窗口尺寸变化时, 防抖自适应两个图表
+  // 窗口尺寸变化时, 防抖自适应图表
   let resizeTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (chart) chart.resize();
       if (quoteChart) quoteChart.resize();
+      if (bandChart) bandChart.resize();
     }, 150);
   });
 

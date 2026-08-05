@@ -6,7 +6,8 @@
   python scripts/init_fundamental.py --industry 银行 --start 2024 --end 2024 --max-stocks 500
 
 说明:
-  - 全市场约 5400 只 × 每只 4 次 tushare 调用, 耗时可能 1~2 小时, 建议按行业分批
+  - 全市场约 5536 只 × 每只 4 次 tushare 调用, 耗时可能 2~3 小时, 建议按行业分批
+  - 默认 max-stocks=6000 覆盖全市场; 也可用 --max-stocks 调大
   - 幂等 upsert, 可重复运行续跑
 """
 import argparse
@@ -25,7 +26,7 @@ def main() -> None:
     parser.add_argument("--industry", default="", help="行业名称(东财分类), 空=全市场")
     parser.add_argument("--start", type=int, default=2024, help="起始年份")
     parser.add_argument("--end", type=int, default=2025, help="结束年份")
-    parser.add_argument("--max-stocks", type=int, default=1000, help="最多扫描股票数(全市场时生效)")
+    parser.add_argument("--max-stocks", type=int, default=6000, help="最多扫描股票数(默认6000覆盖全市场5536只)")
     args = parser.parse_args()
 
     pg_service.init_fundamental_schema()

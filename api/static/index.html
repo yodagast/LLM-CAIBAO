@@ -4,8 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>选股回测系统</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=18" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -28,6 +29,7 @@
       <button type="button" class="tab" data-tab="fundamental">🔍 基本面选股</button>
       <button type="button" class="tab" data-tab="redlowvol">💰 红利低波选股</button>
       <button type="button" class="tab" data-tab="band">🎯 区间交易</button>
+      <button type="button" class="tab" data-tab="caibao">📚 财报分析</button>
     </nav>
 
     <!-- ================= Tab: 策略回测 ================= -->
@@ -364,12 +366,12 @@
             <div class="field">
               <label for="band_objective">优化目标</label>
               <select id="band_objective">
-                <option value="return" selected>收益优先 (夏普达标内收益最高)</option>
+              <option value="balanced" selected>综合平衡 (收益×夏普×低回撤)</option>
+              <option value="return">收益优先 (夏普达标内收益最高)</option>
               <option value="annual">年化收益优先</option>
               <option value="sharpe">夏普优先 (夏普达标内夏普最高)</option>
               <option value="drawdown">回撤最小</option>
               <option value="calmar">卡玛优先 (收益/回撤比)</option>
-              <option value="balanced">综合平衡 (收益×夏普×低回撤)</option>
               </select>
             </div>
           </div>
@@ -408,6 +410,42 @@
           <div id="band-chart" class="chart"></div>
         </div>
 
+        <!-- 交易明细 -->
+        <div class="card table-card">
+          <div class="card-title">
+            <h3>交易明细</h3>
+            <span class="hint">最优参数下每次买入 / 卖出及单笔收益 · 点击表头排序</span>
+            <div class="trade-filters">
+              <label class="tf-item">最低收益 %
+                <input type="number" id="band-trade-min" placeholder="如 5" step="0.1" />
+              </label>
+              <label class="tf-item">类型
+                <select id="band-trade-type">
+                  <option value="">全部</option>
+                  <option value="止盈">止盈</option>
+                  <option value="止损">止损</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="table-wrap" style="max-height:360px;overflow:auto;">
+            <table id="band-trades-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th class="sortable" data-sort="buy_date">买入日期<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="buy_price">买入价<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="sell_date">卖出日期<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="sell_price">卖出价<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="return_pct">单笔收益<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="type">类型<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- 指标对比表 -->
         <div class="card table-card">
           <div class="card-title"><h3>指标对比</h3></div>
@@ -430,12 +468,78 @@
         </div>
       </section>
     </section>
+
+    <!-- ================= Tab: 财报分析 ================= -->
+    <section id="tab-caibao" class="hidden">
+      <section class="card form-card">
+        <div class="card-title">
+          <h2>财报分析</h2>
+          <span class="hint">输入股票代码与年份区间, 系统下载年报 PDF 并基于财报分析框架生成分析报告</span>
+        </div>
+        <form id="caibao-form" autocomplete="off">
+          <div class="grid">
+            <div class="field">
+              <label for="caibao_ts_code">股票代码 <em>*</em></label>
+              <input type="text" id="caibao_ts_code" list="stock-list"
+                     placeholder="如 600036 / 000858.SZ" required />
+              <div class="field-tip" id="caibao-ts-tip"></div>
+            </div>
+            <div class="field">
+              <label for="caibao_start_year">起始年份 <em>*</em></label>
+              <input type="number" id="caibao_start_year" value="2022" min="2000" max="2100" required />
+            </div>
+            <div class="field">
+              <label for="caibao_end_year">结束年份 <em>*</em></label>
+              <input type="number" id="caibao_end_year" value="2024" min="2000" max="2100" required />
+            </div>
+            <div class="field">
+              <label for="caibao_use_llm">分析方式</label>
+              <select id="caibao_use_llm">
+                <option value="false" selected>基于 TUSHARE 财报数据分析 (默认)</option>
+                <option value="true">基于 LLM 深度分析 (需 .env 配置 API Key)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="caibao-btn">
+              <span class="btn-icon">📚</span> 下载并分析
+            </button>
+            <span class="range-hint" id="caibao-hint"></span>
+          </div>
+        </form>
+      </section>
+
+      <!-- 加载 / 错误 -->
+      <div class="loading hidden" id="caibao-loading">
+        <div class="spinner"></div>
+        <span>正在下载年报并生成分析报告…</span>
+      </div>
+      <div class="error hidden" id="caibao-error"></div>
+
+      <!-- 结果区 -->
+      <section class="result hidden" id="caibao-result">
+        <div class="result-head">
+          <h2 id="caibao-title">财报分析</h2>
+          <div class="caibao-actions">
+            <button type="button" class="btn-primary" id="caibao-download">⬇ 下载 Markdown</button>
+            <span class="hint" id="caibao-sub"></span>
+          </div>
+        </div>
+        <div class="card report-card">
+          <div class="card-title">
+            <h3>分析报告</h3>
+            <span class="hint" id="caibao-meta"></span>
+          </div>
+          <div class="markdown-body" id="caibao-report"></div>
+        </div>
+      </section>
+    </section>
   </main>
 
   <footer class="footer">
     <span>单股四策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=18"></script>
+  <script src="/static/js/app.js?v=20"></script>
 </body>
 </html>

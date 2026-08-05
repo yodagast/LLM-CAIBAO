@@ -36,12 +36,17 @@ _REFINE_RADIUS = 0.06     # 局部细化半径
 
 def _simulate_band(closes: np.ndarray, capital: float,
                    buy: float, sell: float, stop: float) -> np.ndarray:
-    """区间交易净值模拟 (numpy 加速版), 返回每日净值数组。"""
+    """区间交易净值模拟 (numpy 加速版), 返回每日净值数组。
+
+    T+1 规则: 买入当天不检查卖出 (if/elif), 至少持有一个交易日;
+    剔除无效交易: 卖出价≈买入价(收益≈0)时跳过本次卖出, 继续持有。
+    """
     n = len(closes)
     value = np.empty(n)
     shares = 0.0
     cash = capital
     bought = False
+    hold_price = 0.0  # 持仓成本价 (买入日收盘价)
     for i in range(n):
         c = closes[i]
         if not bought and c <= buy:
@@ -49,12 +54,65 @@ def _simulate_band(closes: np.ndarray, capital: float,
                 shares = cash / c
                 cash = 0.0
                 bought = True
-        if bought and (c >= sell or c <= stop):
+                hold_price = float(c)
+        elif bought and (c >= sell or c <= stop):
+            if abs(c - hold_price) <= 1e-9:
+                # 买入价=卖出价 的无效交易 (收益≈0): 跳过, 继续持有
+                value[i] = shares * c
+                continue
             cash = shares * c
             shares = 0.0
             bought = False
         value[i] = cash + shares * c
     return value
+
+
+def _simulate_band_trades(closes: np.ndarray, dates: list[str], capital: float,
+                          buy: float, sell: float, stop: float):
+    """区间交易模拟, 返回 (净值数组, 交易明细列表)。
+
+    T+1 规则: 买入当天不检查卖出, 至少持有一个交易日;
+    剔除无效交易: 卖出价≈买入价(收益≈0)时跳过本次卖出, 继续持有。
+    交易明细每笔: no/buy_date/buy_price/sell_date/sell_price/
+    return_pct/type(止盈|止损)。buy_price 为买入日收盘价, sell_price 为卖出日收盘价。
+    """
+    n = len(closes)
+    value = np.empty(n)
+    shares = 0.0
+    cash = capital
+    bought = False
+    trades: list[dict] = []
+    buy_date = ""
+    buy_price = 0.0
+    for i in range(n):
+        c = closes[i]
+        if not bought and c <= buy:
+            if c > 0:
+                shares = cash / c
+                cash = 0.0
+                bought = True
+                buy_date = str(dates[i])
+                buy_price = float(c)
+        elif bought and (c >= sell or c <= stop):
+            if abs(c - buy_price) <= 1e-9:
+                # 买入价=卖出价 的无效交易 (收益≈0): 跳过, 继续持有, 不记录
+                value[i] = shares * c
+                continue
+            ret = (float(c) / buy_price - 1) * 100 if buy_price > 0 else 0.0
+            trades.append({
+                "no": len(trades) + 1,
+                "buy_date": buy_date,
+                "buy_price": round(buy_price, 4),
+                "sell_date": str(dates[i]),
+                "sell_price": round(float(c), 4),
+                "return_pct": round(ret, 2),
+                "type": "止盈" if c >= sell else "止损",
+            })
+            cash = shares * c
+            shares = 0.0
+            bought = False
+        value[i] = cash + shares * c
+    return value, trades
 
 
 def _fast_metrics(value: np.ndarray, capital: float,
@@ -238,6 +296,11 @@ def optimize_band(df: pd.DataFrame, capital: float = 100000.0,
     best = _pick_best(results, min_sharpe, objective)
     achieved = bool(best["metrics"]["sharpe"] >= min_sharpe)
 
+    # 最优参数下的交易明细 (每笔买入/卖出/收益)
+    _, trades = _simulate_band_trades(
+        closes, dates, capital,
+        best["buy_price"], best["sell_price"], best["stop_price"])
+
     # 基准: 买入持有 (首日全仓)
     base_value = capital * closes / closes[0] if closes[0] > 0 else np.full(n, capital)
     base_metrics = _fast_metrics(base_value, capital, years=real_years)
@@ -251,6 +314,7 @@ def optimize_band(df: pd.DataFrame, capital: float = 100000.0,
             "sharpe": best["metrics"]["sharpe"],
             "achieved": achieved,
         },
+        "trades": trades,
         "search": {
             "tried": len(results),
             "min_sharpe": min_sharpe,

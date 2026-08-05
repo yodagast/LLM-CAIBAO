@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import backtest_engine, band_service, data_service
+from . import backtest_engine, band_service, caibao_service, data_service
 from . import fundamental_service, pg_service, redlowvol_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -90,10 +90,18 @@ class BandOptimizeRequest(BaseModel):
     end_date: str = Field("", description="历史区间结束日期 YYYYMMDD, 空=最新")
     initial_capital: float = Field(100000.0, gt=0, description="初始资金")
     min_sharpe: float = Field(1.0, ge=0, le=10, description="目标夏普比率下限")
-    objective: str = Field("return",
+    objective: str = Field("balanced",
                            description="优化目标: return 收益优先 / annual 年化收益优先 / "
                                        "sharpe 夏普优先 / drawdown 回撤最小 / calmar 卡玛优先 / "
                                        "balanced 综合平衡")
+
+
+class CaibaoRequest(BaseModel):
+    """财报分析请求。"""
+    ts_code: str = Field(..., description="股票代码, 如 600036.SH 或 600036")
+    start_year: int = Field(2022, ge=2000, le=2100, description="起始年份")
+    end_year: int = Field(2024, ge=2000, le=2100, description="结束年份")
+    use_llm: bool = Field(False, description="是否使用 LLM 深度分析 (默认 False=基于 TUSHARE 财报数据规则化分析; True 且 .env 配置了 API Key 时用 LLM)")
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +370,19 @@ def band_optimize(req: BandOptimizeRequest) -> dict:
         raise HTTPException(status_code=500, detail=f"参数估算失败: {e}")
 
     return {"info": {**info, "ts_code": info["ts_code"]}, **result}
+
+
+@app.post("/api/caibao/analyze")
+def caibao_analyze(req: CaibaoRequest) -> dict:
+    """财报分析: 下载年报 PDF + 提取 + 指标计算 + 生成分析报告 (LLM/规则化)。"""
+    try:
+        result = caibao_service.analyze(
+            req.ts_code, req.start_year, req.end_year, use_llm=req.use_llm)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"财报分析失败: {e}")
+    return result
 
 
 @app.post("/api/redlowvol/sync")

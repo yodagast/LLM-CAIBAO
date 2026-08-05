@@ -58,10 +58,15 @@ def strat_limit_buy_hold(df: pd.DataFrame, capital: float, buy_price: float) -> 
 
 def strat_band_trade(df: pd.DataFrame, capital: float,
                      buy_price: float, sell_price: float, stop_loss: float) -> list[dict]:
-    """策略B: 区间交易 — 收盘 ≤ 买入价 买入全部; ≥ 卖出价 或 ≤ 止损价 卖出全部。"""
+    """策略B: 区间交易 — 收盘 ≤ 买入价 买入全部; ≥ 卖出价 或 ≤ 止损价 卖出全部。
+
+    T+1 规则: 买入当天不检查卖出 (if/elif), 至少持有到下一交易日才能卖出;
+    剔除无效交易: 卖出价≈买入价(收益≈0)时跳过本次卖出, 继续持有。
+    """
     shares = 0.0
     cash = capital
     bought = False
+    hold_price = 0.0  # 持仓成本价 (买入日收盘价)
     daily = []
     for _, row in df.iterrows():
         close = float(row["close"])
@@ -70,11 +75,12 @@ def strat_band_trade(df: pd.DataFrame, capital: float,
                 shares = cash / close
                 cash = 0.0
                 bought = True
-        if bought and close >= sell_price:
-            cash = shares * close
-            shares = 0.0
-            bought = False
-        elif bought and close <= stop_loss:
+                hold_price = close
+        elif bought and (close >= sell_price or close <= stop_loss):
+            if abs(close - hold_price) <= 1e-9:
+                # 买入价=卖出价 的无效交易 (收益≈0): 跳过, 继续持有
+                daily.append({"date": row["trade_date"], "value": cash + shares * close})
+                continue
             cash = shares * close
             shares = 0.0
             bought = False

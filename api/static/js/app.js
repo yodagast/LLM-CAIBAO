@@ -37,6 +37,15 @@
   const bandInput = $("#band_ts_code");
   const bandTip = $("#band-ts-tip");
 
+  // 财报分析元素
+  const caibaoForm = $("#caibao-form");
+  const caibaoBtn = $("#caibao-btn");
+  const caibaoLoading = $("#caibao-loading");
+  const caibaoError = $("#caibao-error");
+  const caibaoResult = $("#caibao-result");
+  const caibaoInput = $("#caibao_ts_code");
+  const caibaoTip = $("#caibao-ts-tip");
+
   let chart = null;
   let quoteChart = null;
   let bandChart = null;
@@ -201,6 +210,40 @@
         bandTip.textContent = `✗ ${err.detail || "未找到该代码"}`;
       }
     } catch (e) { bandTip.textContent = ""; }
+  });
+
+  // 财报分析 tab: 股票联想 (共享 datalist) + 名称解析
+  caibaoInput.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    const kw = caibaoInput.value.trim();
+    if (!kw) { stockList.innerHTML = ""; caibaoTip.textContent = ""; return; }
+    searchTimer = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/stock/search?keyword=${encodeURIComponent(kw)}`);
+        const data = await r.json();
+        stockList.innerHTML = (data.items || [])
+          .map((it) => `<option value="${it.ts_code}">${it.name} ${it.kind === "fund" ? "[ETF]" : ""} (${it.symbol})</option>`)
+          .join("");
+      } catch (e) { /* 忽略联想失败 */ }
+    }, 300);
+  });
+  caibaoInput.addEventListener("change", async () => {
+    const code = caibaoInput.value.trim();
+    if (!code) { caibaoTip.textContent = ""; return; }
+    try {
+      const r = await fetch(`/api/stock/${encodeURIComponent(code)}`);
+      if (r.ok) {
+        const info = await r.json();
+        caibaoTip.classList.add("ok");
+        caibaoTip.classList.remove("err");
+        caibaoTip.textContent = `✓ ${info.name} · ${info.ts_code}`;
+      } else {
+        const err = await r.json();
+        caibaoTip.classList.add("err");
+        caibaoTip.classList.remove("ok");
+        caibaoTip.textContent = `✗ ${err.detail || "未找到该代码"}`;
+      }
+    } catch (e) { caibaoTip.textContent = ""; }
   });
 
   // ---------- 提交回测 ----------
@@ -964,9 +1007,91 @@
       </tr>`;
     }).join("");
 
+    renderBandTrades(data.trades || []);
     renderBandChart(band, baseline);
     bandResult.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  // ---------- 区间交易: 交易明细排序 / 筛选 ----------
+  let bandTrades = [];
+  const bandTradeSort = { by: "return_pct", order: "desc" };
+
+  function renderBandTrades(trades) {
+    bandTrades = trades || [];
+    applyBandTradeFilter();
+  }
+
+  function applyBandTradeFilter() {
+    const minRaw = $("#band-trade-min").value;
+    const min = minRaw === "" ? null : parseFloat(minRaw);
+    const type = $("#band-trade-type").value;
+
+    // 筛选: 最低收益率 / 类型
+    let list = bandTrades.filter((t) => {
+      if (min !== null && !isNaN(min) && t.return_pct < min) return false;
+      if (type && t.type !== type) return false;
+      return true;
+    });
+
+    // 排序
+    const { by, order } = bandTradeSort;
+    const dir = order === "asc" ? 1 : -1;
+    list = list.slice().sort((a, b) => {
+      const va = a[by];
+      const vb = b[by];
+      if (typeof va === "string" && typeof vb === "string") {
+        return va.localeCompare(vb) * dir;
+      }
+      return (va - vb) * dir;
+    });
+
+    const body = list.length
+      ? list.map((t) => `
+        <tr>
+          <td>${t.no}</td>
+          <td>${fmtDate(t.buy_date)}</td>
+          <td class="num">${Number(t.buy_price).toFixed(4)}</td>
+          <td>${fmtDate(t.sell_date)}</td>
+          <td class="num">${Number(t.sell_price).toFixed(4)}</td>
+          <td class="num ${cls(t.return_pct)}">${fmtPct(t.return_pct)}</td>
+          <td><span class="tag ${t.type === "止损" ? "low" : "band"}">${t.type}</span></td>
+        </tr>`).join("")
+      : `<tr><td colspan="7" style="text-align:center;color:var(--text-soft)">无匹配交易</td></tr>`;
+    $("#band-trades-table tbody").innerHTML = body;
+    updateBandTradeSortArrows();
+  }
+
+  function updateBandTradeSortArrows() {
+    document.querySelectorAll("#band-trades-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === bandTradeSort.by) {
+        arrow.textContent = bandTradeSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
+    });
+  }
+
+  // 表头点击排序
+  document.querySelectorAll("#band-trades-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (bandTradeSort.by === by) {
+        bandTradeSort.order = bandTradeSort.order === "desc" ? "asc" : "desc";
+      } else {
+        bandTradeSort.by = by;
+        bandTradeSort.order = "desc";
+      }
+      applyBandTradeFilter();
+    });
+  });
+
+  // 筛选控件
+  $("#band-trade-min").addEventListener("input", () => applyBandTradeFilter());
+  $("#band-trade-type").addEventListener("change", () => applyBandTradeFilter());
 
   function renderBandChart(band, baseline) {
     const el = $("#band-chart");
@@ -1028,6 +1153,77 @@
     hideQuote();
     hideError();
   });
+
+  // ---------- 财报分析 ----------
+  caibaoForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const payload = {
+      ts_code: caibaoInput.value.trim(),
+      start_year: parseInt($("#caibao_start_year").value, 10) || 2022,
+      end_year: parseInt($("#caibao_end_year").value, 10) || 2024,
+      use_llm: $("#caibao_use_llm").value === "true",
+    };
+    if (!payload.ts_code) {
+      caibaoError.textContent = "请输入股票代码。";
+      caibaoError.classList.remove("hidden");
+      return;
+    }
+    if (payload.end_year < payload.start_year) {
+      caibaoError.textContent = "结束年份不能小于起始年份。";
+      caibaoError.classList.remove("hidden");
+      return;
+    }
+    caibaoError.classList.add("hidden");
+    caibaoResult.classList.add("hidden");
+    caibaoBtn.disabled = true;
+    caibaoLoading.classList.remove("hidden");
+    $("#caibao-hint").textContent = "";
+    try {
+      const res = await fetch("/api/caibao/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "分析失败");
+      renderCaibao(data);
+    } catch (err) {
+      caibaoError.textContent = err.message || "请求失败, 请检查后端服务。";
+      caibaoError.classList.remove("hidden");
+    } finally {
+      caibaoLoading.classList.add("hidden");
+      caibaoBtn.disabled = false;
+    }
+  });
+
+  function downloadMarkdown(text, filename) {
+    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function renderCaibao(data) {
+    caibaoResult.classList.remove("hidden");
+    $("#caibao-title").textContent = `${data.info.name} (${data.info.ts_code}) · 财报分析`;
+    $("#caibao-sub").textContent =
+      `${data.range.start}~${data.range.end} 年 · ${data.files.length} 份年报 PDF · ` +
+      (data.llm_used ? "🤖 LLM 深度分析" : "📊 规则化分析");
+    $("#caibao-meta").textContent = data.llm_used
+      ? "基于财报分析框架由大模型生成, 仅供参考"
+      : "基于财务指标的规则化分析, 仅供参考";
+    $("#caibao-report").innerHTML = marked.parse(data.markdown || "");
+    $("#caibao-hint").textContent =
+      `已下载 ${data.files.length} 份年报 → ${(data.files[0] && data.files[0].path.split("pdf/caibao/")[1] || "").split("/")[0] || "pdf/caibao/"}`;
+    $("#caibao-download").onclick = () =>
+      downloadMarkdown(data.markdown || "", `${data.info.name}-${data.info.ts_code.split(".")[0]}_财报分析.md`);
+    caibaoResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   // 窗口尺寸变化时, 防抖自适应图表
   let resizeTimer = null;

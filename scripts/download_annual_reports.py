@@ -227,19 +227,22 @@ def detail_pdf_url(fetcher: Fetcher, detail_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 def get_stock_list(industry: str = "", limit: int = 0) -> list[tuple]:
-    """从 tushare 获取上市 A 股列表, 返回 [(ts_code, name)]。"""
+    """从 tushare 获取上市 A 股列表, 返回 [(ts_code, name)]。
+
+    industry 按东财行业分类子串匹配 (与基本面选股一致, 如 "白酒" 匹配白酒股;
+    pro.stock_basic 的 industry 参数是其他分类, 子串匹配更可靠)。
+    """
     import tushare as ts
     ts.set_token(os.getenv("TUSHARE_TOKEN", ""))
     pro = ts.pro_api()
-    if industry:
-        df = pro.stock_basic(industry=industry, list_status="L",
-                             fields="ts_code,name,industry")
-    else:
-        df = pro.stock_basic(list_status="L", fields="ts_code,name,industry")
+    df = pro.stock_basic(list_status="L", fields="ts_code,name,industry")
     if df is None or df.empty:
         return []
     # 仅保留沪深 A 股
     df = df[df["ts_code"].str.endswith((".SH", ".SZ"))]
+    if industry:
+        df = df[df["industry"].fillna("").astype(str).str.contains(industry, na=False)]
+    df = df.sort_values("ts_code")
     if limit and limit > 0:
         df = df.head(limit)
     return [(str(r["ts_code"]), str(r["name"])) for _, r in df.iterrows()]

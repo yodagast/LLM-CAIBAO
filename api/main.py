@@ -95,6 +95,8 @@ class BandOptimizeRequest(BaseModel):
                            description="优化目标: return 收益优先 / annual 年化收益优先 / "
                                        "sharpe 夏普优先 / drawdown 回撤最小 / calmar 卡玛优先 / "
                                        "balanced 综合平衡")
+    max_trades: int = Field(100, ge=1, le=2000,
+                            description="交易次数上限 (每笔=买入→卖出完整周期), 超过则淘汰该参数; 默认 100")
 
 
 class CaibaoRequest(BaseModel):
@@ -364,7 +366,8 @@ def band_optimize(req: BandOptimizeRequest) -> dict:
     try:
         result = band_service.optimize_band(
             df, capital=req.initial_capital,
-            min_sharpe=req.min_sharpe, objective=req.objective)
+            min_sharpe=req.min_sharpe, objective=req.objective,
+            max_trades=req.max_trades)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

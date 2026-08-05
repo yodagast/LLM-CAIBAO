@@ -921,6 +921,7 @@
       initial_capital: parseFloat($("#band_capital").value) || 100000,
       min_sharpe: parseFloat($("#band_min_sharpe").value) || 1.0,
       objective: $("#band_objective").value,
+      max_trades: parseInt($("#band_max_trades").value, 10) || 100,
     };
     if (!payload.ts_code) {
       bandError.textContent = "请输入股票代码。";
@@ -956,10 +957,11 @@
 
     $("#band-result-title").textContent = `${info.name} (${info.ts_code}) · 区间交易最优参数`;
     const achievedTxt = search.achieved ? "✅ 夏普达标" : "⚠️ 未达目标夏普 (已取折中)";
+    const maxTradesTxt = search.max_trades ? ` · 最大交易 ≤ ${search.max_trades}` : "";
     $("#band-result-sub").textContent =
       `${fmtDate(range.start)} ~ ${fmtDate(range.end)} · ${range.bars} 个交易日 · ` +
       `目标 ${search.objective_label || "收益优先"} · ` +
-      `搜索 ${search.tried} 组参数 · 目标夏普 ≥ ${search.min_sharpe} · ${achievedTxt}`;
+      `搜索 ${search.tried} 组参数${maxTradesTxt} · 目标夏普 ≥ ${search.min_sharpe} · ${achievedTxt}`;
     $("#band-range-hint").textContent =
       `数据区间 ${fmtDate(range.start)} ~ ${fmtDate(range.end)} (${range.bars} 根)`;
 

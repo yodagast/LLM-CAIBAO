@@ -35,11 +35,12 @@ _REFINE_RADIUS = 0.06     # 局部细化半径
 
 
 def _simulate_band(closes: np.ndarray, capital: float,
-                   buy: float, sell: float, stop: float) -> np.ndarray:
-    """区间交易净值模拟 (numpy 加速版), 返回每日净值数组。
+                   buy: float, sell: float, stop: float):
+    """区间交易净值模拟 (numpy 加速版), 返回 (每日净值数组, 完整交易次数)。
 
     T+1 规则: 买入当天不检查卖出 (if/elif), 至少持有一个交易日;
     剔除无效交易: 卖出价≈买入价(收益≈0)时跳过本次卖出, 继续持有。
+    完整交易次数 = 有效买入→卖出 的周期数 (用于交易次数上限限制)。
     """
     n = len(closes)
     value = np.empty(n)
@@ -47,6 +48,7 @@ def _simulate_band(closes: np.ndarray, capital: float,
     cash = capital
     bought = False
     hold_price = 0.0  # 持仓成本价 (买入日收盘价)
+    n_trades = 0
     for i in range(n):
         c = closes[i]
         if not bought and c <= buy:
@@ -63,8 +65,9 @@ def _simulate_band(closes: np.ndarray, capital: float,
             cash = shares * c
             shares = 0.0
             bought = False
+            n_trades += 1
         value[i] = cash + shares * c
-    return value
+    return value, n_trades
 
 
 def _simulate_band_trades(closes: np.ndarray, dates: list[str], capital: float,
@@ -256,8 +259,13 @@ def _pick_best(results: list[dict], min_sharpe: float, objective: str) -> dict:
 
 
 def optimize_band(df: pd.DataFrame, capital: float = 100000.0,
-                  min_sharpe: float = 1.0, objective: str = "return") -> dict:
-    """搜索区间交易最优 (买入价/卖出价/止损价), 返回参数+曲线+指标+买入持有基准。"""
+                  min_sharpe: float = 1.0, objective: str = "return",
+                  max_trades: int | None = 100) -> dict:
+    """搜索区间交易最优 (买入价/卖出价/止损价), 返回参数+曲线+指标+买入持有基准。
+
+    max_trades: 交易次数上限 (每笔 = 买入→卖出 完整周期), 搜索时淘汰超过上限的
+    参数组合; None 表示不限制。默认 100, 用于避免选出高频交易(手续费/滑点不现实)的参数。
+    """
     objective = _norm_objective(objective)
     closes = df["close"].to_numpy(dtype=float)
     dates = df["trade_date"].astype(str).tolist()
@@ -277,9 +285,12 @@ def optimize_band(df: pd.DataFrame, capital: float = 100000.0,
         # 防御: 区间交易要求 卖出价 > 买入价 > 止损价, 非法参数直接跳过
         if not (sell > buy > stop):
             return
-        value = _simulate_band(closes, capital, buy, sell, stop)
+        value, n_trades = _simulate_band(closes, capital, buy, sell, stop)
+        # 交易次数超限 → 淘汰该参数 (避免高频交易)
+        if max_trades is not None and n_trades > max_trades:
+            return
         results.append({"buy_price": buy, "sell_price": sell, "stop_price": stop,
-                        "value": value,
+                        "value": value, "trades_count": n_trades,
                         "metrics": _fast_metrics(value, capital, years=real_years)})
 
     # 1) 网格搜索
@@ -320,6 +331,7 @@ def optimize_band(df: pd.DataFrame, capital: float = 100000.0,
             "min_sharpe": min_sharpe,
             "objective": objective,
             "objective_label": OBJECTIVE_LABELS[objective],
+            "max_trades": max_trades,
             "achieved": achieved,
         },
         "band": {

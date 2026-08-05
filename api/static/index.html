@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>选股回测系统</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20" />
+  <link rel="stylesheet" href="/static/css/style.css?v=21" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -373,8 +373,11 @@
               <option value="drawdown">回撤最小</option>
               <option value="calmar">卡玛优先 (收益/回撤比)</option>
               </select>
-            </div>
-          </div>
+            </div>            <div class="field">
+              <label for="band_max_trades">最大交易次数</label>
+              <input type="number" id="band_max_trades" value="100" min="1" max="2000" />
+              <div class="field-tip">每笔=买入→卖出完整周期, 超限参数将被淘汰</div>
+            </div>          </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary" id="band-btn">
               <span class="btn-icon">⚙</span> 自动估算参数并回测
@@ -540,6 +543,6 @@
     <span>单股四策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=20"></script>
+  <script src="/static/js/app.js?v=21"></script>
 </body>
 </html>

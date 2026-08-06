@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -95,29 +96,28 @@ def _avg_mv_amt(basic: pd.DataFrame | None, daily: pd.DataFrame | None) -> tuple
     return avg_mv, avg_amt
 
 
-def _div_per_share(pro, ts_code: str, year: int) -> float | None:
-    """该年度 (end_date=YYYY1231) 每股现金红利 (元)。
-
-    同一分红年度有多条流程记录 (预案/股东大会/实施), 优先取'实施'记录;
-    若无实施记录则取该年度 cash_div 最大值。
-    """
+def _latest_close(pro, ts_code: str) -> float | None:
+    """最近一个交易日 (上个交易日) 的收盘价, 用作股息率-TTM 分母。"""
     try:
-        dv = pro.dividend(ts_code=ts_code)
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
+        df = pro.daily(ts_code=ts_code, start_date=start, end_date=end)
+        if df is None or df.empty:
+            return None
+        df = df.sort_values("trade_date")
+        return float(df.iloc[-1]["close"])
     except Exception:
         return None
-    if dv is None or dv.empty:
-        return None
-    yearly = dv[dv["end_date"].astype(str) == f"{year}1231"]
-    if yearly.empty:
-        return None
-    yearly = yearly.copy()
-    yearly["_cash"] = pd.to_numeric(yearly.get("cash_div"), errors="coerce")
-    impl = yearly[yearly["div_proc"] == "实施"]
-    if not impl.empty:
-        row = impl.sort_values("_cash", ascending=False).iloc[0]
-    else:
-        row = yearly.sort_values("_cash", ascending=False).iloc[0]
-    return ds._to_float(row.get("cash_div"))
+
+
+def _div_per_share(pro, ts_code: str, year: int) -> float | None:
+    """该分红年度 (end_date 年份==year) 每股现金红利之和 (元)。
+
+    同一分红年度存在 中期(0630)/三季(0930)/年度(1231) 多期分红, 每期又有
+    预案/股东大会/实施 多条流程记录。按 end_date 年份聚合所有'实施'记录求和
+    (一年多次分红), 无实施记录时退回该年 cash_div 最大值。
+    """
+    return ds._annual_div_per_share(pro, ts_code, year)
 
 
 def _dividend_growth_3y(pro, ts_code: str, year: int) -> float | None:
@@ -130,13 +130,21 @@ def _dividend_growth_3y(pro, ts_code: str, year: int) -> float | None:
         return None
     div_by_year: dict[int, float] = {}
     dv = dv.copy()
+    if "cash_div" not in dv.columns:
+        return None
     dv["_cash"] = pd.to_numeric(dv.get("cash_div"), errors="coerce")
     impl = dv[dv["div_proc"] == "实施"]
+    # 同 end_date 重复记录 (tushare 偶发) 去重后再求和, 避免同一笔分红重复计入
+    impl = impl.drop_duplicates(subset=["end_date", "cash_div"])
     for _, r in impl.iterrows():
-        y = int(str(r["end_date"])[:4])
+        try:
+            y = int(str(r["end_date"])[:4])
+        except (TypeError, ValueError):
+            continue
         c = ds._to_float(r.get("cash_div"))
         if c is not None:
-            div_by_year[y] = max(div_by_year.get(y, 0.0), c)
+            # 一年多次分红需求和, 不能用 max (原 max 只取单期)
+            div_by_year[y] = div_by_year.get(y, 0.0) + c
     d0 = div_by_year.get(year)
     d3 = div_by_year.get(year - 3)
     if not d0 or not d3 or d0 <= 0 or d3 <= 0:
@@ -148,8 +156,11 @@ def _dividend_growth_3y(pro, ts_code: str, year: int) -> float | None:
 
 
 def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
-                      industry: str, year: int) -> dict | None:
-    """计算单只股票单年的红利低波指标, 返回入库行 (缺数据字段为 None)。"""
+                      industry: str, year: int, last_close: float | None = None) -> dict | None:
+    """计算单只股票单年的红利低波指标, 返回入库行 (缺数据字段为 None)。
+
+    last_close: 上个交易日收盘价 (股息率-TTM 分母); 不传则自动拉取。
+    """
     daily = _year_daily(pro, ts_code, year)
     year_end_close, volatility = _compute_volatility(daily)
 
@@ -168,10 +179,17 @@ def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
     div_per_share = _div_per_share(pro, ts_code, year)
     div_growth = _dividend_growth_3y(pro, ts_code, year)
 
-    # 股息率 = 每股分红 / 年末收盘价 × 100
+    # 静态股息率 = 全年每股分红 / 年末收盘价 × 100
     dividend_yield = None
     if div_per_share is not None and year_end_close:
         dividend_yield = div_per_share / year_end_close * 100.0
+
+    # 股息率-TTM = 全年每股分红 / 上个交易日收盘价 × 100
+    if last_close is None:
+        last_close = _latest_close(pro, ts_code)
+    dividend_yield_ttm = None
+    if div_per_share is not None and last_close:
+        dividend_yield_ttm = div_per_share / last_close * 100.0
 
     payout_ratio = None
     if div_per_share is not None and eps and eps > 0:
@@ -184,6 +202,8 @@ def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
         "industry": industry or "",
         "year": year,
         "dividend_yield": dividend_yield,
+        "dividend_yield_ttm": dividend_yield_ttm,
+        "last_close": last_close,
         "volatility": volatility,
         "div_per_share": div_per_share,
         "free_cashflow": free_cashflow,
@@ -219,8 +239,9 @@ def sync_industry_year(industry: str, year: int, max_stocks: int = 500,
     rows = []
     failed = 0
     for _, row in cand.iterrows():
+        last_close = _latest_close(pro, row["ts_code"])
         r = compute_stock_row(pro, row["ts_code"], row["symbol"], row["name"],
-                              row.get("industry", ""), year)
+                              row.get("industry", ""), year, last_close=last_close)
         if r is None:
             failed += 1
             continue

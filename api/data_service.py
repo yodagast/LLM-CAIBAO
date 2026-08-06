@@ -259,7 +259,8 @@ def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
               start_date: str = "", end_date: str = "", hist_years: int = 20) -> list[dict]:
     """获取 K 线 bars (周期: D日/W周/M月; 复权: qfq前复权/hfq后复权/空不复权)。
 
-    基于 tushare pro_bar 接口。返回升序 bars (含 open/high/low/close/pre_close/change/pct_chg/vol/amount)。
+    基于 tushare pro_bar 接口。返回升序 bars (含 open/high/low/close/pre_close/change/pct_chg/vol/amount/amplitude)。
+    D 线额外附带 turnover_rate (换手率, 来自 daily_basic); W/M 线换手率为空。
     """
     end = end_date or datetime.now().strftime("%Y%m%d")
     start = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
@@ -272,19 +273,42 @@ def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
     if df is None or df.empty:
         raise ValueError(f"未获取到 {ts_code} {freq}线 {adj or '不复权'} 数据")
     df = df.sort_values("trade_date").reset_index(drop=True)
+
+    # 日线附带回换手率 (换手率不随复权改变, 仅日线粒度有)
+    turnover_map = {}
+    if freq.upper() == "D" and kind != "fund":
+        try:
+            pro = _init_pro()
+            tb = pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end,
+                                 fields="trade_date,turnover_rate")
+            if tb is not None and not tb.empty:
+                turnover_map = {
+                    str(r["trade_date"]): _to_float(r.get("turnover_rate"))
+                    for _, r in tb.iterrows()
+                }
+        except Exception:
+            turnover_map = {}
+
     bars = []
     for _, row in df.iterrows():
+        td = str(row["trade_date"])
+        pre = _to_float(row.get("pre_close"))
+        hi = float(row["high"])
+        lo = float(row["low"])
+        amp = ((hi - lo) / pre * 100.0) if (pre and pre > 0) else None
         bars.append({
-            "date": str(row["trade_date"]),
+            "date": td,
             "open": float(row["open"]),
-            "high": float(row["high"]),
-            "low": float(row["low"]),
+            "high": hi,
+            "low": lo,
             "close": float(row["close"]),
-            "pre_close": _to_float(row.get("pre_close")),
+            "pre_close": pre,
             "change": _to_float(row.get("change")),
             "pct_chg": float(row.get("pct_chg", 0.0) or 0.0),
             "vol": float(row.get("vol", 0.0) or 0.0),
             "amount": _to_float(row.get("amount")),
+            "amplitude": amp,
+            "turnover_rate": turnover_map.get(td),
         })
     return bars
 
@@ -324,62 +348,60 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
         if pos > 0:
             pre_close = _to_float(df.iloc[pos - 1].get("close"))
 
-    # 当日行情快照 (成交量单位:手, 成交额单位:千元; 盘后成交量 tushare 无此字段)
+    # 当日行情快照 (成交量单位:手, 成交额单位:千元; 盘后成交量 tushare 无此字段; 振幅=(最高-最低)/昨收)
+    q_hi = _to_float(quote_row.get("high"))
+    q_lo = _to_float(quote_row.get("low"))
+    amp_quote = None
+    if pre_close and pre_close > 0 and q_hi is not None and q_lo is not None:
+        amp_quote = (q_hi - q_lo) / pre_close * 100.0
     quote = {
         "trade_date": last_date,
         "open": _to_float(quote_row.get("open")),
-        "high": _to_float(quote_row.get("high")),
-        "low": _to_float(quote_row.get("low")),
+        "high": q_hi,
+        "low": q_lo,
         "close": _to_float(quote_row.get("close")),
         "pre_close": pre_close,
         "change": _to_float(quote_row.get("change")),
         "pct_chg": _to_float(quote_row.get("pct_chg")),
         "vol": _to_float(quote_row.get("vol")),
         "amount": _to_float(quote_row.get("amount")),
+        "amplitude": amp_quote,
         "after_vol": None,
     }
 
-    # 最新 daily_basic: PB/PE/股本/市值/股息率 (只需最近数月数据取最新)
+    # 最新 daily_basic: PB/PE/股本/市值/股息率 + 全历史逐日换手率 (供日期切换取当日换手率)
     pb = pe = pe_ttm = total_share = float_share = total_mv = circ_mv = dv_ratio = None
+    turnover_map = {}
     try:
-        basic_start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
         b = pro.daily_basic(
-            ts_code=ts_code, start_date=basic_start, end_date=end_date,
-            fields="trade_date,close,pb,pe,pe_ttm,total_share,float_share,total_mv,circ_mv,dv_ratio,dv_ttm",
+            ts_code=ts_code, start_date=start, end_date=end_date,
+            fields="trade_date,close,pb,pe,pe_ttm,total_share,float_share,total_mv,circ_mv,dv_ratio,dv_ttm,turnover_rate",
         )
         if b is not None and not b.empty:
-            b = b.sort_values("trade_date").iloc[-1]
-            pb = _to_float(b.get("pb"))
-            pe = _to_float(b.get("pe"))
-            pe_ttm = _to_float(b.get("pe_ttm"))
-            total_share = _to_float(b.get("total_share"))   # 万股
-            float_share = _to_float(b.get("float_share"))   # 万股
-            total_mv = _to_float(b.get("total_mv"))         # 万元
-            circ_mv = _to_float(b.get("circ_mv"))           # 万元
-            dv_ratio = _to_float(b.get("dv_ratio"))
+            b = b.sort_values("trade_date").reset_index(drop=True)
+            turnover_map = {
+                str(r["trade_date"]): _to_float(r.get("turnover_rate"))
+                for _, r in b.iterrows()
+            }
+            latest = b.iloc[-1]
+            pb = _to_float(latest.get("pb"))
+            pe = _to_float(latest.get("pe"))
+            pe_ttm = _to_float(latest.get("pe_ttm"))
+            total_share = _to_float(latest.get("total_share"))   # 万股
+            float_share = _to_float(latest.get("float_share"))   # 万股
+            total_mv = _to_float(latest.get("total_mv"))         # 万元
+            circ_mv = _to_float(latest.get("circ_mv"))           # 万元
+            dv_ratio = _to_float(latest.get("dv_ratio"))
     except Exception:
         pass
 
-    # 分红: 最新年度已实施每股现金红利
-    div_per_share = None
-    dividend_end = ""
-    try:
-        dv = pro.dividend(ts_code=ts_code)
-        if dv is not None and not dv.empty:
-            dv = dv.sort_values("end_date", ascending=False).reset_index(drop=True)
-            end_yr = str(dv.iloc[0]["end_date"])
-            yearly = dv[dv["end_date"].astype(str) == end_yr].copy()
-            if "cash_div" in yearly.columns:
-                yearly["_cash"] = pd.to_numeric(yearly["cash_div"], errors="coerce")
-            else:
-                yearly["_cash"] = 0.0
-            impl = yearly[yearly["div_proc"] == "实施"]
-            row = (impl.sort_values("_cash", ascending=False).iloc[0]
-                   if not impl.empty else yearly.sort_values("_cash", ascending=False).iloc[0])
-            div_per_share = _to_float(row.get("cash_div"))
-            dividend_end = end_yr
-    except Exception:
-        pass
+    # 当日换手率 (来自 daily_basic)
+    quote["turnover_rate"] = turnover_map.get(last_date)
+
+    # 分红: 最新分红年度全部已实施每股现金红利之和 (一年多次分红求和)
+    div = _dividend_latest(pro, ts_code)
+    div_per_share = div["cash_div"] if div else None
+    dividend_end = div["end_date"] if div else ""
 
     # 股息率: 优先 daily_basic.dv_ratio, 否则 每股分红/最新价
     dividend_yield = dv_ratio
@@ -389,17 +411,24 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     # K 线 bars (全部历史, 供前端缩放查看最多 20 年; 含快照字段供日期切换本地取用)
     bars = []
     for _, row in df.iterrows():
+        td = str(row["trade_date"])
+        pre = _to_float(row.get("pre_close"))
+        hi = float(row["high"])
+        lo = float(row["low"])
+        amp = ((hi - lo) / pre * 100.0) if (pre and pre > 0) else None
         bars.append({
-            "date": str(row["trade_date"]),
+            "date": td,
             "open": float(row["open"]),
-            "high": float(row["high"]),
-            "low": float(row["low"]),
+            "high": hi,
+            "low": lo,
             "close": float(row["close"]),
-            "pre_close": _to_float(row.get("pre_close")),
+            "pre_close": pre,
             "change": _to_float(row.get("change")),
             "pct_chg": float(row.get("pct_chg", 0.0) or 0.0),
             "vol": float(row.get("vol", 0.0) or 0.0),
             "amount": _to_float(row.get("amount")),
+            "amplitude": amp,
+            "turnover_rate": turnover_map.get(td),
         })
 
     return {
@@ -474,11 +503,14 @@ def _fina_latest(pro, ts_code: str, period: str = "") -> dict | None:
     }
 
 
-def _dividend_latest(pro, ts_code: str) -> dict | None:
-    """获取单只股票最近一次实施的分红记录。
+def _annual_div_per_share(pro, ts_code: str, year: int) -> float | None:
+    """某分红年度 (end_date 年份==year) 全部已实施每股现金红利之和 (元)。
 
-    dividend 接口返回同一分红年度的多条流程记录 (预案/股东大会/实施),
-    优先取 div_proc='实施' 的记录; 若无实施记录则取该年度 cash_div 最大的记录。
+    tushare dividend 的 end_date 可为年内各期 (0630 中期/0930 三季/1231 年度),
+    同一方案又有 预案/股东大会/实施 多条流程记录。许多公司一年多次分红 (中期+
+    末期等), 若只取单个 end_date 的单条'实施'记录会严重低估全年每股分红与股息率。
+    故按 end_date 年份聚合所有'实施'记录 cash_div 求和; 无实施记录时退回该年
+    cash_div 最大值。
     """
     try:
         dv = pro.dividend(ts_code=ts_code)
@@ -486,16 +518,54 @@ def _dividend_latest(pro, ts_code: str) -> dict | None:
         return None
     if dv is None or dv.empty:
         return None
-    dv = dv.sort_values("end_date", ascending=False).reset_index(drop=True)
-    end = str(dv.iloc[0]["end_date"])
-    yearly = dv[dv["end_date"].astype(str) == end].copy()
-    yearly["_cash"] = pd.to_numeric(yearly.get("cash_div"), errors="coerce")
+    yearly = dv[dv["end_date"].astype(str).str.startswith(str(year))].copy()
+    if yearly.empty or "cash_div" not in yearly.columns:
+        return None
+    yearly["_cash"] = pd.to_numeric(yearly["cash_div"], errors="coerce")
     impl = yearly[yearly["div_proc"] == "实施"]
     if not impl.empty:
-        row = impl.sort_values("_cash", ascending=False).iloc[0]
-    else:
-        row = yearly.sort_values("_cash", ascending=False).iloc[0]
-    return {"end_date": end, "cash_div": _to_float(row.get("cash_div"))}
+        # tushare 偶发同一 end_date 有重复'实施'记录 (如茅台 20251231 两条相同
+        # 28.02423), 按 (end_date, cash_div) 去重后再求和, 避免重复计入
+        impl = impl.drop_duplicates(subset=["end_date", "cash_div"])
+        total = float(impl["_cash"].sum(skipna=True))
+        return total if total > 0 else None
+    mx = float(yearly["_cash"].max(skipna=True))
+    return mx if mx > 0 else None
+
+
+def _dividend_latest(pro, ts_code: str) -> dict | None:
+    """获取单只股票最近一个分红年度全部已实施每股现金红利之和 (元)。
+
+    按 end_date 年份聚合'实施'记录求和 (解决一年多次分红低估), 取最近有实施记录
+    的年份; 若无实施记录则退回全部记录中 cash_div 最大那条。
+    返回 {"end_date": "YYYY1231", "cash_div": 全年每股现金红利}。
+    """
+    try:
+        dv = pro.dividend(ts_code=ts_code)
+    except Exception:
+        return None
+    if dv is None or dv.empty:
+        return None
+    dv = dv.copy()
+    if "cash_div" not in dv.columns:
+        return None
+    dv["_cash"] = pd.to_numeric(dv["cash_div"], errors="coerce")
+    dv["_yr"] = pd.to_numeric(dv["end_date"].astype(str).str[:4], errors="coerce")
+    impl = dv[(dv["div_proc"] == "实施") & (dv["_yr"].notna())]
+    if not impl.empty:
+        # 同 end_date 重复记录 (tushare 偶发) 去重后再求和
+        impl = impl.drop_duplicates(subset=["end_date", "cash_div"])
+        latest_yr = int(impl["_yr"].max())
+        sel = impl[impl["_yr"] == latest_yr]
+        total = float(sel["_cash"].sum(skipna=True))
+        return {"end_date": f"{latest_yr}1231", "cash_div": total if total > 0 else None}
+    # 无实施记录: 退回现金红利最大的一条
+    dv = dv.dropna(subset=["_cash"])
+    if dv.empty:
+        return None
+    best = dv.loc[dv["_cash"].idxmax()]
+    val = float(best["_cash"])
+    return {"end_date": str(best.get("end_date") or ""), "cash_div": val if val > 0 else None}
 
 
 def screen_by_fundamentals(industry: str = "", period: str = "",

@@ -69,7 +69,13 @@
           let html = `<b>${fmtDate(b.date)}</b><br/>`;
           html += `开盘 ${b.open.toFixed(2)}　收盘 <b>${b.close.toFixed(2)}</b><br/>`;
           html += `最高 ${b.high.toFixed(2)}　最低 ${b.low.toFixed(2)}<br/>`;
-          html += `涨跌 <b style="color:${b.pct_chg >= 0 ? "#e65050" : "#26a69a"}">${b.pct_chg >= 0 ? "+" : ""}${b.pct_chg.toFixed(2)}%</b>`;
+          const ampTip = b.pre_close && b.pre_close > 0 ? ((b.high - b.low) / b.pre_close * 100).toFixed(2) + "%" : "—";
+          const trTip = b.turnover_rate != null ? b.turnover_rate.toFixed(2) + "%" : "—";
+          const volTip = b.vol != null ? (b.vol >= 10000 ? (b.vol / 10000).toFixed(2) + "万" : b.vol.toFixed(0)) + "手" : "—";
+          const amtTip = b.amount != null ? (b.amount >= 100000 ? (b.amount / 100000).toFixed(2) + "亿" : b.amount.toFixed(0) + "千") + "元" : "—";
+          html += `涨跌 <b style="color:${b.pct_chg >= 0 ? "#e65050" : "#26a69a"}">${b.pct_chg >= 0 ? "+" : ""}${b.pct_chg.toFixed(2)}%</b>　振幅 <b>${ampTip}</b><br/>`;
+          html += `成交量 ${volTip}　成交额 ${amtTip}<br/>`;
+          html += `换手率 ${trTip}`;
           return html;
         },
       },
@@ -123,12 +129,16 @@
     const pctEl = $("#q-pct");
     pctEl.textContent = b.pct_chg == null ? "—" : (b.pct_chg >= 0 ? "+" : "") + b.pct_chg.toFixed(2) + "%";
     pctEl.className = "d-value " + cls(b.pct_chg);
+    // 振幅 (高-低)/昨收
+    $("#q-amp").textContent = b.amplitude == null ? "—" : b.amplitude.toFixed(2) + "%";
     // 成交量 (手 -> 万手)
     $("#q-vol").textContent = b.vol == null ? "—"
       : (b.vol >= 10000 ? (b.vol / 10000).toFixed(2) + " 万" : fmtNum(b.vol));
     // 成交额 (千元 -> 元 -> 亿元)
     $("#q-amt").textContent = b.amount == null ? "—"
       : (b.amount >= 100000 ? (b.amount / 100000).toFixed(2) + " 亿" : fmtNum(b.amount) + " 千");
+    // 换手率
+    $("#q-turnover").textContent = b.turnover_rate == null ? "—" : b.turnover_rate.toFixed(2) + "%";
     // 盘后成交量 (tushare 暂无数据)
     $("#q-after").textContent = "—";
     // 顶部价格同步为选中日期

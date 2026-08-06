@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SORTABLE_COLUMNS = {
     "year": "year",
     "dividend_yield": "dividend_yield",
+    "dividend_yield_ttm": "dividend_yield_ttm",
     "volatility": "volatility",
     "div_per_share": "div_per_share",
     "free_cashflow": "free_cashflow",
@@ -28,6 +29,7 @@ SORTABLE_COLUMNS = {
     "avg_daily_mv": "avg_daily_mv",
     "avg_daily_amt": "avg_daily_amt",
     "dividend_growth_3y": "dividend_growth_3y",
+    "last_close": "last_close",
 }
 
 SCHEMA_DDL = """
@@ -38,7 +40,9 @@ CREATE TABLE IF NOT EXISTS red_low_vol (
     name                  VARCHAR(64)  NOT NULL,
     industry              VARCHAR(32)  DEFAULT '',
     year                  INTEGER      NOT NULL,
-    dividend_yield        DOUBLE PRECISION,   -- 股息率 % (当年每股分红 / 年末收盘价)
+    dividend_yield        DOUBLE PRECISION,   -- 静态股息率 % (当年每股分红 / 年末收盘价)
+    dividend_yield_ttm    DOUBLE PRECISION,   -- 股息率-TTM % (当年每股分红 / 上个交易日收盘价)
+    last_close            DOUBLE PRECISION,   -- 上个交易日收盘价 (股息率-TTM 分母)
     volatility            DOUBLE PRECISION,   -- 年化波动率 % (日收益率标准差 * sqrt(252))
     div_per_share         DOUBLE PRECISION,   -- 每股现金分红 (元)
     free_cashflow         DOUBLE PRECISION,   -- 企业自由现金流 (万元)
@@ -81,10 +85,13 @@ def _connect() -> psycopg2.extensions.connection:
 # ---------------------------------------------------------------------------
 
 def init_schema() -> None:
-    """创建 red_low_vol 表与索引 (幂等)。"""
+    """创建 red_low_vol 表与索引 (幂等), 并对旧表迁移新增列。"""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_DDL)
+            # 旧表迁移: 新增 股息率-TTM / 上个交易日收盘价 列
+            cur.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS dividend_yield_ttm DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS last_close DOUBLE PRECISION;")
         conn.commit()
 
 
@@ -94,7 +101,7 @@ def init_schema() -> None:
 
 _UPSERT_COLS = [
     "ts_code", "symbol", "name", "industry", "year",
-    "dividend_yield", "volatility", "div_per_share", "free_cashflow", "eps",
+    "dividend_yield", "dividend_yield_ttm", "last_close", "volatility", "div_per_share", "free_cashflow", "eps",
     "payout_ratio", "dividend_growth_3y", "roe", "debt_to_assets",
     "avg_daily_mv", "avg_daily_amt", "end_date",
 ]
@@ -187,7 +194,7 @@ def query_screen(industry: str, years: list[int], sort_by: str = "dividend_yield
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
     sql = f"""
         SELECT ts_code, symbol, name, industry, year,
-               dividend_yield, volatility, div_per_share, free_cashflow, eps,
+               dividend_yield, dividend_yield_ttm, last_close, volatility, div_per_share, free_cashflow, eps,
                payout_ratio, dividend_growth_3y, roe, debt_to_assets,
                avg_daily_mv, avg_daily_amt, end_date
         FROM red_low_vol

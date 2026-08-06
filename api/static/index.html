@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>选股回测系统</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=25" />
+  <link rel="stylesheet" href="/static/css/style.css?v=26" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -25,206 +25,84 @@
   <main class="container">
     <!-- Tab 导航 -->
     <nav class="tabs">
-      <button type="button" class="tab active" data-tab="backtest">📊 策略回测</button>
-      <button type="button" class="tab" data-tab="fundamental">🔍 基本面选股</button>
+      <button type="button" class="tab active" data-tab="daily">📅 每日推荐</button>
       <button type="button" class="tab" data-tab="redlowvol">💰 红利低波选股</button>
-      <button type="button" class="tab" data-tab="band">🎯 区间交易</button>
-      <button type="button" class="tab" data-tab="caibao">📚 财报分析</button>
-      <button type="button" class="tab" data-tab="daily">📅 每日推荐</button>
+      <button type="button" class="tab" data-tab="fundamental">🔍 基本面选股</button>
+      <button type="button" class="tab" data-tab="caibao">📚 财报挖掘</button>
+      <button type="button" class="tab" data-tab="band">🎯 区间交易策略估算</button>
+      <button type="button" class="tab" data-tab="backtest">📊 策略回测</button>
     </nav>
 
-    <!-- ================= Tab: 策略回测 ================= -->
-    <section id="tab-backtest">
-    <!-- 输入表单 -->
-    <section class="card form-card">
-      <div class="card-title">
-        <h2>回测参数</h2>
-        <span class="hint">输入股票代码与价格参数, 系统自动拉取日线数据运行四策略回测</span>
-      </div>
-      <form id="backtest-form" autocomplete="off">
-        <div class="grid">
-          <div class="field">
-            <label for="ts_code">股票 / ETF 代码 <em>*</em></label>
-            <input type="text" id="ts_code" name="ts_code" list="stock-list"
-                   placeholder="如 000858 / 600036.SH / 513050(ETF)" required />
-            <datalist id="stock-list"></datalist>
-            <div class="field-tip" id="ts-tip"></div>
-          </div>
-          <div class="field">
-            <label for="buy_price">买入价 <em>*</em></label>
-            <input type="number" id="buy_price" name="buy_price" step="0.001" min="0.01"
-                   placeholder="如 75.0" required />
-          </div>
-          <div class="field">
-            <label for="sell_price">卖出价 <em>*</em></label>
-            <input type="number" id="sell_price" name="sell_price" step="0.001" min="0.01"
-                   placeholder="如 150.0" required />
-          </div>
-          <div class="field">
-            <label for="stop_price">止损价 <em>*</em></label>
-            <input type="number" id="stop_price" name="stop_price" step="0.001" min="0.01"
-                   placeholder="如 60.0" required />
-          </div>
-          <div class="field">
-            <label for="lookback_days">低价买入 N 日窗口</label>
-            <input type="number" id="lookback_days" name="lookback_days" value="20" min="2" max="250" />
-          </div>
-          <div class="field">
-            <label for="initial_capital">初始资金 (元)</label>
-            <input type="number" id="initial_capital" name="initial_capital" value="100000" min="1000" step="1000" />
-          </div>
-          <div class="field">
-            <label for="start_date">起始日期</label>
-            <input type="text" id="start_date" name="start_date" value="20170101" placeholder="YYYYMMDD" />
-          </div>
-          <div class="field">
-            <label for="gain_threshold">低价策略涨幅卖出 (%)</label>
-            <input type="number" id="gain_threshold" name="gain_threshold" value="20" min="1" max="500" />
-          </div>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn-primary" id="run-btn">
-            <span class="btn-icon">▶</span> 开始回测
-          </button>
-          <button type="button" class="btn-ghost" id="reset-btn">重置</button>
-          <span class="range-hint" id="range-hint"></span>
-        </div>
-      </form>
-    </section>
-
-    <!-- 最近行情 (回测结果前) -->
-    <section class="card quote-card hidden" id="quote-section">
-      <div class="card-title">
-        <h3 id="quote-title">最近行情</h3>
-        <span class="hint" id="quote-sub"></span>
-      </div>
-      <div id="quote-chart" class="chart quote-chart"></div>
-    </section>
-
-    <!-- 加载 / 错误 -->
-    <div class="loading hidden" id="loading">
-      <div class="spinner"></div>
-      <span>正在拉取数据并回测…</span>
-    </div>
-    <div class="error hidden" id="error"></div>
-
-    <!-- 结果区 -->
-    <section class="result hidden" id="result">
-      <div class="result-head">
-        <h2 id="result-title">回测结果</h2>
-        <span class="hint" id="result-sub"></span>
-      </div>
-
-      <!-- 汇总指标卡 -->
-      <div class="metric-cards" id="metric-cards"></div>
-
-      <!-- 收益曲线图 -->
-      <div class="card chart-card">
+    <!-- ================= Tab: 每日推荐 ================= -->
+    <section id="tab-daily">
+      <section class="card form-card">
         <div class="card-title">
-          <h3>四种策略累计收益曲线 (%)</h3>
-          <span class="hint">以初始资金为基准的累计收益率</span>
+          <h2>每日公司推荐</h2>
+          <span class="hint">全市场区间交易参数估算, 筛选 买入价 ≥ 当日收盘价 的公司 (结果保存至 PostgreSQL)</span>
         </div>
-        <div id="chart" class="chart"></div>
-      </div>
-
-      <!-- 指标对比表 -->
-      <div class="card table-card">
-        <div class="card-title"><h3>指标对比</h3></div>
-        <div class="table-wrap">
-          <table id="metrics-table">
-            <thead>
-              <tr>
-                <th>策略</th>
-                <th>总收益率</th>
-                <th>年化收益率</th>
-                <th>最大回撤</th>
-                <th>卡玛比率</th>
-                <th>夏普比率</th>
-                <th>最终资产</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-    </section><!-- /tab-backtest -->
-
-    <!-- ================= Tab: 基本面选股 ================= -->
-    <section id="tab-fundamental" class="hidden">
-      <div class="card">
-        <div class="card-title">
-          <h2>基本面选股 </h2>
-          <span class="hint">输入行业 + 年份范围, 输出 净利润率/总资产周转率/权益乘数/毛利率 等指标 (数据存入 PostgreSQL, 点表头排序)</span>
-        </div>
-        <form id="screen-form" autocomplete="off">
+        <form id="daily-form" autocomplete="off">
           <div class="grid">
+            <div class="field">
+              <label for="daily_limit">计算数量 (0=全市场)</label>
+              <input type="number" id="daily_limit" value="0" min="0" max="20000" />
+            </div>
             <div class="field field-suggest">
-              <label for="sc_industry">行业 (东财分类)</label>
-              <input type="text" id="sc_industry" placeholder="如 白酒 / 银行 / 煤炭 / 空=全市场" autocomplete="off" />
-              <div class="ind-panel hidden" id="sc-ind-panel"></div>
+              <label for="daily_industry">行业 (可选)</label>
+              <input type="text" id="daily_industry" placeholder="如 白酒 / 银行 / 煤炭, 空=全市场" autocomplete="off" />
+              <div class="ind-panel hidden" id="daily-ind-panel"></div>
             </div>
             <div class="field">
-              <label for="sc_year">年份 <em>*</em></label>
-              <select id="sc_year"></select>
+              <label for="daily_objective">优化目标</label>
+              <select id="daily_objective">
+                <option value="balanced" selected>综合平衡</option>
+                <option value="return">收益优先</option>
+                <option value="sharpe">夏普优先</option>
+                <option value="drawdown">回撤最小</option>
+                <option value="calmar">卡玛优先</option>
+              </select>
             </div>
             <div class="field">
-              <label for="sc_f_roe2"> </label>
-              <span class="hint" style="align-self:center">单选某一年 (如 2025)</span>
+              <label for="daily_max_trades">最大交易次数</label>
+              <input type="number" id="daily_max_trades" value="100" min="1" max="2000" />
+            </div>
+            <div class="field">
+              <label for="daily_start">起始日期 (可选)</label>
+              <input type="text" id="daily_start" value="20170101" placeholder="YYYYMMDD, 如 20200101" />
+            </div>
+            <div class="field">
+              <label for="daily_end">结束日期 (可选)</label>
+              <input type="text" id="daily_end" value="" placeholder="YYYYMMDD, 空=最新" />
             </div>
           </div>
-
-          <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
-          <div class="grid">
-            <div class="field">
-              <label for="sc_f_roe">ROE ≥ (%)</label>
-              <input type="number" id="sc_f_roe" placeholder="如 15" min="0" step="0.5" />
-            </div>
-            <div class="field">
-              <label for="sc_f_debt">资产负债率 ≤ (%)</label>
-              <input type="number" id="sc_f_debt" placeholder="如 60" min="0" max="100" step="1" />
-            </div>
-          </div>
-
           <div class="form-actions">
-            <button type="submit" class="btn-primary" id="screen-btn">
-              <span class="btn-icon">▶</span> 开始筛选
+            <button type="submit" class="btn-primary" id="daily-scan-btn">
+              <span class="btn-icon">📅</span> 扫描全市场
             </button>
-            <button type="button" class="btn-ghost" id="screen-resync-btn">重新同步数据</button>
-            <span class="range-hint" id="screen-hint"></span>
+            <button type="button" class="btn-ghost" id="daily-refresh-btn">↻ 刷新推荐</button>
+            <span class="range-hint" id="daily-hint"></span>
           </div>
         </form>
-      </div>
+      </section>
 
-      <div class="loading hidden" id="screen-loading">
+      <div class="loading hidden" id="daily-loading">
         <div class="spinner"></div>
-        <span>正在逐只拉取财务数据并写入数据库… (行业模式约 20~60 秒, 首次较慢)</span>
+        <span>正在扫描全市场并估算参数…</span>
       </div>
-      <div class="error hidden" id="screen-error"></div>
+      <div class="error hidden" id="daily-error"></div>
 
-      <section class="result hidden" id="screen-result">
+      <section class="result hidden" id="daily-result">
         <div class="result-head">
-          <h2 id="screen-title">基本面筛选结果</h2>
-          <span class="hint" id="screen-sub"></span>
+          <h2 id="daily-title">每日公司推荐</h2>
+          <span class="hint" id="daily-sub"></span>
         </div>
         <div class="card table-card">
-          <div class="table-wrap">
-            <table id="screen-table">
+          <div class="table-wrap" style="max-height:520px;overflow:auto;">
+            <table id="daily-table">
               <thead>
                 <tr>
-                  <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="net_margin">净利润率<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="assets_turn">总资产周转率<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="equity_multiplier">权益乘数<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="total_cur_assets">流动资产<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="money_cap">现金<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="invturn_days">存货周转天数<span class="sort-arrow"></span></th>
-                  <th class="sortable" data-sort="arturn_days">应收周转天数<span class="sort-arrow"></span></th>
+                  <th data-key="ts_code">代码</th><th data-key="name">名称</th><th data-key="kind">类型</th><th data-key="close">收盘价</th>
+                  <th data-key="buy_price">买入价</th><th data-key="sell_price">卖出价</th><th data-key="stop_price">止损价</th>
+                  <th data-key="total_return">总收益</th><th data-key="sharpe">夏普</th><th data-key="trades">交易</th><th data-key="achieved">达标</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -316,7 +194,9 @@
                   <th>代码</th>
                   <th>名称</th>
                   <th>行业</th>
-                  <th class="sortable" data-sort="dividend_yield">股息率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="dividend_yield">静态股息率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="dividend_yield_ttm">股息率TTM<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="last_close">上日收盘<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="volatility">波动率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="div_per_share">每股分红<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="free_cashflow">自由现金流<span class="sort-arrow"></span></th>
@@ -329,6 +209,156 @@
               <tbody></tbody>
             </table>
           </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ================= Tab: 基本面选股 ================= -->
+    <section id="tab-fundamental" class="hidden">
+      <div class="card">
+        <div class="card-title">
+          <h2>基本面选股 </h2>
+          <span class="hint">输入行业 + 年份范围, 输出 净利润率/总资产周转率/权益乘数/毛利率 等指标 (数据存入 PostgreSQL, 点表头排序)</span>
+        </div>
+        <form id="screen-form" autocomplete="off">
+          <div class="grid">
+            <div class="field field-suggest">
+              <label for="sc_industry">行业 (东财分类)</label>
+              <input type="text" id="sc_industry" placeholder="如 白酒 / 银行 / 煤炭 / 空=全市场" autocomplete="off" />
+              <div class="ind-panel hidden" id="sc-ind-panel"></div>
+            </div>
+            <div class="field">
+              <label for="sc_year">年份 <em>*</em></label>
+              <select id="sc_year"></select>
+            </div>
+            <div class="field">
+              <label for="sc_f_roe2"> </label>
+              <span class="hint" style="align-self:center">单选某一年 (如 2025)</span>
+            </div>
+          </div>
+
+          <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
+          <div class="grid">
+            <div class="field">
+              <label for="sc_f_roe">ROE ≥ (%)</label>
+              <input type="number" id="sc_f_roe" placeholder="如 15" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="sc_f_debt">资产负债率 ≤ (%)</label>
+              <input type="number" id="sc_f_debt" placeholder="如 60" min="0" max="100" step="1" />
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="screen-btn">
+              <span class="btn-icon">▶</span> 开始筛选
+            </button>
+            <button type="button" class="btn-ghost" id="screen-resync-btn">重新同步数据</button>
+            <span class="range-hint" id="screen-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="loading hidden" id="screen-loading">
+        <div class="spinner"></div>
+        <span>正在逐只拉取财务数据并写入数据库… (行业模式约 20~60 秒, 首次较慢)</span>
+      </div>
+      <div class="error hidden" id="screen-error"></div>
+
+      <section class="result hidden" id="screen-result">
+        <div class="result-head">
+          <h2 id="screen-title">基本面筛选结果</h2>
+          <span class="hint" id="screen-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap">
+            <table id="screen-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="net_margin">净利润率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="assets_turn">总资产周转率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="equity_multiplier">权益乘数<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_cur_assets">流动资产<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="money_cap">现金<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="invturn_days">存货周转天数<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="arturn_days">应收周转天数<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ================= Tab: 财报分析 ================= -->
+    <section id="tab-caibao" class="hidden">
+      <section class="card form-card">
+        <div class="card-title">
+          <h2>财报分析</h2>
+          <span class="hint">输入股票代码与年份区间, 基于 tushare 财报数据 (保存至本地 PostgreSQL) 生成分析报告</span>
+        </div>
+        <form id="caibao-form" autocomplete="off">
+          <div class="grid">
+            <div class="field">
+              <label for="caibao_ts_code">股票代码 <em>*</em></label>
+              <input type="text" id="caibao_ts_code" list="stock-list"
+                     placeholder="如 600036 / 000858.SZ" required />
+              <div class="field-tip" id="caibao-ts-tip"></div>
+            </div>
+            <div class="field">
+              <label for="caibao_start_year">起始年份 <em>*</em></label>
+              <input type="number" id="caibao_start_year" value="2021" min="2000" max="2100" required />
+            </div>
+            <div class="field">
+              <label for="caibao_end_year">结束年份 <em>*</em></label>
+              <input type="number" id="caibao_end_year" value="2025" min="2000" max="2100" required />
+            </div>
+            <div class="field">
+              <label for="caibao_use_llm">分析方式</label>
+              <select id="caibao_use_llm">
+                <option value="false" selected>基于 TUSHARE 财报数据分析 (默认)</option>
+                <option value="true">基于 LLM 深度分析 (需 .env 配置 API Key)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="caibao-btn">
+              <span class="btn-icon">📚</span> 下载并分析
+            </button>
+            <span class="range-hint" id="caibao-hint"></span>
+          </div>
+        </form>
+      </section>
+
+      <!-- 加载 / 错误 -->
+      <div class="loading hidden" id="caibao-loading">
+        <div class="spinner"></div>
+        <span>正在下载年报并生成分析报告…</span>
+      </div>
+      <div class="error hidden" id="caibao-error"></div>
+
+      <!-- 结果区 -->
+      <section class="result hidden" id="caibao-result">
+        <div class="result-head">
+          <h2 id="caibao-title">财报分析</h2>
+          <div class="caibao-actions">
+            <button type="button" class="btn-primary" id="caibao-download">⬇ 下载 Markdown</button>
+            <span class="hint" id="caibao-sub"></span>
+          </div>
+        </div>
+        <div class="card report-card">
+          <div class="card-title">
+            <h3>分析报告</h3>
+            <span class="hint" id="caibao-meta"></span>
+          </div>
+          <div class="markdown-body" id="caibao-report"></div>
         </div>
       </section>
     </section>
@@ -473,156 +503,129 @@
       </section>
     </section>
 
-    <!-- ================= Tab: 财报分析 ================= -->
-    <section id="tab-caibao" class="hidden">
-      <section class="card form-card">
-        <div class="card-title">
-          <h2>财报分析</h2>
-          <span class="hint">输入股票代码与年份区间, 基于 tushare 财报数据 (保存至本地 PostgreSQL) 生成分析报告</span>
-        </div>
-        <form id="caibao-form" autocomplete="off">
-          <div class="grid">
-            <div class="field">
-              <label for="caibao_ts_code">股票代码 <em>*</em></label>
-              <input type="text" id="caibao_ts_code" list="stock-list"
-                     placeholder="如 600036 / 000858.SZ" required />
-              <div class="field-tip" id="caibao-ts-tip"></div>
-            </div>
-            <div class="field">
-              <label for="caibao_start_year">起始年份 <em>*</em></label>
-              <input type="number" id="caibao_start_year" value="2022" min="2000" max="2100" required />
-            </div>
-            <div class="field">
-              <label for="caibao_end_year">结束年份 <em>*</em></label>
-              <input type="number" id="caibao_end_year" value="2024" min="2000" max="2100" required />
-            </div>
-            <div class="field">
-              <label for="caibao_use_llm">分析方式</label>
-              <select id="caibao_use_llm">
-                <option value="false" selected>基于 TUSHARE 财报数据分析 (默认)</option>
-                <option value="true">基于 LLM 深度分析 (需 .env 配置 API Key)</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button type="submit" class="btn-primary" id="caibao-btn">
-              <span class="btn-icon">📚</span> 下载并分析
-            </button>
-            <span class="range-hint" id="caibao-hint"></span>
-          </div>
-        </form>
-      </section>
-
-      <!-- 加载 / 错误 -->
-      <div class="loading hidden" id="caibao-loading">
-        <div class="spinner"></div>
-        <span>正在下载年报并生成分析报告…</span>
+    <!-- ================= Tab: 策略回测 ================= -->
+    <section id="tab-backtest" class="hidden">
+    <!-- 输入表单 -->
+    <section class="card form-card">
+      <div class="card-title">
+        <h2>回测参数</h2>
+        <span class="hint">输入股票代码与价格参数, 系统自动拉取日线数据运行四策略回测</span>
       </div>
-      <div class="error hidden" id="caibao-error"></div>
-
-      <!-- 结果区 -->
-      <section class="result hidden" id="caibao-result">
-        <div class="result-head">
-          <h2 id="caibao-title">财报分析</h2>
-          <div class="caibao-actions">
-            <button type="button" class="btn-primary" id="caibao-download">⬇ 下载 Markdown</button>
-            <span class="hint" id="caibao-sub"></span>
+      <form id="backtest-form" autocomplete="off">
+        <div class="grid">
+          <div class="field">
+            <label for="ts_code">股票 / ETF 代码 <em>*</em></label>
+            <input type="text" id="ts_code" name="ts_code" list="stock-list"
+                   placeholder="如 000858 / 600036.SH / 513050(ETF)" required />
+            <datalist id="stock-list"></datalist>
+            <div class="field-tip" id="ts-tip"></div>
+          </div>
+          <div class="field">
+            <label for="buy_price">买入价 <em>*</em></label>
+            <input type="number" id="buy_price" name="buy_price" step="0.001" min="0.01"
+                   placeholder="如 75.0" required />
+          </div>
+          <div class="field">
+            <label for="sell_price">卖出价 <em>*</em></label>
+            <input type="number" id="sell_price" name="sell_price" step="0.001" min="0.01"
+                   placeholder="如 150.0" required />
+          </div>
+          <div class="field">
+            <label for="stop_price">止损价 <em>*</em></label>
+            <input type="number" id="stop_price" name="stop_price" step="0.001" min="0.01"
+                   placeholder="如 60.0" required />
+          </div>
+          <div class="field">
+            <label for="lookback_days">低价买入 N 日窗口</label>
+            <input type="number" id="lookback_days" name="lookback_days" value="20" min="2" max="250" />
+          </div>
+          <div class="field">
+            <label for="initial_capital">初始资金 (元)</label>
+            <input type="number" id="initial_capital" name="initial_capital" value="100000" min="1000" step="1000" />
+          </div>
+          <div class="field">
+            <label for="start_date">起始日期</label>
+            <input type="text" id="start_date" name="start_date" value="20170101" placeholder="YYYYMMDD" />
+          </div>
+          <div class="field">
+            <label for="gain_threshold">低价策略涨幅卖出 (%)</label>
+            <input type="number" id="gain_threshold" name="gain_threshold" value="20" min="1" max="500" />
           </div>
         </div>
-        <div class="card report-card">
-          <div class="card-title">
-            <h3>分析报告</h3>
-            <span class="hint" id="caibao-meta"></span>
-          </div>
-          <div class="markdown-body" id="caibao-report"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="run-btn">
+            <span class="btn-icon">▶</span> 开始回测
+          </button>
+          <button type="button" class="btn-ghost" id="reset-btn">重置</button>
+          <span class="range-hint" id="range-hint"></span>
         </div>
-      </section>
+      </form>
     </section>
 
-    <!-- ================= Tab: 每日推荐 ================= -->
-    <section id="tab-daily" class="hidden">
-      <section class="card form-card">
-        <div class="card-title">
-          <h2>每日公司推荐</h2>
-          <span class="hint">全市场区间交易参数估算, 筛选 买入价 ≥ 当日收盘价 的公司 (结果保存至 PostgreSQL)</span>
-        </div>
-        <form id="daily-form" autocomplete="off">
-          <div class="grid">
-            <div class="field">
-              <label for="daily_limit">计算数量 (0=全市场)</label>
-              <input type="number" id="daily_limit" value="0" min="0" max="20000" />
-            </div>
-            <div class="field field-suggest">
-              <label for="daily_industry">行业 (可选)</label>
-              <input type="text" id="daily_industry" placeholder="如 白酒 / 银行 / 煤炭, 空=全市场" autocomplete="off" />
-              <div class="ind-panel hidden" id="daily-ind-panel"></div>
-            </div>
-            <div class="field">
-              <label for="daily_objective">优化目标</label>
-              <select id="daily_objective">
-                <option value="balanced" selected>综合平衡</option>
-                <option value="return">收益优先</option>
-                <option value="sharpe">夏普优先</option>
-                <option value="drawdown">回撤最小</option>
-                <option value="calmar">卡玛优先</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="daily_max_trades">最大交易次数</label>
-              <input type="number" id="daily_max_trades" value="100" min="1" max="2000" />
-            </div>
-            <div class="field">
-              <label for="daily_start">起始日期 (可选)</label>
-              <input type="text" id="daily_start" value="20170101" placeholder="YYYYMMDD, 如 20200101" />
-            </div>
-            <div class="field">
-              <label for="daily_end">结束日期 (可选)</label>
-              <input type="text" id="daily_end" value="" placeholder="YYYYMMDD, 空=最新" />
-            </div>
-          </div>
-          <div class="form-actions">
-            <button type="submit" class="btn-primary" id="daily-scan-btn">
-              <span class="btn-icon">📅</span> 扫描全市场
-            </button>
-            <button type="button" class="btn-ghost" id="daily-refresh-btn">↻ 刷新推荐</button>
-            <span class="range-hint" id="daily-hint"></span>
-          </div>
-        </form>
-      </section>
-
-      <div class="loading hidden" id="daily-loading">
-        <div class="spinner"></div>
-        <span>正在扫描全市场并估算参数…</span>
+    <!-- 最近行情 (回测结果前) -->
+    <section class="card quote-card hidden" id="quote-section">
+      <div class="card-title">
+        <h3 id="quote-title">最近行情</h3>
+        <span class="hint" id="quote-sub"></span>
       </div>
-      <div class="error hidden" id="daily-error"></div>
-
-      <section class="result hidden" id="daily-result">
-        <div class="result-head">
-          <h2 id="daily-title">每日公司推荐</h2>
-          <span class="hint" id="daily-sub"></span>
-        </div>
-        <div class="card table-card">
-          <div class="table-wrap" style="max-height:520px;overflow:auto;">
-            <table id="daily-table">
-              <thead>
-                <tr>
-                  <th data-key="ts_code">代码</th><th data-key="name">名称</th><th data-key="kind">类型</th><th data-key="close">收盘价</th>
-                  <th data-key="buy_price">买入价</th><th data-key="sell_price">卖出价</th><th data-key="stop_price">止损价</th>
-                  <th data-key="total_return">总收益</th><th data-key="sharpe">夏普</th><th data-key="trades">交易</th><th data-key="achieved">达标</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+      <div id="quote-chart" class="chart quote-chart"></div>
     </section>
+
+    <!-- 加载 / 错误 -->
+    <div class="loading hidden" id="loading">
+      <div class="spinner"></div>
+      <span>正在拉取数据并回测…</span>
+    </div>
+    <div class="error hidden" id="error"></div>
+
+    <!-- 结果区 -->
+    <section class="result hidden" id="result">
+      <div class="result-head">
+        <h2 id="result-title">回测结果</h2>
+        <span class="hint" id="result-sub"></span>
+      </div>
+
+      <!-- 汇总指标卡 -->
+      <div class="metric-cards" id="metric-cards"></div>
+
+      <!-- 收益曲线图 -->
+      <div class="card chart-card">
+        <div class="card-title">
+          <h3>四种策略累计收益曲线 (%)</h3>
+          <span class="hint">以初始资金为基准的累计收益率</span>
+        </div>
+        <div id="chart" class="chart"></div>
+      </div>
+
+      <!-- 指标对比表 -->
+      <div class="card table-card">
+        <div class="card-title"><h3>指标对比</h3></div>
+        <div class="table-wrap">
+          <table id="metrics-table">
+            <thead>
+              <tr>
+                <th>策略</th>
+                <th>总收益率</th>
+                <th>年化收益率</th>
+                <th>最大回撤</th>
+                <th>卡玛比率</th>
+                <th>夏普比率</th>
+                <th>最终资产</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    </section><!-- /tab-backtest -->
+
   </main>
 
   <footer class="footer">
     <span>单股四策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=25"></script>
+  <script src="/static/js/app.js?v=28"></script>
 </body>
 </html>

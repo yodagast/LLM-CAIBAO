@@ -264,6 +264,10 @@ def collect_financials(ts_code: str, years: list[int]) -> dict:
     out: dict = {}
     for y in years:
         f, b, i, c = fina.get(y, {}), bal.get(y, {}), inc.get(y, {}), cf.get(y, {})
+        # 跳过无任何披露数据的年份 (如当年年报未披露/超时间范围, 不生成占位行)
+        if not (f or b or i or c):
+            print(f"  [tushare] {ts_code} {y} 年财报未披露, 跳过")
+            continue
         n_income = i.get("n_income_attr_p") or i.get("n_income")
         ocf = c.get("n_cashflow_act")
         # _fmt_yuan 默认 unit="亿" 用于金额(元→亿); 比率/周转/乘数用 unit="元" 直接保留
@@ -320,13 +324,18 @@ def collect_financials(ts_code: str, years: list[int]) -> dict:
 
 
 def _latest_valuation(ts_code: str) -> dict:
-    """最新估值 (PE/PB/股息率/市值)。"""
+    """最新估值 (PE/PB/股息率/市值)。
+
+    股息率用 daily_basic 的 dv_ttm (滚动12个月股息率): 它已包含一年多次分红
+    (中期+末期等), 与自行计算的"最新年度全年分红/股价"一致; 而 dv_ratio 在
+    部分公司会异常偏高 (如五粮液 dv_ratio≈11% vs 正确≈6.8%)。
+    """
     pro = data_service._init_pro()
     try:
         df = pro.daily_basic(ts_code=ts_code,
                              start_date=(datetime.now() - pd.Timedelta(days=30)).strftime("%Y%m%d"),
                              end_date=datetime.now().strftime("%Y%m%d"),
-                             fields="trade_date,close,pe_ttm,pb,dv_ratio,total_mv,circ_mv")
+                             fields="trade_date,close,pe_ttm,pb,dv_ratio,dv_ttm,total_mv,circ_mv")
         if df is None or df.empty:
             return {}
         row = df.sort_values("trade_date").iloc[-1]
@@ -334,7 +343,7 @@ def _latest_valuation(ts_code: str) -> dict:
             "close": round(float(row.get("close", 0) or 0), 2),
             "pe_ttm": round(float(row.get("pe_ttm", 0) or 0), 2),
             "pb": round(float(row.get("pb", 0) or 0), 2),
-            "dv_ratio_%": round(float(row.get("dv_ratio", 0) or 0), 2),
+            "dv_ratio_%": round(float(row.get("dv_ttm", row.get("dv_ratio", 0)) or 0), 2),
             "total_mv_亿": round(float(row.get("total_mv", 0) or 0) / 10000, 2),
         }
     except Exception:
@@ -694,6 +703,14 @@ def rows_to_financials(rows: list[dict]) -> dict:
     return financials
 
 
+def _is_blank_year(d: dict) -> bool:
+    """判断某年财务数据是否完全缺失 (关键指标全为 None, 如 2026 年报未披露)。"""
+    if not d:
+        return True
+    keys = ("total_revenue_亿", "net_income_亿", "total_assets_亿", "roe_%")
+    return all(d.get(k) is None for k in keys)
+
+
 def sync_stock_financial(ts_code: str, years: list[int]) -> int:
     """拉取 tushare 财务数据并入库 financial_data (幂等 upsert), 返回入库行数。"""
     financials = collect_financials(ts_code, years)
@@ -746,8 +763,10 @@ def analyze(ts_code: str, start_year: int, end_year: int,
 
     # 财务数据 (pgsql 优先, 缺失自动同步 tushare 入库)
     financials, valuation = ensure_financials(ts, years)
+    # 跳过数据完全缺失的年份 (如 2026 年报未披露 / 旧脏数据全空行)
+    financials = {y: d for y, d in financials.items() if not _is_blank_year(d)}
     if not financials:
-        raise ValueError(f"未能获取 {info['name']} 的财务数据, 请检查年份范围。")
+        raise ValueError(f"未能获取 {info['name']} 的财务数据, 请检查年份范围 (超出已披露范围的部分已跳过)。")
 
     # 分析
     llm_used = False

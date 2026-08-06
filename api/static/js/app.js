@@ -119,6 +119,13 @@
   fillYearSelect($("#sc_year"), 2025);
   fillYearSelect($("#rlv_year"), 2025);
 
+  // 财报分析: 默认最近 5 个完整财年 (当前年-5 ~ 当前年-1, 如 2026年 → 2021~2025)
+  (function initCaibaoYears() {
+    const curY = new Date().getFullYear();
+    $("#caibao_start_year").value = curY - 5;
+    $("#caibao_end_year").value = curY - 1;
+  })();
+
   function bindIndustrySuggest(input, panel) {
     let timer = null;
     input.addEventListener("input", () => {
@@ -506,7 +513,8 @@
 
   // ---------- 红利低波选股 ----------
   const RLV_SORT_LABELS = {
-    dividend_yield: "股息率", volatility: "波动率", div_per_share: "每股分红",
+    dividend_yield: "静态股息率", dividend_yield_ttm: "股息率TTM", last_close: "上日收盘",
+    volatility: "波动率", div_per_share: "每股分红",
     free_cashflow: "自由现金流", eps: "每股收益", payout_ratio: "分红率",
     dividend_growth_3y: "3年股利增长", roe: "ROE", debt_to_assets: "资产负债率",
     avg_daily_mv: "日均市值", avg_daily_amt: "日均成交额",
@@ -680,9 +688,11 @@
       <tr>
         <td class="num">${it.year}</td>
         <td>${it.ts_code}</td>
-        <td><b>${it.name}</b></td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
         <td>${it.industry || "—"}</td>
         <td class="num ${cls(it.dividend_yield || 0)}">${fmtPctVal(it.dividend_yield)}</td>
+        <td class="num ${cls(it.dividend_yield_ttm || 0)}">${fmtPctVal(it.dividend_yield_ttm)}</td>
+        <td class="num">${it.last_close == null ? "—" : Number(it.last_close).toFixed(2)}</td>
         <td class="num">${fmtPctVal(it.volatility)}</td>
         <td class="num">${it.div_per_share == null ? "—" : Number(it.div_per_share).toFixed(2) + " 元"}</td>
         <td class="num">${fmtYi(it.free_cashflow)}</td>
@@ -692,7 +702,7 @@
         <td class="num">${fmtPctVal(it.debt_to_assets)}</td>
       </tr>`).join("");
     $("#rlv-table tbody").innerHTML = body ||
-      `<tr><td colspan="12" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据</td></tr>`;
+      `<tr><td colspan="14" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据</td></tr>`;
     updateRlvSortArrows();
     rlvResult.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -1171,10 +1181,11 @@
   // ---------- 财报分析 ----------
   caibaoForm.addEventListener("submit", async (e) => {
     e.preventDefault();
+    const curY = new Date().getFullYear();
     const payload = {
       ts_code: caibaoInput.value.trim(),
-      start_year: parseInt($("#caibao_start_year").value, 10) || 2022,
-      end_year: parseInt($("#caibao_end_year").value, 10) || 2024,
+      start_year: parseInt($("#caibao_start_year").value, 10) || (curY - 5),
+      end_year: parseInt($("#caibao_end_year").value, 10) || (curY - 1),
       use_llm: $("#caibao_use_llm").value === "true",
     };
     if (!payload.ts_code) {

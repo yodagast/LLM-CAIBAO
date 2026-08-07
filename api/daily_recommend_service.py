@@ -204,3 +204,37 @@ def get_recommendations(calc_date: str = "", limit: int = 500, industry: str = "
                                             limit=limit, industry=industry)
     date = rows[0]["calc_date"] if rows else pg_service.latest_calc_date()
     return {"calc_date": date, "count": len(rows), "items": rows, "industry": industry}
+
+
+def recommend_dividend(min_dy_ttm: float = 3.0, industry: str = "",
+                       year_min: int | None = None, year_max: int | None = None,
+                       limit: int = 500,
+                       payout_min: float | None = None, payout_max: float | None = None,
+                       roe_min: float | None = None, roe_max: float | None = None) -> dict:
+    """方法2: 按红利低波选股, 推荐 动态股息率(股息率-TTM) >= N 的公司。
+
+    直接读 pgsql 的 red_low_vol (无需重算), 按股息率-TTM 降序。
+    year_min/year_max: 年份区间 (均空→最新单年); payout/roe 可选范围。
+    """
+    items = pg_service.query_dividend_recommend(
+        min_dy_ttm=min_dy_ttm, industry=industry, year_min=year_min, year_max=year_max,
+        limit=limit, payout_min=payout_min, payout_max=payout_max,
+        roe_min=roe_min, roe_max=roe_max)
+    latest = None
+    if not year_min and not year_max:
+        latest = pg_service.latest_rlv_year()
+    calc = year_max or year_min or latest
+    return {
+        "method": "dividend",
+        "min_dy_ttm": min_dy_ttm,
+        "year_min": year_min,
+        "year_max": year_max,
+        "calc_date": str(calc) if calc else "",
+        "industry": industry,
+        "payout_min": payout_min,
+        "payout_max": payout_max,
+        "roe_min": roe_min,
+        "roe_max": roe_max,
+        "count": len(items),
+        "items": items,
+    }

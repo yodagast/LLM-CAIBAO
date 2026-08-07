@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>股票详情</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=14" />
+  <link rel="stylesheet" href="/static/css/style.css?v=15" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <style>
     .detail-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -13,14 +13,16 @@
       padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px; background: #fff;
     }
     .back-link:hover { background: var(--primary-light); }
+    #add-my-btn { white-space: nowrap; }
+    #add-my-btn.added { background: #26a69a; border-color: #26a69a; }
     .detail-title { flex: 1; }
     .detail-title h1 { font-size: 24px; }
     .detail-title .code-line { color: var(--text-soft); font-size: 14px; }
     .detail-price { text-align: right; }
     .detail-price .price { font-size: 30px; font-weight: 700; }
     .detail-price .chg { font-size: 15px; margin-left: 6px; }
-    .pos { color: var(--green); }
-    .neg { color: var(--red); }
+    .pos { color: var(--red); }   /* 涨 = 红 (红涨绿跌) */
+    .neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
 
     .detail-cards {
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px;
@@ -90,6 +92,7 @@
     <div id="content" class="hidden">
       <div class="detail-head">
         <a class="back-link" href="/" onclick="history.length>1&&event.preventDefault();history.back();">← 返回</a>
+        <button type="button" class="btn-primary" id="add-my-btn">⭐ 加入我的股票</button>
         <div class="detail-title">
           <h1 id="d-name">—</h1>
           <span class="code-line" id="d-code-line"></span>
@@ -166,6 +169,6 @@
     <span>股票详情 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/stock_detail.js?v=19"></script>
+  <script src="/static/js/stock_detail.js?v=21"></script>
 </body>
 </html>

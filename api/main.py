@@ -36,6 +36,7 @@ def _startup() -> None:
         pg_service.init_fundamental_schema()
         pg_service.init_financial_schema()
         pg_service.init_daily_rec_schema()
+        pg_service.init_my_stocks_schema()
     except Exception:
         pass
 
@@ -85,6 +86,11 @@ class RedLowVolRequest(BaseModel):
     limit: int = Field(500, ge=1, le=1000, description="返回数量上限")
 
 
+class MyStockRequest(BaseModel):
+    """我的股票 (自选股) 请求。"""
+    ts_code: str = Field(..., description="股票代码, 如 000858 或 000858.SZ")
+
+
 class BandOptimizeRequest(BaseModel):
     """区间交易参数估算请求。"""
     ts_code: str = Field(..., description="股票代码, 如 000858.SZ 或 000858")
@@ -119,6 +125,14 @@ class DailyRecRequest(BaseModel):
     start_date: str = Field("20170101", description="回测起始日期 YYYYMMDD")
     end_date: str = Field("", description="回测结束日期 YYYYMMDD, 空=最新")
     use_cache: bool = Field(True, description="行业扫描时若 pgsql 已有当天数据则直接读取(不重复计算)")
+    method: str = Field("band", description="推荐方法: band=区间交易(方法1), dividend=红利低波动态股息率(方法2)")
+    min_dy_ttm: float = Field(3.0, ge=0, le=100, description="方法2: 动态股息率(股息率-TTM)下限 %")
+    year_min: int | None = Field(None, ge=2000, le=2100, description="方法2: 年份区间下限 (空=最新)")
+    year_max: int | None = Field(None, ge=2000, le=2100, description="方法2: 年份区间上限 (空=最新/不限)")
+    payout_min: float | None = Field(None, ge=0, le=1000, description="方法2: 分红率下限 % (可选)")
+    payout_max: float | None = Field(None, ge=0, le=1000, description="方法2: 分红率上限 % (可选)")
+    roe_min: float | None = Field(None, ge=-100, le=1000, description="方法2: ROE下限 % (可选)")
+    roe_max: float | None = Field(None, ge=-100, le=1000, description="方法2: ROE上限 % (可选)")
 
 
 # ---------------------------------------------------------------------------
@@ -405,12 +419,19 @@ def caibao_analyze(req: CaibaoRequest) -> dict:
 
 @app.post("/api/dailyrecommend/scan")
 def dailyrecommend_scan(req: DailyRecRequest) -> dict:
-    """每日推荐扫描: 批量估算区间交易参数并入库, 筛选 买入价>=当日收盘价 的公司。"""
+    """每日推荐扫描: 方法1=区间交易(买入价>=收盘价); 方法2=红利低波(动态股息率>=N, 可加分红率/ROE范围)。"""
     try:
+        if req.method == "dividend":
+            return daily_recommend_service.recommend_dividend(
+                min_dy_ttm=req.min_dy_ttm, industry=req.industry,
+                year_min=req.year_min, year_max=req.year_max,
+                limit=(req.limit or 500), payout_min=req.payout_min, payout_max=req.payout_max,
+                roe_min=req.roe_min, roe_max=req.roe_max)
         result = daily_recommend_service.scan_all(
             codes=req.ts_codes, industry=req.industry, limit=req.limit,
             objective=req.objective, min_sharpe=req.min_sharpe, max_trades=req.max_trades,
             start_date=req.start_date, end_date=req.end_date, use_cache=req.use_cache)
+        result["method"] = "band"
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"每日推荐扫描失败: {e}")
     return result
@@ -419,9 +440,23 @@ def dailyrecommend_scan(req: DailyRecRequest) -> dict:
 @app.get("/api/dailyrecommend/list")
 def dailyrecommend_list(calc_date: str = Query("", description="计算日 YYYYMMDD, 空=最近一天"),
                         industry: str = Query("", description="行业名称(东财分类), 空=全部"),
-                        limit: int = Query(500, ge=1, le=2000)) -> dict:
-    """查询最近计算日的每日推荐 (buy_price >= close), 可按行业过滤。"""
+                        limit: int = Query(500, ge=1, le=2000),
+                        method: str = Query("band", description="推荐方法: band/dividend"),
+                        min_dy_ttm: float = Query(3.0, ge=0, le=100),
+                        year_min: int | None = Query(None, ge=2000, le=2100),
+                        year_max: int | None = Query(None, ge=2000, le=2100),
+                        payout_min: float | None = Query(None, ge=0, le=1000),
+                        payout_max: float | None = Query(None, ge=0, le=1000),
+                        roe_min: float | None = Query(None, ge=-100, le=1000),
+                        roe_max: float | None = Query(None, ge=-100, le=1000)) -> dict:
+    """查询最近推荐 (方法1: buy_price>=close; 方法2: 动态股息率>=N + 分红率/ROE范围 + 年份区间), 可按行业过滤。"""
     try:
+        if method == "dividend":
+            return daily_recommend_service.recommend_dividend(
+                min_dy_ttm=min_dy_ttm, industry=industry,
+                year_min=year_min, year_max=year_max, limit=limit,
+                payout_min=payout_min, payout_max=payout_max,
+                roe_min=roe_min, roe_max=roe_max)
         return daily_recommend_service.get_recommendations(calc_date, limit, industry)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取每日推荐失败: {e}")
@@ -455,3 +490,66 @@ def redlowvol_screen(req: RedLowVolRequest) -> dict:
         "count": len(items),
         "items": items,
     }
+
+
+# ---------------------------------------------------------------------------
+# 我的股票 (自选股)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/my_stocks/add")
+def my_stocks_add(req: MyStockRequest) -> dict:
+    """添加自选股 (从股票详情页), 返回是否新增。"""
+    try:
+        info = data_service.resolve_code(req.ts_code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
+    inserted = pg_service.add_my_stock(info["ts_code"], info["name"])
+    return {"ok": True, "ts_code": info["ts_code"], "name": info["name"],
+            "added": inserted, "already": not inserted}
+
+
+@app.post("/api/my_stocks/remove")
+def my_stocks_remove(req: MyStockRequest) -> dict:
+    """移除自选股。"""
+    removed = pg_service.remove_my_stock(req.ts_code.strip().upper())
+    return {"ok": True, "removed": removed}
+
+
+@app.get("/api/my_stocks")
+def my_stocks_list() -> dict:
+    """我的股票列表: 最新收盘/涨跌幅/PE/总市值/股息率/每股分红/52周高低 快照。"""
+    stocks = pg_service.list_my_stocks()
+    items = []
+    for s in stocks:
+        try:
+            info = data_service.resolve_code(s["ts_code"])
+            snap = data_service.get_stock_snapshot(info["ts_code"], kind=info["kind"])
+            snap["name"] = info["name"]
+            snap["kind"] = info["kind"]
+            snap["added_at"] = s["added_at"]
+            snap["industry"] = ""
+            try:
+                hit = data_service._stock_basic()
+                hit = hit[hit["ts_code"] == info["ts_code"]]
+                if not hit.empty:
+                    snap["industry"] = str(hit.iloc[0].get("industry") or "")
+            except Exception:
+                pass
+            items.append(snap)
+        except Exception:
+            continue
+    return {"count": len(items), "items": items}
+
+
+@app.get("/api/my_stocks/contains/{code}")
+def my_stocks_contains(code: str) -> dict:
+    """查询某股票是否已在自选股中 (股票详情页按钮初始状态用)。"""
+    try:
+        info = data_service.resolve_code(code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
+    return {"ts_code": info["ts_code"], "in_list": pg_service.has_my_stock(info["ts_code"])}

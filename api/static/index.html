@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>选股回测系统</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=26" />
+  <title>智能选股回测平台</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=31" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -14,8 +14,8 @@
       <div class="brand">
         <span class="brand-logo">📈</span>
         <div>
-          <h1>单股四策略回测系统</h1>
-          <p>数据源 tushare · 买入持有 / 限价买入持有 / 区间交易 / 低价买入</p>
+          <h1>智能选股回测平台</h1>
+          <p>数据源 tushare · 自选股 / 每日推荐 / 红利低波选股 / 基本面选股 / 财报挖掘 / 区间交易估价 / 策略回测</p>
         </div>
       </div>
       <div class="health" id="health"><span class="dot"></span><span id="health-text">连接检测中…</span></div>
@@ -25,16 +25,69 @@
   <main class="container">
     <!-- Tab 导航 -->
     <nav class="tabs">
-      <button type="button" class="tab active" data-tab="daily">📅 每日推荐</button>
+      <button type="button" class="tab active" data-tab="my">⭐ 我的股票</button>
+      <button type="button" class="tab" data-tab="daily">📅 每日推荐</button>
       <button type="button" class="tab" data-tab="redlowvol">💰 红利低波选股</button>
       <button type="button" class="tab" data-tab="fundamental">🔍 基本面选股</button>
       <button type="button" class="tab" data-tab="caibao">📚 财报挖掘</button>
-      <button type="button" class="tab" data-tab="band">🎯 区间交易策略估算</button>
+      <button type="button" class="tab" data-tab="band">🎯 区间交易估价</button>
       <button type="button" class="tab" data-tab="backtest">📊 策略回测</button>
     </nav>
 
+    <!-- ================= Tab: 我的股票 ================= -->
+    <section id="tab-my">
+      <section class="card form-card">
+        <div class="card-title">
+          <h2>我的股票</h2>
+          <span class="hint">在股票详情页点击「⭐ 加入我的股票」即可收藏; 此处展示最新行情快照 (收盘/PE/市值/股息率/52周高低等)</span>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn-primary" id="my-refresh-btn">
+            <span class="btn-icon">↻</span> 刷新
+          </button>
+          <span class="range-hint" id="my-hint"></span>
+        </div>
+      </section>
+
+      <div class="loading hidden" id="my-loading">
+        <div class="spinner"></div>
+        <span>正在加载自选股行情…</span>
+      </div>
+      <div class="error hidden" id="my-error"></div>
+
+      <section class="result" id="my-result">
+        <div class="result-head">
+          <h2 id="my-title">我的股票</h2>
+          <span class="hint" id="my-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap" style="max-height:520px;overflow:auto;">
+            <table id="my-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="ts_code">代码<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="industry">行业<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="last_close">最近收盘<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="week52_low">52周最低<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="week52_high">52周最高<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="pct_chg">涨跌幅<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="pe_ttm">PE(TTM)<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_mv">总市值<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="dividend_yield">股息率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="div_per_share">每股分红<span class="sort-arrow"></span></th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </section>
+
     <!-- ================= Tab: 每日推荐 ================= -->
-    <section id="tab-daily">
+    <section id="tab-daily" class="hidden">
       <section class="card form-card">
         <div class="card-title">
           <h2>每日公司推荐</h2>
@@ -42,6 +95,13 @@
         </div>
         <form id="daily-form" autocomplete="off">
           <div class="grid">
+            <div class="field">
+              <label for="daily_method">推荐方法</label>
+              <select id="daily_method">
+                <option value="band">方法1 · 区间交易 (买入价 ≥ 收盘价)</option>
+                <option value="dividend" selected>方法2 · 红利低波 (动态股息率 &gt; N)</option>
+              </select>
+            </div>
             <div class="field">
               <label for="daily_limit">计算数量 (0=全市场)</label>
               <input type="number" id="daily_limit" value="0" min="0" max="20000" />
@@ -51,6 +111,9 @@
               <input type="text" id="daily_industry" placeholder="如 白酒 / 银行 / 煤炭, 空=全市场" autocomplete="off" />
               <div class="ind-panel hidden" id="daily-ind-panel"></div>
             </div>
+          </div>
+
+          <div class="grid" id="daily-band-fields">
             <div class="field">
               <label for="daily_objective">优化目标</label>
               <select id="daily_objective">
@@ -74,6 +137,33 @@
               <input type="text" id="daily_end" value="" placeholder="YYYYMMDD, 空=最新" />
             </div>
           </div>
+
+          <div class="grid hidden" id="daily-dividend-fields">
+            <div class="field">
+              <label for="daily_min_dy">动态股息率 &gt; (%)</label>
+              <input type="number" id="daily_min_dy" value="5" min="0" step="0.1" placeholder="如 5" />
+            </div>
+            <div class="field">
+              <label for="daily_year_min">起始年份 (空=最新)</label>
+              <input type="number" id="daily_year_min" value="" min="2000" max="2100" step="1" placeholder="如 2022" />
+            </div>
+            <div class="field">
+              <label for="daily_year_max">结束年份 (空=不限)</label>
+              <input type="number" id="daily_year_max" value="" min="2000" max="2100" step="1" placeholder="如 2025" />
+            </div>
+            <div class="field">
+              <label for="daily_roe_min">ROE ≥ (%)</label>
+              <input type="number" id="daily_roe_min" value="" min="0" step="0.5" placeholder="如 15" />
+            </div>
+            <div class="field">
+              <label for="daily_payout_min">分红率 ≥ (%)</label>
+              <input type="number" id="daily_payout_min" value="" min="0" step="1" placeholder="如 30" />
+            </div>
+            <div class="field">
+              <label for="daily_payout_max">分红率 ≤ (%)</label>
+              <input type="number" id="daily_payout_max" value="" min="0" step="1" placeholder="如 80" />
+            </div>
+          </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary" id="daily-scan-btn">
               <span class="btn-icon">📅</span> 扫描全市场
@@ -95,7 +185,7 @@
           <h2 id="daily-title">每日公司推荐</h2>
           <span class="hint" id="daily-sub"></span>
         </div>
-        <div class="card table-card">
+        <div class="card table-card" id="daily-band-result">
           <div class="table-wrap" style="max-height:520px;overflow:auto;">
             <table id="daily-table">
               <thead>
@@ -103,6 +193,21 @@
                   <th data-key="ts_code">代码</th><th data-key="name">名称</th><th data-key="kind">类型</th><th data-key="close">收盘价</th>
                   <th data-key="buy_price">买入价</th><th data-key="sell_price">卖出价</th><th data-key="stop_price">止损价</th>
                   <th data-key="total_return">总收益</th><th data-key="sharpe">夏普</th><th data-key="trades">交易</th><th data-key="achieved">达标</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card table-card hidden" id="daily-div-result">
+          <div class="table-wrap" style="max-height:520px;overflow:auto;">
+            <table id="daily-div-table">
+              <thead>
+                <tr>
+                  <th data-key="ts_code">代码</th><th data-key="name">名称</th><th data-key="industry">行业</th><th data-key="year">年份</th>
+                  <th data-key="dividend_yield_ttm">动态股息率</th><th data-key="dividend_yield">静态股息率</th><th data-key="last_close">上日收盘</th>
+                  <th data-key="volatility">波动率</th><th data-key="div_per_share">每股分红</th><th data-key="payout_ratio">分红率</th>
+                  <th data-key="roe">ROE</th><th data-key="dividend_growth_3y">3年增长</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -127,12 +232,12 @@
               <div class="ind-panel hidden" id="rlv-ind-panel"></div>
             </div>
             <div class="field">
-              <label for="rlv_year">年份 <em>*</em></label>
-              <select id="rlv_year"></select>
+              <label for="rlv_year_min">起始年份 (空=最新)</label>
+              <input type="number" id="rlv_year_min" value="" min="2000" max="2100" step="1" placeholder="如 2022" />
             </div>
             <div class="field">
-              <label for="rlv_f_roe2"> </label>
-              <span class="hint" style="align-self:center">单选某一年 (如 2025)</span>
+              <label for="rlv_year_max">结束年份 (空=不限)</label>
+              <input type="number" id="rlv_year_max" value="" min="2000" max="2100" step="1" placeholder="如 2025" />
             </div>
           </div>
 
@@ -151,16 +256,24 @@
               <input type="number" id="rlv_f_div" placeholder="如 1.0" min="0" step="0.1" />
             </div>
             <div class="field">
-              <label for="rlv_f_roe">ROE ≥ (%)</label>
-              <input type="number" id="rlv_f_roe" placeholder="如 15" min="0" step="0.5" />
+              <label for="rlv_f_roe_min">ROE ≥ (%)</label>
+              <input type="number" id="rlv_f_roe_min" placeholder="如 15" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="rlv_f_roe_max">ROE ≤ (%)</label>
+              <input type="number" id="rlv_f_roe_max" placeholder="如 30" min="0" step="0.5" />
             </div>
             <div class="field">
               <label for="rlv_f_debt">资产负债率 ≤ (%)</label>
               <input type="number" id="rlv_f_debt" placeholder="如 60" min="0" max="100" step="1" />
             </div>
             <div class="field">
-              <label for="rlv_f_payout">分红率 ≥ (%)</label>
-              <input type="number" id="rlv_f_payout" placeholder="如 30" min="0" step="1" />
+              <label for="rlv_f_payout_min">分红率 ≥ (%)</label>
+              <input type="number" id="rlv_f_payout_min" placeholder="如 30" min="0" step="1" />
+            </div>
+            <div class="field">
+              <label for="rlv_f_payout_max">分红率 ≤ (%)</label>
+              <input type="number" id="rlv_f_payout_max" placeholder="如 80" min="0" step="1" />
             </div>
           </div>
 
@@ -623,9 +736,9 @@
   </main>
 
   <footer class="footer">
-    <span>单股四策略回测系统 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
+    <span>智能选股回测平台 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=28"></script>
+  <script src="/static/js/app.js?v=39"></script>
 </body>
 </html>

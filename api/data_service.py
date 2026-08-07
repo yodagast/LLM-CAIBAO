@@ -455,6 +455,82 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
 
 
 # ---------------------------------------------------------------------------
+# 我的股票快照 (轻量行情, 供自选股列表)
+# ---------------------------------------------------------------------------
+
+# 快照 TTL 缓存 (15 分钟): 避免每次列表刷新对每只自选股重复打 tushare (daily/daily_basic/dividend)
+_SNAPSHOT_CACHE: dict[str, tuple[float, dict]] = {}
+_SNAPSHOT_TTL = 15 * 60
+
+
+def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250) -> dict:
+    """轻量行情快照 (我的股票列表用): 最新收盘/涨跌幅 + 52周高低 + PE/PB + 总市值 + 股息率 + 每股分红。
+
+    不取 20 年 K 线, 比 get_stock_detail 轻量; 股息率为 TTM 口径 (最新分红年度全年分红 / 最新收盘价)。
+    结果带 15 分钟 TTL 缓存。
+    """
+    cache_key = f"{ts_code}:{kind}"
+    _now = time.time()
+    _hit = _SNAPSHOT_CACHE.get(cache_key)
+    if _hit and _now - _hit[0] < _SNAPSHOT_TTL:
+        return dict(_hit[1])
+
+    pro = _init_pro()
+    end_date = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=int(days * 1.6) + 30)).strftime("%Y%m%d")
+    df = get_daily(ts_code, kind, start_date=start, end_date=end_date)
+    last = df.iloc[-1]
+    last_close = float(last["close"])
+    last_date = str(last["trade_date"])
+    pct_chg = _to_float(last.get("pct_chg"))
+    recent = df.tail(days)
+    week52_high = float(recent["high"].max())
+    week52_low = float(recent["low"].min())
+
+    pb = pe = pe_ttm = total_mv = circ_mv = dv_ratio = None
+    try:
+        b = pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end_date,
+                            fields="trade_date,close,pb,pe,pe_ttm,total_mv,circ_mv,dv_ratio")
+        if b is not None and not b.empty:
+            b = b.sort_values("trade_date").iloc[-1]
+            pb = _to_float(b.get("pb"))
+            pe = _to_float(b.get("pe"))
+            pe_ttm = _to_float(b.get("pe_ttm"))
+            total_mv = _to_float(b.get("total_mv"))   # 万元
+            circ_mv = _to_float(b.get("circ_mv"))     # 万元
+            dv_ratio = _to_float(b.get("dv_ratio"))
+    except Exception:
+        pass
+
+    div = _dividend_latest(pro, ts_code)
+    div_per_share = div["cash_div"] if div else None
+    dividend_yield = None
+    if div_per_share is not None and last_close:
+        dividend_yield = div_per_share / last_close * 100.0
+
+    result = {
+        "ts_code": ts_code,
+        "name": None,   # 由调用方 (resolve_code) 补齐
+        "last_close": last_close,
+        "last_date": last_date,
+        "pct_chg": pct_chg,
+        "pb": pb,
+        "pe": pe,
+        "pe_ttm": pe_ttm,
+        "total_mv": total_mv,
+        "circ_mv": circ_mv,
+        "dv_ratio": dv_ratio,
+        "div_per_share": div_per_share,
+        "dividend_yield": dividend_yield,
+        "week52_high": week52_high,
+        "week52_low": week52_low,
+    }
+    # 缓存副本, 返回独立对象 (调用方会补 name/industry 等字段, 不改缓存)
+    _SNAPSHOT_CACHE[cache_key] = (time.time(), dict(result))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 基本面选股 (资产负债率 / ROE / 分红率)
 # ---------------------------------------------------------------------------
 

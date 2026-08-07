@@ -207,6 +207,58 @@
     }
   }
 
+  // 加入/移除我的股票 (自选股): 已加入则点击移除, 未加入则点击加入
+  function bindAddMyStock() {
+    const btn = $("#add-my-btn");
+    if (!btn) return;
+    let inList = false;
+
+    function setAddedState() {
+      btn.textContent = "✓ 已加入 · 点击移除";
+      btn.classList.add("added");
+    }
+    function setNotAddedState() {
+      btn.textContent = "⭐ 加入我的股票";
+      btn.classList.remove("added");
+    }
+
+    // 初始查询该股票是否已在自选股, 决定按钮初始状态
+    (async () => {
+      try {
+        const r = await fetch(`/api/my_stocks/contains/${encodeURIComponent(curCode)}`);
+        const data = await r.json();
+        if (data && data.in_list) {
+          inList = true;
+          setAddedState();
+        }
+      } catch (e) { /* 忽略 */ }
+    })();
+
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try {
+        const url = inList ? "/api/my_stocks/remove" : "/api/my_stocks/add";
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ts_code: curCode }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "操作失败");
+        inList = !inList;
+        if (inList) setAddedState(); else setNotAddedState();
+      } catch (err) {
+        btn.textContent = "✗ 操作失败";
+        setTimeout(() => {
+          btn.textContent = inList ? "✓ 已加入 · 点击移除" : "⭐ 加入我的股票";
+        }, 2000);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   async function init() {
     const params = new URLSearchParams(location.search);
     curCode = (params.get("code") || "").trim();
@@ -223,6 +275,7 @@
       $("#loading").classList.add("hidden");
       $("#content").classList.remove("hidden");
       render(data);
+      bindAddMyStock();
       bindKlineToolbar();
       reloadKline();   // 初始按默认(日线+前复权)加载 K 线
       requestAnimationFrame(() => chart && chart.resize());

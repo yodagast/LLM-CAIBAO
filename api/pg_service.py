@@ -619,3 +619,132 @@ def query_daily_recommend(calc_date: str | None = None, buy_above_close: bool = 
             cur.execute(sql, params)
             rows = cur.fetchall()
     return [dict(r) for r in rows]
+
+
+def latest_rlv_year() -> int:
+    """red_low_vol 最新数据年份。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT max(year) FROM red_low_vol;")
+            return int(cur.fetchone()[0] or 0)
+
+
+def query_dividend_recommend(min_dy_ttm: float = 3.0, industry: str = "",
+                             year_min: int | None = None, year_max: int | None = None,
+                             limit: int = 500,
+                             payout_min: float | None = None,
+                             payout_max: float | None = None,
+                             roe_min: float | None = None,
+                             roe_max: float | None = None) -> list[dict]:
+    """红利低波动态股息率推荐: 年份区间 股息率-TTM >= N 的公司, 按 ttm 降序。
+
+    直接读 red_low_vol (无需重新计算), 供每日推荐 方法2 使用。
+    year_min/year_max: 年份区间 (均空→最新单年; 只填一个→单边); payout/roe 为可选范围。
+    """
+    year_conds: list[str] = []
+    year_params: list = []
+    if year_min:
+        year_conds.append("year >= %s")
+        year_params.append(int(year_min))
+    if year_max:
+        year_conds.append("year <= %s")
+        year_params.append(int(year_max))
+    if not year_conds:
+        latest = latest_rlv_year()
+        if not latest:
+            return []
+        year_conds.append("year = %s")
+        year_params.append(latest)
+    sql = ("SELECT ts_code, symbol, name, industry, year, "
+           "dividend_yield, dividend_yield_ttm, last_close, volatility, div_per_share, "
+           "payout_ratio, dividend_growth_3y, roe, debt_to_assets "
+           "FROM red_low_vol WHERE " + " AND ".join(year_conds))
+    params: list = year_params
+    if industry.strip():
+        sql += " AND industry LIKE %s"
+        params.append(f"%{industry.strip()}%")
+    if min_dy_ttm is not None and float(min_dy_ttm) > 0:
+        sql += " AND dividend_yield_ttm >= %s"
+        params.append(float(min_dy_ttm))
+    if payout_min is not None:
+        sql += " AND payout_ratio >= %s"
+        params.append(float(payout_min))
+    if payout_max is not None:
+        sql += " AND payout_ratio <= %s"
+        params.append(float(payout_max))
+    if roe_min is not None:
+        sql += " AND roe >= %s"
+        params.append(float(roe_min))
+    if roe_max is not None:
+        sql += " AND roe <= %s"
+        params.append(float(roe_max))
+    sql += " ORDER BY dividend_yield_ttm DESC NULLS LAST, ts_code ASC LIMIT %s"
+    params.append(int(limit))
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# 我的股票表 my_stocks (自选股, 从股票详情页添加)
+# ---------------------------------------------------------------------------
+
+MY_STOCKS_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS my_stocks (
+    id          BIGSERIAL PRIMARY KEY,
+    ts_code     VARCHAR(16)  NOT NULL UNIQUE,
+    name        VARCHAR(64)  NOT NULL DEFAULT '',
+    added_at    TIMESTAMP    DEFAULT now()
+);
+"""
+
+
+def init_my_stocks_schema() -> None:
+    """创建 my_stocks 表 (幂等)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(MY_STOCKS_SCHEMA_DDL)
+        conn.commit()
+
+
+def add_my_stock(ts_code: str, name: str) -> bool:
+    """添加自选股 (ts_code 唯一), 返回是否为新插入 (已存在返回 False)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO my_stocks (ts_code, name) VALUES (%s, %s) "
+                "ON CONFLICT (ts_code) DO NOTHING",
+                (ts_code, name),
+            )
+            inserted = cur.rowcount > 0
+        conn.commit()
+    return inserted
+
+
+def remove_my_stock(ts_code: str) -> int:
+    """移除自选股, 返回删除行数。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM my_stocks WHERE ts_code = %s", (ts_code,))
+            n = cur.rowcount
+        conn.commit()
+    return n
+
+
+def list_my_stocks() -> list[dict]:
+    """列出全部自选股 (按添加时间升序)。"""
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT ts_code, name, added_at FROM my_stocks ORDER BY added_at ASC, id ASC")
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+def has_my_stock(ts_code: str) -> bool:
+    """某股票是否已在自选股中。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM my_stocks WHERE ts_code = %s LIMIT 1", (ts_code,))
+            return cur.fetchone() is not None

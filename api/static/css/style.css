@@ -257,8 +257,8 @@ body {
 .metric .m-label { font-size: 12px; color: var(--text-soft); margin-bottom: 4px; }
 .metric .m-value { font-size: 22px; font-weight: 700; }
 .metric .m-sub { font-size: 12px; color: var(--text-soft); margin-top: 2px; }
-.metric.up { border-top-color: var(--green); }
-.metric.down { border-top-color: var(--red); }
+.metric.up { border-top-color: var(--red); }    /* 涨/优 = 红 (红涨绿跌) */
+.metric.down { border-top-color: var(--green); } /* 跌/差 = 绿 (红涨绿跌) */
 .metric.accent1 { border-top-color: #4f46e5; }
 .metric.accent2 { border-top-color: #ea580c; }
 .metric.accent3 { border-top-color: #059669; }
@@ -289,8 +289,8 @@ thead th[data-key].sort-active { color: var(--primary); }
 tbody td { padding: 11px 14px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }
 tbody tr:hover { background: #f8fafc; }
 td.num { font-variant-numeric: tabular-nums; }
-td.pos { color: var(--green); }
-td.neg { color: var(--red); }
+td.pos { color: var(--red); }   /* 涨 = 红 (红涨绿跌) */
+td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
 .stock-link {
   color: var(--primary); text-decoration: none; font-weight: 600;
   border-bottom: 1px dashed rgba(79, 70, 229, .5);

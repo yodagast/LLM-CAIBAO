@@ -48,14 +48,26 @@
 
   // 每日推荐元素
   const dailyForm = $("#daily-form");
+  const dailyMethod = $("#daily_method");
   const dailyScanBtn = $("#daily-scan-btn");
   const dailyRefreshBtn = $("#daily-refresh-btn");
   const dailyLoading = $("#daily-loading");
   const dailyError = $("#daily-error");
   const dailyResult = $("#daily-result");
   const dailyTable = $("#daily-table");
+  const dailyBandResult = $("#daily-band-result");
+  const dailyDivResult = $("#daily-div-result");
+  const dailyDivTable = $("#daily-div-table");
   let dailyItems = [];
   let dailySort = { key: "close", order: "desc" };
+  let dailyDivItems = [];
+  let dailyDivSort = { key: "dividend_yield_ttm", order: "desc" };
+
+  // 我的股票元素
+  const myRefreshBtn = $("#my-refresh-btn");
+  const myLoading = $("#my-loading");
+  const myError = $("#my-error");
+  const mySub = $("#my-sub");
 
   let chart = null;
   let quoteChart = null;
@@ -90,21 +102,24 @@
     }
   }
 
-  // ---------- 股票联想 ----------
-  stockInput.addEventListener("input", () => {
-    clearTimeout(searchTimer);
-    const kw = stockInput.value.trim();
-    if (!kw) { stockList.innerHTML = ""; tsTip.textContent = ""; return; }
-    searchTimer = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/stock/search?keyword=${encodeURIComponent(kw)}`);
-        const data = await r.json();
-        stockList.innerHTML = (data.items || [])
-          .map((it) => `<option value="${it.ts_code}">${it.name} ${it.kind === "fund" ? "[ETF]" : ""} (${it.symbol})</option>`)
-          .join("");
-      } catch (e) { /* 忽略联想失败 */ }
-    }, 300);
-  });
+  // ---------- 股票联想 (共享 datalist, 回测/区间估价/财报 三处复用) ----------
+  function bindStockSuggest(input, tip) {
+    input.addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      const kw = input.value.trim();
+      if (!kw) { stockList.innerHTML = ""; if (tip) tip.textContent = ""; return; }
+      searchTimer = setTimeout(async () => {
+        try {
+          const r = await fetch(`/api/stock/search?keyword=${encodeURIComponent(kw)}`);
+          const data = await r.json();
+          stockList.innerHTML = (data.items || [])
+            .map((it) => `<option value="${it.ts_code}">${it.name} ${it.kind === "fund" ? "[ETF]" : ""} (${it.symbol})</option>`)
+            .join("");
+        } catch (e) { /* 忽略联想失败 */ }
+      }, 300);
+    });
+  }
+  bindStockSuggest(stockInput, tsTip);
 
   // ---------- 行业联想 (基本面选股 / 红利低波选股) ----------
   // 年份下拉: 2000 ~ 当前年, 默认 2025
@@ -117,7 +132,6 @@
     select.innerHTML = html;
   }
   fillYearSelect($("#sc_year"), 2025);
-  fillYearSelect($("#rlv_year"), 2025);
 
   // 财报分析: 默认最近 5 个完整财年 (当前年-5 ~ 当前年-1, 如 2026年 → 2021~2025)
   (function initCaibaoYears() {
@@ -198,20 +212,7 @@
   });
 
   // 区间交易 tab: 股票联想 (共享 datalist) + 名称解析
-  bandInput.addEventListener("input", () => {
-    clearTimeout(searchTimer);
-    const kw = bandInput.value.trim();
-    if (!kw) { stockList.innerHTML = ""; bandTip.textContent = ""; return; }
-    searchTimer = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/stock/search?keyword=${encodeURIComponent(kw)}`);
-        const data = await r.json();
-        stockList.innerHTML = (data.items || [])
-          .map((it) => `<option value="${it.ts_code}">${it.name} ${it.kind === "fund" ? "[ETF]" : ""} (${it.symbol})</option>`)
-          .join("");
-      } catch (e) { /* 忽略联想失败 */ }
-    }, 300);
-  });
+  bindStockSuggest(bandInput, bandTip);
   bandInput.addEventListener("change", async () => {
     const code = bandInput.value.trim();
     if (!code) { bandTip.textContent = ""; return; }
@@ -232,20 +233,7 @@
   });
 
   // 财报分析 tab: 股票联想 (共享 datalist) + 名称解析
-  caibaoInput.addEventListener("input", () => {
-    clearTimeout(searchTimer);
-    const kw = caibaoInput.value.trim();
-    if (!kw) { stockList.innerHTML = ""; caibaoTip.textContent = ""; return; }
-    searchTimer = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/stock/search?keyword=${encodeURIComponent(kw)}`);
-        const data = await r.json();
-        stockList.innerHTML = (data.items || [])
-          .map((it) => `<option value="${it.ts_code}">${it.name} ${it.kind === "fund" ? "[ETF]" : ""} (${it.symbol})</option>`)
-          .join("");
-      } catch (e) { /* 忽略联想失败 */ }
-    }, 300);
-  });
+  bindStockSuggest(caibaoInput, caibaoTip);
   caibaoInput.addEventListener("change", async () => {
     const code = caibaoInput.value.trim();
     if (!code) { caibaoTip.textContent = ""; return; }
@@ -532,18 +520,47 @@
   // 当前排序状态 (表头点击修改; 默认股息率降序)
   const rlvSort = { by: "dividend_yield", order: "desc" };
 
+  // 红利低波年份区间: 起始~结束 (空=最新/不限), 生成年份数组
+  function _rlvYears() {
+    const yMin = parseInt($("#rlv_year_min").value, 10);
+    const yMax = parseInt($("#rlv_year_max").value, 10);
+    const cur = new Date().getFullYear();
+    if (yMin && yMax && yMax >= yMin) {
+      const arr = []; for (let y = yMin; y <= yMax; y++) arr.push(y); return arr;
+    }
+    if (yMin) {
+      const arr = []; for (let y = yMin; y <= cur; y++) arr.push(y); return arr;
+    }
+    if (yMax) {
+      const arr = []; for (let y = 2000; y <= yMax; y++) arr.push(y); return arr;
+    }
+    return [2025];
+  }
+
   // 从表单构造红利低波请求 (多年份数组 + 筛选条件 + 当前排序)
   function buildRlvPayload() {
-    const years = [parseInt($("#rlv_year").value, 10)];
+    const years = _rlvYears();
 
     const filters = {};
     const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
     const dy = fNum("#rlv_f_dy"); if (dy !== null) filters.dividend_yield = { min: dy };
     const vol = fNum("#rlv_f_vol"); if (vol !== null) filters.volatility = { max: vol };
     const div = fNum("#rlv_f_div"); if (div !== null) filters.div_per_share = { min: div };
-    const roe = fNum("#rlv_f_roe"); if (roe !== null) filters.roe = { min: roe };
+    const roeMin = fNum("#rlv_f_roe_min");
+    const roeMax = fNum("#rlv_f_roe_max");
+    if (roeMin !== null || roeMax !== null) {
+      filters.roe = {};
+      if (roeMin !== null) filters.roe.min = roeMin;
+      if (roeMax !== null) filters.roe.max = roeMax;
+    }
     const debt = fNum("#rlv_f_debt"); if (debt !== null) filters.debt_to_assets = { max: debt };
-    const payout = fNum("#rlv_f_payout"); if (payout !== null) filters.payout_ratio = { min: payout };
+    const payoutMin = fNum("#rlv_f_payout_min");
+    const payoutMax = fNum("#rlv_f_payout_max");
+    if (payoutMin !== null || payoutMax !== null) {
+      filters.payout_ratio = {};
+      if (payoutMin !== null) filters.payout_ratio.min = payoutMin;
+      if (payoutMax !== null) filters.payout_ratio.max = payoutMax;
+    }
 
     return {
       industry: $("#rlv_industry").value.trim(),
@@ -977,7 +994,8 @@
     const { info, params, search, range, band, baseline } = data;
     bandResult.classList.remove("hidden");
 
-    $("#band-result-title").textContent = `${info.name} (${info.ts_code}) · 区间交易最优参数`;
+    $("#band-result-title").innerHTML =
+      `<a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(info.ts_code)}" target="_blank" title="查看详情">${info.name}</a> (${info.ts_code}) · 区间交易最优参数`;
     const achievedTxt = search.achieved ? "✅ 夏普达标" : "⚠️ 未达目标夏普 (已取折中)";
     const maxTradesTxt = search.max_trades ? ` · 最大交易 ≤ ${search.max_trades}` : "";
     $("#band-result-sub").textContent =
@@ -1296,20 +1314,109 @@
     });
   }
 
+  // 方法2: 红利低波 (动态股息率) 表格
+  const _dp = (v, d = 2) =>
+    (v === null || v === undefined || isNaN(Number(v))) ? "—" : Number(v).toFixed(d);
+  function _sortedDailyDiv() {
+    const k = dailyDivSort.key;
+    const arr = dailyDivItems.slice();
+    arr.sort((a, b) => {
+      let va = a[k], vb = b[k];
+      const na = parseFloat(va), nb = parseFloat(vb);
+      const cmp = (!isNaN(na) && !isNaN(nb)) ? na - nb : String(va).localeCompare(String(vb), "zh");
+      return dailyDivSort.order === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }
+  function _renderDailyDivTable() {
+    const body = _sortedDailyDiv().map((it) => `
+      <tr>
+        <td>${it.ts_code}</td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
+        <td>${it.industry || "—"}</td>
+        <td class="num">${it.year}</td>
+        <td class="num ${cls(it.dividend_yield_ttm)}">${_dp(it.dividend_yield_ttm)}%</td>
+        <td class="num ${cls(it.dividend_yield)}">${_dp(it.dividend_yield)}%</td>
+        <td class="num">${_dp(it.last_close)}</td>
+        <td class="num">${_dp(it.volatility)}%</td>
+        <td class="num">${_dp(it.div_per_share)}</td>
+        <td class="num">${_dp(it.payout_ratio)}%</td>
+        <td class="num">${_dp(it.roe)}%</td>
+        <td class="num">${_dp(it.dividend_growth_3y)}%</td>
+      </tr>`).join("")
+      || `<tr><td colspan="12" style="text-align:center;color:var(--text-soft)">暂无推荐, 请先确认红利低波数据已同步或调整阈值</td></tr>`;
+    $("#daily-div-table tbody").innerHTML = body;
+    dailyDivTable.querySelectorAll("th[data-key]").forEach((th) => {
+      const active = th.dataset.key === dailyDivSort.key;
+      th.classList.toggle("sort-active", active);
+      th.textContent = th.textContent.replace(/\s*[▲▼]\s*$/, "");
+      if (active) th.textContent = `${th.textContent} ${dailyDivSort.order === "asc" ? "▲" : "▼"}`;
+    });
+  }
+
+  // 每日推荐方法2: 年份区间标签 (year_min/year_max → 显示文本)
+  function _dailyYearLabel(data) {
+    const mn = data.year_min, mx = data.year_max;
+    if (mn && mx) return `${mn}~${mx}`;
+    if (mn) return `≥${mn}`;
+    if (mx) return `≤${mx}`;
+    return "最新";
+  }
+
   function renderDaily(data) {
     dailyResult.classList.remove("hidden");
-    $("#daily-title").textContent = "每日公司推荐 (买入价 ≥ 当日收盘价)";
-    const scanInfo = data.recommend_count !== undefined
-      ? ` · 扫描 ${data.scanned} 只 / 入库 ${data.stored} 行` : "";
-    const dateRange = data.start_date
-      ? ` · 区间 ${data.start_date}~${data.end_date || "最新"}` : "";
-    const indTag = data.industry ? ` · 行业 ${data.industry}` : "";
-    $("#daily-sub").textContent =
-      `计算日 ${data.calc_date || "—"} · 推荐 ${data.count} 只${indTag}${scanInfo}${dateRange}`;
-    dailyItems = data.items || [];
-    _renderDailyTable();
+    const isDiv = data.method === "dividend";
+    dailyBandResult.classList.toggle("hidden", isDiv);
+    dailyDivResult.classList.toggle("hidden", !isDiv);
+    if (isDiv) {
+      $("#daily-title").textContent = `每日公司推荐 · 方法2 红利低波 (动态股息率 > ${data.min_dy_ttm}%)`;
+      const indTag = data.industry ? ` · 行业 ${data.industry}` : "";
+      const yearTag = ` · 年份 ${_dailyYearLabel(data)}`;
+      let payoutTag = "";
+      if (data.payout_min != null && data.payout_max != null) {
+        payoutTag = ` · 分红率 ${data.payout_min}~${data.payout_max}%`;
+      } else if (data.payout_min != null) {
+        payoutTag = ` · 分红率 ≥ ${data.payout_min}%`;
+      } else if (data.payout_max != null) {
+        payoutTag = ` · 分红率 ≤ ${data.payout_max}%`;
+      }
+      let roeTag = "";
+      if (data.roe_min != null && data.roe_max != null) {
+        roeTag = ` · ROE ${data.roe_min}~${data.roe_max}%`;
+      } else if (data.roe_min != null) {
+        roeTag = ` · ROE ≥ ${data.roe_min}%`;
+      } else if (data.roe_max != null) {
+        roeTag = ` · ROE ≤ ${data.roe_max}%`;
+      }
+      $("#daily-sub").textContent =
+        `推荐 ${data.count} 只${indTag}${yearTag}${roeTag}${payoutTag} · 数据来自 PostgreSQL (red_low_vol)`;
+      dailyDivItems = data.items || [];
+      _renderDailyDivTable();
+    } else {
+      $("#daily-title").textContent = "每日公司推荐 (方法1 · 买入价 ≥ 当日收盘价)";
+      const scanInfo = data.recommend_count !== undefined
+        ? ` · 扫描 ${data.scanned} 只 / 入库 ${data.stored} 行` : "";
+      const dateRange = data.start_date
+        ? ` · 区间 ${data.start_date}~${data.end_date || "最新"}` : "";
+      const indTag = data.industry ? ` · 行业 ${data.industry}` : "";
+      $("#daily-sub").textContent =
+        `计算日 ${data.calc_date || "—"} · 推荐 ${data.count} 只${indTag}${scanInfo}${dateRange}`;
+      dailyItems = data.items || [];
+      _renderDailyTable();
+    }
     dailyResult.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  function toggleDailyFields() {
+    const m = dailyMethod.value;
+    $("#daily-band-fields").classList.toggle("hidden", m !== "band");
+    $("#daily-dividend-fields").classList.toggle("hidden", m !== "dividend");
+    dailyScanBtn.innerHTML = m === "dividend"
+      ? '<span class="btn-icon">📈</span> 获取推荐'
+      : '<span class="btn-icon">📅</span> 扫描全市场';
+  }
+  dailyMethod.addEventListener("change", toggleDailyFields);
+  toggleDailyFields();
 
   async function runDailyScan(payload) {
     dailyError.classList.add("hidden");
@@ -1326,9 +1433,14 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "扫描失败");
-      $("#daily-hint").textContent = data.cached
-        ? `✓ 命中缓存 (计算日 ${data.calc_date} 已有数据): 推荐 ${data.recommend_count} 只, 直接读取 pgsql`
-        : `扫描完成: 推荐 ${data.recommend_count} 只, 已入库 ${data.stored} 行 (计算日 ${data.calc_date}, 区间 ${data.start_date}~${data.end_date || "最新"})`;
+      if (data.method === "dividend") {
+        $("#daily-hint").textContent =
+          `✓ 查询完成: 推荐 ${data.count} 只 (动态股息率 > ${data.min_dy_ttm}%, 年份 ${_dailyYearLabel(data)})`;
+      } else {
+        $("#daily-hint").textContent = data.cached
+          ? `✓ 命中缓存 (计算日 ${data.calc_date} 已有数据): 推荐 ${data.recommend_count} 只, 直接读取 pgsql`
+          : `扫描完成: 推荐 ${data.recommend_count} 只, 已入库 ${data.stored} 行 (计算日 ${data.calc_date}, 区间 ${data.start_date}~${data.end_date || "最新"})`;
+      }
       await loadDailyRecommend();
     } catch (err) {
       dailyError.textContent = err.message || "请求失败, 请检查后端服务。";
@@ -1343,8 +1455,24 @@
   async function loadDailyRecommend() {
     dailyError.classList.add("hidden");
     try {
+      const method = dailyMethod.value;
       const ind = encodeURIComponent($("#daily_industry").value.trim());
-      const res = await fetch(`/api/dailyrecommend/list?industry=${ind}`);
+      let url = `/api/dailyrecommend/list?method=${method}&industry=${ind}`;
+      if (method === "dividend") {
+        const minDy = parseFloat($("#daily_min_dy").value);
+        const yMin = parseInt($("#daily_year_min").value, 10);
+        const yMax = parseInt($("#daily_year_max").value, 10);
+        const pMin = parseFloat($("#daily_payout_min").value);
+        const pMax = parseFloat($("#daily_payout_max").value);
+        const rMin = parseFloat($("#daily_roe_min").value);
+        url += `&min_dy_ttm=${isNaN(minDy) ? 3 : minDy}`;
+        if (!isNaN(yMin) && yMin) url += `&year_min=${yMin}`;
+        if (!isNaN(yMax) && yMax) url += `&year_max=${yMax}`;
+        if (!isNaN(pMin)) url += `&payout_min=${pMin}`;
+        if (!isNaN(pMax)) url += `&payout_max=${pMax}`;
+        if (!isNaN(rMin)) url += `&roe_min=${rMin}`;
+      }
+      const res = await fetch(url);
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "获取失败");
       renderDaily(data);
@@ -1356,7 +1484,14 @@
 
   dailyForm.addEventListener("submit", (e) => {
     e.preventDefault();
+    const method = dailyMethod.value;
+    const pMin = parseFloat($("#daily_payout_min").value);
+    const pMax = parseFloat($("#daily_payout_max").value);
+    const rMin = parseFloat($("#daily_roe_min").value);
+    const yMin = parseInt($("#daily_year_min").value, 10);
+    const yMax = parseInt($("#daily_year_max").value, 10);
     const payload = {
+      method,
       ts_codes: "",
       industry: $("#daily_industry").value.trim(),
       limit: parseInt($("#daily_limit").value, 10) || 0,
@@ -1365,6 +1500,12 @@
       start_date: $("#daily_start").value.trim() || "20170101",
       end_date: $("#daily_end").value.trim(),
       use_cache: true,
+      min_dy_ttm: parseFloat($("#daily_min_dy").value) || 3,
+      year_min: (!isNaN(yMin) && yMin) ? yMin : null,
+      year_max: (!isNaN(yMax) && yMax) ? yMax : null,
+      payout_min: isNaN(pMin) ? null : pMin,
+      payout_max: isNaN(pMax) ? null : pMax,
+      roe_min: isNaN(rMin) ? null : rMin,
     };
     runDailyScan(payload);
   });
@@ -1383,7 +1524,132 @@
     });
   });
 
+  dailyDivTable.querySelectorAll("th[data-key]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      if (dailyDivSort.key === key) {
+        dailyDivSort.order = dailyDivSort.order === "asc" ? "desc" : "asc";
+      } else {
+        dailyDivSort.key = key;
+        dailyDivSort.order = "desc";
+      }
+      _renderDailyDivTable();
+    });
+  });
+
   dailyRefreshBtn.addEventListener("click", loadDailyRecommend);
+
+  // ---------- 我的股票 (自选股) ----------
+  let myItems = [];
+  let mySort = { key: "last_close", order: "desc" };
+
+  async function loadMyStocks() {
+    myError.classList.add("hidden");
+    myLoading.classList.remove("hidden");
+    myRefreshBtn.disabled = true;
+    try {
+      const res = await fetch("/api/my_stocks");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "获取失败");
+      renderMyStocks(data.items || []);
+      mySub.textContent = data.count ? `共 ${data.count} 只自选股 · 行情截至 ${data.items[0] && data.items[0].last_date || "—"} · 点击表头排序` : "";
+      $("#my-hint").textContent = "";
+    } catch (err) {
+      myError.textContent = err.message || "请求失败, 请检查后端服务。";
+      myError.classList.remove("hidden");
+    } finally {
+      myLoading.classList.add("hidden");
+      myRefreshBtn.disabled = false;
+    }
+  }
+
+  function _sortedMyStocks() {
+    const arr = myItems.slice();
+    const k = mySort.key;
+    const dir = mySort.order === "asc" ? 1 : -1;
+    arr.sort((a, b) => {
+      let va = a[k], vb = b[k];
+      let cmp;
+      if (typeof va === "number" && typeof vb === "number") {
+        cmp = va - vb;
+      } else {
+        const na = parseFloat(va), nb = parseFloat(vb);
+        cmp = (!isNaN(na) && !isNaN(nb)) ? na - nb
+          : String(va == null ? "" : va).localeCompare(String(vb == null ? "" : vb), "zh");
+      }
+      return cmp * dir;
+    });
+    return arr;
+  }
+
+  function _renderMyTable() {
+    const body = _sortedMyStocks().map((it) => `
+      <tr>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
+        <td>${it.ts_code}</td>
+        <td>${it.industry || "—"}</td>
+        <td class="num">${it.last_close == null ? "—" : Number(it.last_close).toFixed(2)}</td>
+        <td class="num">${it.week52_low == null ? "—" : Number(it.week52_low).toFixed(2)}</td>
+        <td class="num">${it.week52_high == null ? "—" : Number(it.week52_high).toFixed(2)}</td>
+        <td class="num ${cls(it.pct_chg || 0)}">${it.pct_chg == null ? "—" : fmtPct(it.pct_chg)}</td>
+        <td class="num">${it.pe_ttm == null ? "—" : Number(it.pe_ttm).toFixed(2)}</td>
+        <td class="num">${fmtYi(it.total_mv)}</td>
+        <td class="num ${cls(it.dividend_yield || 0)}">${it.dividend_yield == null ? "—" : Number(it.dividend_yield).toFixed(2) + "%"}</td>
+        <td class="num">${it.div_per_share == null ? "—" : Number(it.div_per_share).toFixed(2)}</td>
+        <td><button type="button" class="btn-ghost" data-remove="${it.ts_code}" style="padding:4px 10px;font-size:12px">删除</button></td>
+      </tr>`).join("")
+      || `<tr><td colspan="12" style="text-align:center;color:#9ca3af;padding:24px">暂无自选股, 请到股票详情页点击「加入我的股票」</td></tr>`;
+    $("#my-table tbody").innerHTML = body;
+    updateMySortArrows();
+    // 删除按钮
+    document.querySelectorAll("#my-table tbody button[data-remove]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await fetch("/api/my_stocks/remove", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ts_code: btn.dataset.remove }),
+          });
+        } catch (e) { /* 忽略 */ }
+        loadMyStocks();
+      });
+    });
+  }
+
+  function renderMyStocks(items) {
+    myItems = items || [];
+    _renderMyTable();
+  }
+
+  function updateMySortArrows() {
+    document.querySelectorAll("#my-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === mySort.key) {
+        arrow.textContent = mySort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
+    });
+  }
+
+  // 表头点击排序 (我的股票)
+  document.querySelectorAll("#my-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (mySort.key === by) {
+        mySort.order = mySort.order === "desc" ? "asc" : "desc";
+      } else {
+        mySort.key = by;
+        mySort.order = "desc";
+      }
+      _renderMyTable();
+    });
+  });
+
+  myRefreshBtn.addEventListener("click", loadMyStocks);
 
   // 窗口尺寸变化时, 防抖自适应图表
   let resizeTimer = null;
@@ -1397,4 +1663,5 @@
   });
 
   checkHealth();
+  loadMyStocks();
 })();

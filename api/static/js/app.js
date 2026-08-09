@@ -501,6 +501,7 @@
 
   // ---------- 红利低波选股 ----------
   const RLV_SORT_LABELS = {
+    name: "名称",
     dividend_yield: "静态股息率", dividend_yield_ttm: "股息率TTM", last_close: "上日收盘",
     volatility: "波动率", div_per_share: "每股分红",
     free_cashflow: "自由现金流", eps: "每股收益", payout_ratio: "分红率",
@@ -630,7 +631,8 @@
         rlvSort.order = rlvSort.order === "desc" ? "asc" : "desc";
       } else {
         rlvSort.by = by;
-        rlvSort.order = "desc";
+        // 名称等文本列首次点击默认升序 (更符合排序直觉)
+        rlvSort.order = by === "name" ? "asc" : "desc";
       }
       const payload = buildRlvPayload();
       if (!payload.years.length) return;
@@ -722,6 +724,424 @@
       `<tr><td colspan="14" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据</td></tr>`;
     updateRlvSortArrows();
     rlvResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ---------- 港股选股 (红利低波 / 基本面) ----------
+  fillYearSelect($("#hk_sc_year"), 2025);
+
+  // 港股行业联想 (使用 /api/hk/industry/search)
+  function bindHkIndustrySuggest(input, panel) {
+    let timer = null;
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      const kw = input.value.trim();
+      if (!kw) { panel.innerHTML = ""; panel.classList.add("hidden"); return; }
+      timer = setTimeout(async () => {
+        try {
+          const r = await fetch(`/api/hk/industry/search?keyword=${encodeURIComponent(kw)}&limit=12`);
+          const data = await r.json();
+          const items = data.items || [];
+          panel.innerHTML = items.length
+            ? items.map((it) =>
+                `<div class="ind-item" data-ind="${it.industry}"><span>${it.industry}</span><span class="ind-count">${it.count} 只</span></div>`).join("")
+            : `<div class="ind-empty">无匹配行业</div>`;
+          panel.classList.remove("hidden");
+        } catch (e) { /* 忽略联想失败 */ }
+      }, 200);
+    });
+    panel.addEventListener("click", (e) => {
+      const item = e.target.closest(".ind-item");
+      if (!item) return;
+      input.value = item.dataset.ind;
+      panel.innerHTML = "";
+      panel.classList.add("hidden");
+      input.dispatchEvent(new Event("change"));
+    });
+    document.addEventListener("click", (e) => {
+      if (!input.contains(e.target) && !panel.contains(e.target)) {
+        panel.innerHTML = "";
+        panel.classList.add("hidden");
+      }
+    });
+    input.addEventListener("blur", () => {
+      setTimeout(() => {
+        if (!panel.contains(document.activeElement)) {
+          panel.classList.add("hidden");
+        }
+      }, 150);
+    });
+  }
+  bindHkIndustrySuggest($("#hk_rlv_industry"), $("#hk-rlv-ind-panel"));
+  bindHkIndustrySuggest($("#hk_sc_industry"), $("#hk-sc-ind-panel"));
+
+  // ---------- 港股红利低波 ----------
+  const HK_RLV_SORT_LABELS = {
+    name: "名称", dividend_yield: "静态股息率", dividend_yield_ttm: "股息率TTM",
+    last_close: "上日收盘", volatility: "波动率", div_per_share: "每股分红",
+    free_cashflow: "自由现金流", eps: "每股收益", payout_ratio: "分红率",
+    dividend_growth_3y: "3年股利增长", roe: "ROE", debt_to_assets: "资产负债率",
+    avg_daily_mv: "总市值", avg_daily_amt: "日均成交额",
+  };
+  const hkRlvSort = { by: "dividend_yield", order: "desc" };
+
+  function _hkRlvYears() {
+    const yMin = parseInt($("#hk_rlv_year_min").value, 10);
+    const yMax = parseInt($("#hk_rlv_year_max").value, 10);
+    const cur = new Date().getFullYear();
+    if (yMin && yMax && yMax >= yMin) {
+      const arr = []; for (let y = yMin; y <= yMax; y++) arr.push(y); return arr;
+    }
+    if (yMin) { const arr = []; for (let y = yMin; y <= cur; y++) arr.push(y); return arr; }
+    if (yMax) { const arr = []; for (let y = 2000; y <= yMax; y++) arr.push(y); return arr; }
+    return [2025];
+  }
+
+  function buildHkRlvPayload() {
+    const years = _hkRlvYears();
+    const filters = {};
+    const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
+    const dyMin = fNum("#hk_rlv_f_dy");
+    const dyMax = fNum("#hk_rlv_f_dy_max");
+    if (dyMin !== null || dyMax !== null) {
+      filters.dividend_yield = {};
+      if (dyMin !== null) filters.dividend_yield.min = dyMin;
+      if (dyMax !== null) filters.dividend_yield.max = dyMax;
+    }
+    const vol = fNum("#hk_rlv_f_vol"); if (vol !== null) filters.volatility = { max: vol };
+    const roeMin = fNum("#hk_rlv_f_roe_min");
+    const roeMax = fNum("#hk_rlv_f_roe_max");
+    if (roeMin !== null || roeMax !== null) {
+      filters.roe = {};
+      if (roeMin !== null) filters.roe.min = roeMin;
+      if (roeMax !== null) filters.roe.max = roeMax;
+    }
+    const debt = fNum("#hk_rlv_f_debt"); if (debt !== null) filters.debt_to_assets = { max: debt };
+    const payoutMin = fNum("#hk_rlv_f_payout_min"); if (payoutMin !== null) filters.payout_ratio = { min: payoutMin };
+    return {
+      industry: $("#hk_rlv_industry").value.trim(),
+      years, sort_by: hkRlvSort.by, order: hkRlvSort.order,
+      filters, max_stocks: 3000, limit: 1000,
+    };
+  }
+
+  function hkFilterLabel(filters) {
+    const parts = [];
+    for (const k in (filters || {})) {
+      const f = filters[k];
+      const name = HK_RLV_SORT_LABELS[k] || k;
+      if (f.min !== undefined && f.min !== null && f.min !== "") parts.push(`${name} ≥ ${f.min}`);
+      if (f.max !== undefined && f.max !== null && f.max !== "") parts.push(`${name} ≤ ${f.max}`);
+    }
+    return parts.length ? ` · 筛选: ${parts.join(", ")}` : "";
+  }
+
+  async function runHkRlvScreen(payload) {
+    const errBox = $("#hk-rlv-error"), resBox = $("#hk-rlv-result");
+    errBox.classList.add("hidden");
+    resBox.classList.add("hidden");
+    $("#hk-rlv-hint").textContent = "";
+    $("#hk-rlv-btn").disabled = true;
+    $("#hk-rlv-resync-btn").disabled = true;
+    $("#hk-rlv-loading").classList.remove("hidden");
+    try {
+      const res = await fetch("/api/hk/redlowvol/screen", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "选股失败");
+      renderHkRlv(data, payload);
+    } catch (err) {
+      errBox.textContent = err.message || "请求失败, 请检查后端服务。";
+      errBox.classList.remove("hidden");
+    } finally {
+      $("#hk-rlv-loading").classList.add("hidden");
+      $("#hk-rlv-btn").disabled = false;
+      $("#hk-rlv-resync-btn").disabled = false;
+    }
+  }
+
+  $("#hk-rlv-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const payload = buildHkRlvPayload();
+    if (!payload.years.length) {
+      $("#hk-rlv-error").textContent = "请输入有效年份范围。";
+      $("#hk-rlv-error").classList.remove("hidden");
+      return;
+    }
+    runHkRlvScreen(payload);
+  });
+
+  document.querySelectorAll("#hk-rlv-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (hkRlvSort.by === by) {
+        hkRlvSort.order = hkRlvSort.order === "desc" ? "asc" : "desc";
+      } else {
+        hkRlvSort.by = by;
+        hkRlvSort.order = by === "name" ? "asc" : "desc";
+      }
+      const payload = buildHkRlvPayload();
+      if (!payload.years.length) return;
+      runHkRlvScreen(payload);
+    });
+  });
+
+  function updateHkRlvSortArrows() {
+    document.querySelectorAll("#hk-rlv-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === hkRlvSort.by) {
+        arrow.textContent = hkRlvSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
+    });
+  }
+
+  $("#hk-rlv-resync-btn").addEventListener("click", async () => {
+    const payload = buildHkRlvPayload();
+    if (!payload.years.length) {
+      $("#hk-rlv-error").textContent = "请输入有效年份范围。";
+      $("#hk-rlv-error").classList.remove("hidden");
+      return;
+    }
+    $("#hk-rlv-error").classList.add("hidden");
+    $("#hk-rlv-hint").textContent = "";
+    $("#hk-rlv-btn").disabled = true;
+    $("#hk-rlv-resync-btn").disabled = true;
+    $("#hk-rlv-loading").classList.remove("hidden");
+    try {
+      const res = await fetch("/api/hk/redlowvol/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "同步失败");
+      $("#hk-rlv-hint").textContent =
+        `✓ 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
+    } catch (err) {
+      $("#hk-rlv-error").textContent = err.message || "同步失败";
+      $("#hk-rlv-error").classList.remove("hidden");
+    } finally {
+      $("#hk-rlv-loading").classList.add("hidden");
+      $("#hk-rlv-btn").disabled = false;
+      $("#hk-rlv-resync-btn").disabled = false;
+    }
+  });
+
+  function renderHkRlv(data, payload) {
+    const items = data.items || [];
+    const resBox = $("#hk-rlv-result");
+    resBox.classList.remove("hidden");
+
+    const sortLabel = HK_RLV_SORT_LABELS[payload.sort_by] || payload.sort_by;
+    const orderLabel = payload.order === "asc" ? "升序" : "降序";
+    const synced = data.sync && data.sync.synced ? ` · 本次自动同步入库 ${data.sync.stored} 条` : "";
+    const yearsLabel = payload.years.length > 1
+      ? `${payload.years[0]}~${payload.years[payload.years.length - 1]}年`
+      : `${payload.years[0]}年`;
+
+    $("#hk-rlv-title").textContent =
+      `港股红利低波排序 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"} · ${yearsLabel}`;
+    $("#hk-rlv-sub").textContent =
+      `按 ${sortLabel} ${orderLabel}${hkFilterLabel(payload.filters)} · 数据来自 PostgreSQL${synced}`;
+
+    const body = items.map((it) => `
+      <tr>
+        <td class="num">${it.year}</td>
+        <td>${it.ts_code}</td>
+        <td class="stock-name">${it.name}</td>
+        <td>${it.industry || "—"}</td>
+        <td>${it.market || "—"}</td>
+        <td class="num ${cls(it.dividend_yield || 0)}">${fmtPctVal(it.dividend_yield)}</td>
+        <td class="num ${cls(it.dividend_yield_ttm || 0)}">${fmtPctVal(it.dividend_yield_ttm)}</td>
+        <td class="num">${it.last_close == null ? "—" : Number(it.last_close).toFixed(2)}</td>
+        <td class="num">${fmtPctVal(it.volatility)}</td>
+        <td class="num">${it.div_per_share == null ? "—" : Number(it.div_per_share).toFixed(2) + " 元"}</td>
+        <td class="num">${fmtYi(it.free_cashflow)}</td>
+        <td class="num">${it.eps == null ? "—" : Number(it.eps).toFixed(2)}</td>
+        <td class="num">${fmtPctVal(it.payout_ratio)}</td>
+        <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
+        <td class="num">${fmtPctVal(it.debt_to_assets)}</td>
+      </tr>`).join("");
+    $("#hk-rlv-table tbody").innerHTML = body ||
+      `<tr><td colspan="15" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据</td></tr>`;
+    updateHkRlvSortArrows();
+    resBox.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ---------- 港股基本面 ----------
+  const HK_SCREEN_SORT_LABELS = {
+    year: "年份", close: "最近价", roe: "ROE", net_margin: "净利润率",
+    assets_turn: "总资产周转率", equity_multiplier: "权益乘数", gross_margin: "毛利率",
+    debt_to_assets: "资产负债率", current_ratio: "流动比率", total_cur_assets: "流动资产",
+    money_cap: "现金", invturn_days: "存货周转天数", arturn_days: "应收周转天数",
+    eps: "每股收益", operate_income: "营业收入", net_profit: "净利润", total_mv: "总市值",
+  };
+  const hkScreenSort = { by: "roe", order: "desc" };
+
+  function buildHkScreenPayload() {
+    const years = [parseInt($("#hk_sc_year").value, 10)];
+    const filters = {};
+    const roeMin = parseFloat($("#hk_sc_f_roe").value);
+    const roeMax = parseFloat($("#hk_sc_f_roe_max").value);
+    if (!isNaN(roeMin) || !isNaN(roeMax)) {
+      filters.roe = {};
+      if (!isNaN(roeMin)) filters.roe.min = roeMin;
+      if (!isNaN(roeMax)) filters.roe.max = roeMax;
+    }
+    const debt = parseFloat($("#hk_sc_f_debt").value);
+    if (!isNaN(debt)) filters.debt_to_assets = { max: debt };
+    return {
+      industry: $("#hk_sc_industry").value.trim(),
+      years, sort_by: hkScreenSort.by, order: hkScreenSort.order,
+      filters, max_stocks: 3000, limit: 2000,
+    };
+  }
+
+  async function runHkScreenScreen(payload) {
+    const errBox = $("#hk-screen-error"), resBox = $("#hk-screen-result");
+    errBox.classList.add("hidden");
+    resBox.classList.add("hidden");
+    $("#hk-screen-hint").textContent = "";
+    $("#hk-screen-btn").disabled = true;
+    $("#hk-screen-resync-btn").disabled = true;
+    $("#hk-screen-loading").classList.remove("hidden");
+    try {
+      const res = await fetch("/api/hk/fundamental/screen", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "筛选失败");
+      renderHkScreen(data, payload);
+    } catch (err) {
+      errBox.textContent = err.message || "请求失败, 请检查后端服务。";
+      errBox.classList.remove("hidden");
+    } finally {
+      $("#hk-screen-loading").classList.add("hidden");
+      $("#hk-screen-btn").disabled = false;
+      $("#hk-screen-resync-btn").disabled = false;
+    }
+  }
+
+  $("#hk-screen-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const payload = buildHkScreenPayload();
+    if (!payload.years.length) {
+      $("#hk-screen-error").textContent = "请输入有效年份。";
+      $("#hk-screen-error").classList.remove("hidden");
+      return;
+    }
+    runHkScreenScreen(payload);
+  });
+
+  document.querySelectorAll("#hk-screen-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (hkScreenSort.by === by) {
+        hkScreenSort.order = hkScreenSort.order === "desc" ? "asc" : "desc";
+      } else {
+        hkScreenSort.by = by;
+        hkScreenSort.order = "desc";
+      }
+      const payload = buildHkScreenPayload();
+      if (!payload.years.length) return;
+      runHkScreenScreen(payload);
+    });
+  });
+
+  function updateHkScreenSortArrows() {
+    document.querySelectorAll("#hk-screen-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === hkScreenSort.by) {
+        arrow.textContent = hkScreenSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
+    });
+  }
+
+  $("#hk-screen-resync-btn").addEventListener("click", async () => {
+    const payload = buildHkScreenPayload();
+    if (!payload.years.length) {
+      $("#hk-screen-error").textContent = "请输入有效年份。";
+      $("#hk-screen-error").classList.remove("hidden");
+      return;
+    }
+    $("#hk-screen-error").classList.add("hidden");
+    $("#hk-screen-hint").textContent = "";
+    $("#hk-screen-btn").disabled = true;
+    $("#hk-screen-resync-btn").disabled = true;
+    $("#hk-screen-loading").classList.remove("hidden");
+    try {
+      const res = await fetch("/api/hk/fundamental/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "同步失败");
+      $("#hk-screen-hint").textContent =
+        `✓ 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
+    } catch (err) {
+      $("#hk-screen-error").textContent = err.message || "同步失败";
+      $("#hk-screen-error").classList.remove("hidden");
+    } finally {
+      $("#hk-screen-loading").classList.add("hidden");
+      $("#hk-screen-btn").disabled = false;
+      $("#hk-screen-resync-btn").disabled = false;
+    }
+  });
+
+  function renderHkScreen(data, payload) {
+    const items = data.items || [];
+    const resBox = $("#hk-screen-result");
+    resBox.classList.remove("hidden");
+
+    const sortLabel = HK_SCREEN_SORT_LABELS[payload.sort_by] || payload.sort_by;
+    const orderLabel = payload.order === "asc" ? "升序" : "降序";
+    const synced = data.sync && data.sync.synced ? ` · 本次自动同步入库 ${data.sync.stored} 条` : "";
+    const yearsLabel = payload.years.length > 1
+      ? `${payload.years[0]}~${payload.years[payload.years.length - 1]}年`
+      : `${payload.years[0]}年`;
+
+    $("#hk-screen-title").textContent =
+      `港股基本面筛选 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"} · ${yearsLabel}`;
+    $("#hk-screen-sub").textContent =
+      `按 ${sortLabel} ${orderLabel}${hkFilterLabel(payload.filters)} · 数据来自 PostgreSQL${synced}`;
+
+    const body = items.map((it) => `
+      <tr>
+        <td class="num">${it.year}</td>
+        <td>${it.ts_code}</td>
+        <td class="stock-name">${it.name}</td>
+        <td>${it.industry || "—"}</td>
+        <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
+        <td class="num ${cls(it.net_margin || 0)}">${fmtPctVal(it.net_margin)}</td>
+        <td class="num">${it.assets_turn == null ? "—" : Number(it.assets_turn).toFixed(2)}</td>
+        <td class="num">${it.equity_multiplier == null ? "—" : Number(it.equity_multiplier).toFixed(2)}</td>
+        <td class="num ${cls(it.gross_margin || 0)}">${fmtPctVal(it.gross_margin)}</td>
+        <td class="num">${fmtPctVal(it.debt_to_assets)}</td>
+        <td class="num">${it.current_ratio == null ? "—" : Number(it.current_ratio).toFixed(2)}</td>
+        <td class="num">${fmtYi(it.total_cur_assets)}</td>
+        <td class="num">${fmtYi(it.money_cap)}</td>
+        <td class="num">${it.invturn_days == null ? "—" : Number(it.invturn_days).toFixed(1)}</td>
+        <td class="num">${it.arturn_days == null ? "—" : Number(it.arturn_days).toFixed(1)}</td>
+      </tr>`).join("");
+    $("#hk-screen-table tbody").innerHTML = body ||
+      `<tr><td colspan="15" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据</td></tr>`;
+    updateHkScreenSortArrows();
+    resBox.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   // ---------- 最近行情 K 线 ----------

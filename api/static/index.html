@@ -29,6 +29,7 @@
       <button type="button" class="tab" data-tab="daily">📅 每日推荐</button>
       <button type="button" class="tab" data-tab="redlowvol">💰 红利低波选股</button>
       <button type="button" class="tab" data-tab="fundamental">🔍 基本面选股</button>
+      <button type="button" class="tab" data-tab="hk">🇭🇰 港股选股</button>
       <button type="button" class="tab" data-tab="caibao">📚 财报挖掘</button>
       <button type="button" class="tab" data-tab="band">🎯 区间交易估价</button>
       <button type="button" class="tab" data-tab="backtest">📊 策略回测</button>
@@ -305,7 +306,7 @@
                 <tr>
                   <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
                   <th>代码</th>
-                  <th>名称</th>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
                   <th>行业</th>
                   <th class="sortable" data-sort="dividend_yield">静态股息率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="dividend_yield_ttm">股息率TTM<span class="sort-arrow"></span></th>
@@ -397,6 +398,201 @@
                   <th class="sortable" data-sort="equity_multiplier">权益乘数<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_cur_assets">流动资产<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="money_cap">现金<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="invturn_days">存货周转天数<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="arturn_days">应收周转天数<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ================= Tab: 港股选股 ================= -->
+    <section id="tab-hk" class="hidden">
+      <div class="card">
+        <div class="card-title">
+          <h2>港股红利低波选股 🇭🇰</h2>
+          <span class="hint">港股数据源: 东财港股财务/分红 + 腾讯日线 + tushare hk_basic · 金额单位万港元 · 点表头排序 (数据存入 PostgreSQL)</span>
+        </div>
+        <form id="hk-rlv-form" autocomplete="off">
+          <div class="grid">
+            <div class="field field-suggest">
+              <label for="hk_rlv_industry">行业 (东财港股行业)</label>
+              <input type="text" id="hk_rlv_industry" placeholder="如 电讯 / 银行 / 公用事业 / 空=全市场" autocomplete="off" />
+              <div class="ind-panel hidden" id="hk-rlv-ind-panel"></div>
+            </div>
+            <div class="field">
+              <label for="hk_rlv_year_min">起始年份 (空=最新)</label>
+              <input type="number" id="hk_rlv_year_min" value="" min="2000" max="2100" step="1" placeholder="如 2023" />
+            </div>
+            <div class="field">
+              <label for="hk_rlv_year_max">结束年份 (空=不限)</label>
+              <input type="number" id="hk_rlv_year_max" value="" min="2000" max="2100" step="1" placeholder="如 2025" />
+            </div>
+          </div>
+
+          <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
+          <div class="grid">
+            <div class="field">
+              <label for="hk_rlv_f_dy">股息率 ≥ (%)</label>
+              <input type="number" id="hk_rlv_f_dy" placeholder="如 5" min="0" step="0.1" />
+            </div>
+            <div class="field">
+              <label for="hk_rlv_f_dy_max">股息率 ≤ (%)</label>
+              <input type="number" id="hk_rlv_f_dy_max" placeholder="如 10" min="0" step="0.1" />
+            </div>
+            <div class="field">
+              <label for="hk_rlv_f_vol">波动率 ≤ (%)</label>
+              <input type="number" id="hk_rlv_f_vol" placeholder="如 30" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="hk_rlv_f_roe_min">ROE ≥ (%)</label>
+              <input type="number" id="hk_rlv_f_roe_min" placeholder="如 10" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="hk_rlv_f_roe_max">ROE ≤ (%)</label>
+              <input type="number" id="hk_rlv_f_roe_max" placeholder="如 30" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="hk_rlv_f_debt">资产负债率 ≤ (%)</label>
+              <input type="number" id="hk_rlv_f_debt" placeholder="如 70" min="0" max="100" step="1" />
+            </div>
+            <div class="field">
+              <label for="hk_rlv_f_payout_min">分红率 ≥ (%)</label>
+              <input type="number" id="hk_rlv_f_payout_min" placeholder="如 40" min="0" step="1" />
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="hk-rlv-btn">
+              <span class="btn-icon">▶</span> 港股红利低波选股
+            </button>
+            <button type="button" class="btn-ghost" id="hk-rlv-resync-btn">重新同步数据</button>
+            <span class="range-hint" id="hk-rlv-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="loading hidden" id="hk-rlv-loading">
+        <div class="spinner"></div>
+        <span>正在逐只拉取港股行情/财务/分红并写入数据库… (首次行业模式约 1~3 分钟)</span>
+      </div>
+      <div class="error hidden" id="hk-rlv-error"></div>
+
+      <section class="result hidden" id="hk-rlv-result">
+        <div class="result-head">
+          <h2 id="hk-rlv-title">港股红利低波排序</h2>
+          <span class="hint" id="hk-rlv-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap" style="max-height:520px;overflow:auto;">
+            <table id="hk-rlv-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
+                  <th>代码</th>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
+                  <th>行业</th>
+                  <th>市场</th>
+                  <th class="sortable" data-sort="dividend_yield">静态股息率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="dividend_yield_ttm">股息率TTM<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="last_close">上日收盘<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="volatility">波动率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="div_per_share">每股分红<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="free_cashflow">自由现金流<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="eps">EPS<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="payout_ratio">分红率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <div style="height:32px"></div>
+
+      <div class="card">
+        <div class="card-title">
+          <h2>港股基本面选股 🇭🇰</h2>
+          <span class="hint">ROE 杜邦拆分: ROE ≈ 净利润率 × 总资产周转率 × 权益乘数 · 数据存入 PostgreSQL · 点表头排序</span>
+        </div>
+        <form id="hk-screen-form" autocomplete="off">
+          <div class="grid">
+            <div class="field field-suggest">
+              <label for="hk_sc_industry">行业 (东财港股行业)</label>
+              <input type="text" id="hk_sc_industry" placeholder="如 银行 / 软件服务 / 空=全市场" autocomplete="off" />
+              <div class="ind-panel hidden" id="hk-sc-ind-panel"></div>
+            </div>
+            <div class="field">
+              <label for="hk_sc_year">年份 <em>*</em></label>
+              <select id="hk_sc_year"></select>
+            </div>
+            <div class="field">
+              <label for="hk_sc_f_roe2"> </label>
+              <span class="hint" style="align-self:center">单选某一年 (如 2025)</span>
+            </div>
+          </div>
+
+          <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
+          <div class="grid">
+            <div class="field">
+              <label for="hk_sc_f_roe">ROE ≥ (%)</label>
+              <input type="number" id="hk_sc_f_roe" placeholder="如 12" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="hk_sc_f_roe_max">ROE ≤ (%)</label>
+              <input type="number" id="hk_sc_f_roe_max" placeholder="如 30" min="0" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="hk_sc_f_debt">资产负债率 ≤ (%)</label>
+              <input type="number" id="hk_sc_f_debt" placeholder="如 70" min="0" max="100" step="1" />
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="hk-screen-btn">
+              <span class="btn-icon">▶</span> 港股基本面选股
+            </button>
+            <button type="button" class="btn-ghost" id="hk-screen-resync-btn">重新同步数据</button>
+            <span class="range-hint" id="hk-screen-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="loading hidden" id="hk-screen-loading">
+        <div class="spinner"></div>
+        <span>正在逐只拉取港股财务数据并写入数据库… (首次行业模式约 1~3 分钟)</span>
+      </div>
+      <div class="error hidden" id="hk-screen-error"></div>
+
+      <section class="result hidden" id="hk-screen-result">
+        <div class="result-head">
+          <h2 id="hk-screen-title">港股基本面筛选结果</h2>
+          <span class="hint" id="hk-screen-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap" style="max-height:520px;overflow:auto;">
+            <table id="hk-screen-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>行业</th>
+                  <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="net_margin">净利润率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="assets_turn">总资产周转率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="equity_multiplier">权益乘数<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="current_ratio">流动比率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="total_cur_assets">流动资产<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="money_cap">现金<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="invturn_days">存货周转天数<span class="sort-arrow"></span></th>
@@ -739,6 +935,6 @@
     <span>智能选股回测平台 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=39"></script>
+  <script src="/static/js/app.js?v=41"></script>
 </body>
 </html>

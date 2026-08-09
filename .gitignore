@@ -11,6 +11,7 @@ wheels/
 .venv
 .qoder
 *.csv
+*.sql
 */*.md
 /pdf/*
 /reports/*
@@ -21,3 +22,9 @@ wheels/
 .DS_Store
 .env
 
+
+# 港股数据缓存 (股票列表/行业映射, 可重新生成)
+/cache/
+
+# 定时更新日志
+/logs/

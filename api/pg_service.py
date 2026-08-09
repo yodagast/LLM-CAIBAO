@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # 允许前端排序的字段白名单 (防 SQL 注入)
 SORTABLE_COLUMNS = {
     "year": "year",
+    "name": "name",
     "dividend_yield": "dividend_yield",
     "dividend_yield_ttm": "dividend_yield_ttm",
     "volatility": "volatility",
@@ -748,3 +749,332 @@ def has_my_stock(ts_code: str) -> bool:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM my_stocks WHERE ts_code = %s LIMIT 1", (ts_code,))
             return cur.fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
+# 港股红利低波表 hk_red_low_vol (数据源: 东财港股财务/分红 + 腾讯日线 + tushare hk_basic)
+# ---------------------------------------------------------------------------
+
+HK_RLV_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS hk_red_low_vol (
+    id                    BIGSERIAL PRIMARY KEY,
+    ts_code               VARCHAR(16)  NOT NULL,
+    symbol                VARCHAR(8)   NOT NULL,
+    name                  VARCHAR(64)  NOT NULL,
+    industry              VARCHAR(64)  DEFAULT '',
+    market                VARCHAR(16)  DEFAULT '',
+    year                  INTEGER      NOT NULL,
+    dividend_yield        DOUBLE PRECISION,   -- 静态股息率 % (当年每股分红 / 年末收盘价)
+    dividend_yield_ttm    DOUBLE PRECISION,   -- 股息率-TTM % (最新财政年度每股分红 / 最新收盘价)
+    last_close            DOUBLE PRECISION,   -- 最新收盘价 (港元)
+    volatility            DOUBLE PRECISION,   -- 年化波动率 % (日收益 std * sqrt(252))
+    div_per_share         DOUBLE PRECISION,   -- 每股现金分红 (港元)
+    free_cashflow         DOUBLE PRECISION,   -- 企业自由现金流 ≈ OCF+ICF (万港元)
+    eps                   DOUBLE PRECISION,   -- 每股收益 (港元)
+    payout_ratio          DOUBLE PRECISION,   -- 分红率 % (每股分红/每股收益)
+    dividend_growth_3y    DOUBLE PRECISION,   -- 3 年每股股利复合增长率 %
+    roe                   DOUBLE PRECISION,   -- 净资产收益率 %
+    debt_to_assets        DOUBLE PRECISION,   -- 资产负债率 %
+    avg_daily_mv          DOUBLE PRECISION,   -- 总市值 (万港元, 年报口径)
+    avg_daily_amt         DOUBLE PRECISION,   -- 日均成交金额 (万港元, 近似=成交量×收盘价)
+    end_date              VARCHAR(16)  DEFAULT '',
+    updated_at            TIMESTAMP    DEFAULT now(),
+    UNIQUE (ts_code, year)
+);
+CREATE INDEX IF NOT EXISTS idx_hk_rlv_ind_year ON hk_red_low_vol (industry, year);
+"""
+
+HK_RLV_SORTABLE_COLUMNS = {
+    "year": "year",
+    "name": "name",
+    "dividend_yield": "dividend_yield",
+    "dividend_yield_ttm": "dividend_yield_ttm",
+    "volatility": "volatility",
+    "div_per_share": "div_per_share",
+    "free_cashflow": "free_cashflow",
+    "eps": "eps",
+    "payout_ratio": "payout_ratio",
+    "roe": "roe",
+    "debt_to_assets": "debt_to_assets",
+    "avg_daily_mv": "avg_daily_mv",
+    "avg_daily_amt": "avg_daily_amt",
+    "dividend_growth_3y": "dividend_growth_3y",
+    "last_close": "last_close",
+}
+
+_HK_RLV_COLS = [
+    "ts_code", "symbol", "name", "industry", "market", "year",
+    "dividend_yield", "dividend_yield_ttm", "last_close", "volatility", "div_per_share", "free_cashflow",
+    "eps", "payout_ratio", "dividend_growth_3y", "roe", "debt_to_assets",
+    "avg_daily_mv", "avg_daily_amt", "end_date",
+]
+
+_HK_RLV_UPSERT_SQL = f"""
+INSERT INTO hk_red_low_vol ({", ".join(_HK_RLV_COLS)})
+VALUES ({", ".join("%(" + c + ")s" for c in _HK_RLV_COLS)})
+ON CONFLICT (ts_code, year) DO UPDATE SET
+{", ".join(f"{c} = EXCLUDED.{c}" for c in _HK_RLV_COLS if c not in ("ts_code", "year"))},
+updated_at = now();
+"""
+
+
+def init_hk_rlv_schema() -> None:
+    """创建 hk_red_low_vol 表与索引 (幂等)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(HK_RLV_SCHEMA_DDL)
+        conn.commit()
+
+
+def upsert_hk_rlv_rows(rows: list[dict]) -> int:
+    """按 (ts_code, year) upsert 写入港股红利低波, 返回行数。"""
+    if not rows:
+        return 0
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for r in rows:
+                cur.execute(_HK_RLV_UPSERT_SQL, {c: r.get(c) for c in _HK_RLV_COLS})
+        conn.commit()
+    return len(rows)
+
+
+def count_hk_rlv_by_industry_year(industry: str, year: int) -> int:
+    """该行业+年份的记录数 (行业子串匹配)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM hk_red_low_vol WHERE industry LIKE %s AND year = %s;",
+                (f"%{industry}%", year),
+            )
+            return int(cur.fetchone()[0])
+
+
+def query_hk_rlv(industry: str, years: list[int], sort_by: str = "dividend_yield",
+                 order: str = "desc", limit: int = 500,
+                 filters: dict | None = None) -> list[dict]:
+    """港股红利低波: 按行业+多年份查询, 支持阈值筛选与排序 (字段白名单防注入)。"""
+    col = HK_RLV_SORTABLE_COLUMNS.get(sort_by, "dividend_yield")
+    order_sql = "ASC" if str(order).lower() == "asc" else "DESC"
+
+    conds: list[str] = []
+    params: list = []
+    if industry:
+        conds.append("industry LIKE %s")
+        params.append(f"%{industry}%")
+    if years:
+        conds.append("year = ANY(%s)")
+        params.append([int(y) for y in years])
+    for key, flt in (filters or {}).items():
+        col_name = HK_RLV_SORTABLE_COLUMNS.get(key)
+        if col_name is None:
+            continue
+        if isinstance(flt, dict):
+            mn, mx = flt.get("min"), flt.get("max")
+        else:
+            mn, mx = flt, None
+        if mn is not None:
+            conds.append(f"{col_name} >= %s")
+            params.append(mn)
+        if mx is not None:
+            conds.append(f"{col_name} <= %s")
+            params.append(mx)
+
+    where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
+    sql = f"""
+        SELECT ts_code, symbol, name, industry, market, year,
+               dividend_yield, dividend_yield_ttm, last_close, volatility, div_per_share, free_cashflow,
+               eps, payout_ratio, dividend_growth_3y, roe, debt_to_assets,
+               avg_daily_mv, avg_daily_amt, end_date
+        FROM hk_red_low_vol
+        {where_sql}
+        ORDER BY {col} {order_sql} NULLS LAST, ts_code ASC
+        LIMIT %s;
+    """
+    params.append(int(limit))
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+def latest_hk_rlv_year() -> int:
+    """hk_red_low_vol 最新数据年份。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT max(year) FROM hk_red_low_vol;")
+            return int(cur.fetchone()[0] or 0)
+
+
+# ---------------------------------------------------------------------------
+# 港股基本面表 hk_fundamental_screen (ROE 杜邦拆分等)
+# ---------------------------------------------------------------------------
+
+HK_FUNDAMENTAL_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS hk_fundamental_screen (
+    id                    BIGSERIAL PRIMARY KEY,
+    ts_code               VARCHAR(16)  NOT NULL,
+    symbol                VARCHAR(8)   NOT NULL,
+    name                  VARCHAR(64)  NOT NULL,
+    industry              VARCHAR(64)  DEFAULT '',
+    market                VARCHAR(16)  DEFAULT '',
+    year                  INTEGER      NOT NULL,
+    close                 DOUBLE PRECISION,   -- 年末收盘价 (港元)
+    roe                   DOUBLE PRECISION,   -- ROE %
+    net_margin            DOUBLE PRECISION,   -- 净利润率 %
+    assets_turn           DOUBLE PRECISION,   -- 总资产周转率 = 营收/总资产
+    equity_multiplier     DOUBLE PRECISION,   -- 权益乘数 = 总资产/归母权益
+    gross_margin          DOUBLE PRECISION,   -- 毛利率 %
+    debt_to_assets        DOUBLE PRECISION,   -- 资产负债率 %
+    current_ratio         DOUBLE PRECISION,   -- 流动比率
+    total_cur_assets      DOUBLE PRECISION,   -- 流动资产 (万港元)
+    money_cap             DOUBLE PRECISION,   -- 现金及等价物 (万港元)
+    invturn_days          DOUBLE PRECISION,   -- 存货周转天数
+    arturn_days           DOUBLE PRECISION,   -- 应收账款周转天数
+    eps                   DOUBLE PRECISION,   -- 每股收益 (港元)
+    operate_income        DOUBLE PRECISION,   -- 营业收入 (万港元)
+    net_profit            DOUBLE PRECISION,   -- 净利润 (万港元)
+    total_mv              DOUBLE PRECISION,   -- 总市值 (万港元)
+    end_date              VARCHAR(16)  DEFAULT '',
+    updated_at            TIMESTAMP    DEFAULT now(),
+    UNIQUE (ts_code, year)
+);
+CREATE INDEX IF NOT EXISTS idx_hk_fs_ind_year ON hk_fundamental_screen (industry, year);
+"""
+
+HK_FUNDAMENTAL_SORTABLE_COLUMNS = {
+    "year": "year",
+    "close": "close",
+    "roe": "roe",
+    "net_margin": "net_margin",
+    "assets_turn": "assets_turn",
+    "equity_multiplier": "equity_multiplier",
+    "gross_margin": "gross_margin",
+    "debt_to_assets": "debt_to_assets",
+    "current_ratio": "current_ratio",
+    "total_cur_assets": "total_cur_assets",
+    "money_cap": "money_cap",
+    "invturn_days": "invturn_days",
+    "arturn_days": "arturn_days",
+    "eps": "eps",
+    "operate_income": "operate_income",
+    "net_profit": "net_profit",
+    "total_mv": "total_mv",
+}
+
+_HK_FUND_COLS = [
+    "ts_code", "symbol", "name", "industry", "market", "year",
+    "close", "roe", "net_margin", "assets_turn", "equity_multiplier",
+    "gross_margin", "debt_to_assets", "current_ratio", "total_cur_assets", "money_cap",
+    "invturn_days", "arturn_days", "eps", "operate_income", "net_profit", "total_mv", "end_date",
+]
+
+_HK_FUND_UPSERT_SQL = f"""
+INSERT INTO hk_fundamental_screen ({", ".join(_HK_FUND_COLS)})
+VALUES ({", ".join("%(" + c + ")s" for c in _HK_FUND_COLS)})
+ON CONFLICT (ts_code, year) DO UPDATE SET
+{", ".join(f"{c} = EXCLUDED.{c}" for c in _HK_FUND_COLS if c not in ("ts_code", "year"))},
+updated_at = now();
+"""
+
+
+def init_hk_fundamental_schema() -> None:
+    """创建 hk_fundamental_screen 表与索引 (幂等)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(HK_FUNDAMENTAL_SCHEMA_DDL)
+        conn.commit()
+
+
+def upsert_hk_fundamental_rows(rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for r in rows:
+                cur.execute(_HK_FUND_UPSERT_SQL, {c: r.get(c) for c in _HK_FUND_COLS})
+        conn.commit()
+    return len(rows)
+
+
+def count_hk_fundamental_by_industry_year(industry: str, year: int) -> int:
+    """该行业+年份的记录数 (行业子串匹配)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM hk_fundamental_screen WHERE industry LIKE %s AND year = %s;",
+                (f"%{industry}%", year),
+            )
+            return int(cur.fetchone()[0])
+
+
+def query_hk_fundamental(industry: str, years: list[int], sort_by: str = "roe",
+                         order: str = "desc", limit: int = 1000,
+                         filters: dict | None = None) -> list[dict]:
+    """港股基本面: 按行业+多年份查询, 支持阈值筛选与排序。"""
+    col = HK_FUNDAMENTAL_SORTABLE_COLUMNS.get(sort_by, "roe")
+    order_sql = "ASC" if str(order).lower() == "asc" else "DESC"
+
+    conds: list[str] = []
+    params: list = []
+    if industry:
+        conds.append("industry LIKE %s")
+        params.append(f"%{industry}%")
+    if years:
+        conds.append("year = ANY(%s)")
+        params.append([int(y) for y in years])
+    for key, flt in (filters or {}).items():
+        col_name = HK_FUNDAMENTAL_SORTABLE_COLUMNS.get(key)
+        if col_name is None:
+            continue
+        if isinstance(flt, dict):
+            mn, mx = flt.get("min"), flt.get("max")
+        else:
+            mn, mx = flt, None
+        if mn is not None:
+            conds.append(f"{col_name} >= %s")
+            params.append(mn)
+        if mx is not None:
+            conds.append(f"{col_name} <= %s")
+            params.append(mx)
+
+    where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
+    sql = f"""
+        SELECT ts_code, symbol, name, industry, market, year, close, roe, net_margin,
+               assets_turn, equity_multiplier, gross_margin, debt_to_assets, current_ratio,
+               total_cur_assets, money_cap, invturn_days, arturn_days,
+               eps, operate_income, net_profit, total_mv, end_date
+        FROM hk_fundamental_screen
+        {where_sql}
+        ORDER BY {col} {order_sql} NULLS LAST, ts_code ASC
+        LIMIT %s;
+    """
+    params.append(int(limit))
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+def hk_synced_ts_codes(years: list[int]) -> set:
+    """港股两表在给定年份全部有数据的 ts_code 集合 (全市场续跑断点用)。
+
+    某股票被视为「已同步」= hk_red_low_vol 与 hk_fundamental_screen 中,
+    给定年份全部存在 (count(DISTINCT year) = len(years))。
+    """
+    years = [int(y) for y in years]
+    if not years:
+        return set()
+    result: set | None = None
+    for table in ("hk_red_low_vol", "hk_fundamental_screen"):
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT ts_code FROM {table} WHERE year = ANY(%s) "
+                    "GROUP BY ts_code HAVING count(DISTINCT year) = %s",
+                    (years, len(years)),
+                )
+                s = {str(r[0]) for r in cur.fetchall()}
+        result = s if result is None else (result & s)
+    return result or set()

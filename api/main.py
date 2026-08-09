@@ -17,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import backtest_engine, band_service, caibao_service, data_service, daily_recommend_service
-from . import fundamental_service, pg_service, redlowvol_service
+from . import fundamental_service, hk_data_service, hk_fundamental_service, hk_redlowvol_service
+from . import pg_service, redlowvol_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -37,6 +38,8 @@ def _startup() -> None:
         pg_service.init_financial_schema()
         pg_service.init_daily_rec_schema()
         pg_service.init_my_stocks_schema()
+        pg_service.init_hk_rlv_schema()
+        pg_service.init_hk_fundamental_schema()
     except Exception:
         pass
 
@@ -78,11 +81,37 @@ class RedLowVolRequest(BaseModel):
     industry: str = Field("", description="行业名称(东财分类), 空表示全市场")
     years: list[int] = Field(..., min_length=1, max_length=15,
                              description="年度列表, 如 [2020,2021,2022,2023,2024,2025]")
-    sort_by: str = Field("dividend_yield", description="排序字段 (股息率/波动率/每股分红/自由现金流等)")
+    sort_by: str = Field("dividend_yield", description="排序字段 (名称/股息率/波动率/每股分红/自由现金流等)")
     order: str = Field("desc", description="排序方向: asc / desc")
     filters: dict = Field(default_factory=dict,
                           description="筛选条件 {字段: {min: x, max: y}}, 如 {'dividend_yield': {'min': 5}}")
     max_stocks: int = Field(6000, ge=1, le=20000, description="同步时最多扫描股票数(全市场约5536只)")
+    limit: int = Field(500, ge=1, le=1000, description="返回数量上限")
+
+
+class HkScreenRequest(BaseModel):
+    """港股基本面选股请求 (ROE 杜邦拆分)。"""
+    industry: str = Field("", description="行业名称(东财港股行业, 如 银行/软件服务), 空表示全市场")
+    years: list[int] = Field(..., min_length=1, max_length=15,
+                             description="年度列表, 如 [2024,2025]")
+    sort_by: str = Field("roe", description="排序字段 (ROE/净利润率/毛利率等)")
+    order: str = Field("desc", description="排序方向: asc / desc")
+    filters: dict = Field(default_factory=dict,
+                          description="筛选条件 {字段: {min: x, max: y}}, 如 {'roe': {'min': 15}, 'debt_to_assets': {'max': 60}}")
+    max_stocks: int = Field(3000, ge=1, le=10000, description="最多扫描股票数(全市场港股约2782只)")
+    limit: int = Field(1000, ge=1, le=2000, description="返回数量上限")
+
+
+class HkRedLowVolRequest(BaseModel):
+    """港股红利低波选股请求。"""
+    industry: str = Field("", description="行业名称(东财港股行业), 空表示全市场")
+    years: list[int] = Field(..., min_length=1, max_length=15,
+                             description="年度列表, 如 [2023,2024,2025]")
+    sort_by: str = Field("dividend_yield", description="排序字段")
+    order: str = Field("desc", description="排序方向: asc / desc")
+    filters: dict = Field(default_factory=dict,
+                          description="筛选条件 {字段: {min: x, max: y}}")
+    max_stocks: int = Field(3000, ge=1, le=10000, description="同步时最多扫描股票数(全市场约2782只)")
     limit: int = Field(500, ge=1, le=1000, description="返回数量上限")
 
 
@@ -483,6 +512,124 @@ def redlowvol_screen(req: RedLowVolRequest) -> dict:
                                          order=req.order, filters=req.filters, limit=req.limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"红利低波选股失败: {e}")
+    return {
+        "industry": industry,
+        "years": req.years,
+        "sync": sync_info,
+        "count": len(items),
+        "items": items,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 港股 (红利低波 / 基本面选股) — 数据源: 东财港股财务/分红 + 腾讯日线 + tushare hk_basic
+# ---------------------------------------------------------------------------
+
+@app.get("/api/hk/industry/search")
+def hk_industry_search(keyword: str = Query("", description="行业关键字, 空=热门行业"),
+                       limit: int = Query(20, ge=1, le=50)) -> dict:
+    """港股行业模糊搜索: 返回匹配行业及股票数量 (前端候选推荐)。"""
+    try:
+        ind_map = hk_data_service.industry_map()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    counts: dict[str, int] = {}
+    for ind in ind_map.values():
+        counts[ind] = counts.get(ind, 0) + 1
+    items = [{"industry": k, "count": v} for k, v in counts.items()]
+    items.sort(key=lambda x: x["count"], reverse=True)
+    if keyword:
+        items = [it for it in items if keyword in it["industry"]]
+    return {"items": items[:limit]}
+
+
+@app.get("/api/hk/stocks")
+def hk_stocks(keyword: str = Query("", description="代码或名称关键字, 空=全部(前limit只)"),
+              limit: int = Query(50, ge=1, le=300)) -> dict:
+    """港股股票列表 (代码/名称/行业/市场), 供前端联想。"""
+    try:
+        stocks = hk_data_service.hk_stock_list()
+        ind_map = hk_data_service.industry_map()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    items = []
+    for _, row in stocks.iterrows():
+        ts_code = str(row["ts_code"])
+        name = str(row.get("name") or "")
+        market = str(row.get("market") or "")
+        ind = ind_map.get(ts_code, "")
+        if keyword:
+            if keyword not in ts_code and keyword not in name and keyword not in ind:
+                continue
+        items.append({"ts_code": ts_code, "symbol": ts_code.split(".")[0],
+                      "name": name, "market": market, "industry": ind})
+    return {"count": len(items), "items": items[:limit]}
+
+
+@app.post("/api/hk/fundamental/screen")
+def hk_screen_fundamental(req: HkScreenRequest) -> dict:
+    """港股基本面选股 (ROE 杜邦拆分): 确保数据入库后, 按行业+多年份查询。"""
+    industry = req.industry.strip()
+    try:
+        sync_info = hk_fundamental_service.ensure_data(industry, req.years, req.max_stocks)
+        items = hk_fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
+                                              order=req.order, filters=req.filters, limit=req.limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"港股基本面选股失败: {e}")
+    return {
+        "industry": industry,
+        "years": req.years,
+        "sync": sync_info,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@app.post("/api/hk/fundamental/init")
+def hk_fundamental_init(req: HkScreenRequest) -> dict:
+    """初始化港股基本面数据: 按行业(空=全市场)+多个年份计算全部指标并入库 (幂等 upsert)。"""
+    try:
+        result = hk_fundamental_service.sync_industry_years(
+            req.industry.strip(), req.years, max_stocks=req.max_stocks)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"港股基本面数据初始化失败: {e}")
+    return result
+
+
+@app.post("/api/hk/fundamental/verify")
+def hk_fundamental_verify(req: HkScreenRequest) -> dict:
+    """校验港股 ROE 杜邦拆分正确性: roe ≈ 净利润率 × 总资产周转率 × 权益乘数。"""
+    industry = req.industry.strip()
+    try:
+        items = hk_fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
+                                              order=req.order, filters=req.filters, limit=req.limit)
+        result = hk_fundamental_service.verify_roe(items)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"校验失败: {e}")
+    return result
+
+
+@app.post("/api/hk/redlowvol/sync")
+def hk_redlowvol_sync(req: HkRedLowVolRequest) -> dict:
+    """港股红利低波: 按行业+多个年份计算指标并写入 PostgreSQL (幂等 upsert)。"""
+    try:
+        result = hk_redlowvol_service.sync_industry_years(
+            req.industry.strip(), req.years, max_stocks=req.max_stocks)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"港股红利低波数据同步失败: {e}")
+    return result
+
+
+@app.post("/api/hk/redlowvol/screen")
+def hk_redlowvol_screen(req: HkRedLowVolRequest) -> dict:
+    """港股红利低波选股: 确保数据已入库后, 按行业+多年份查询, 支持阈值筛选与排序。"""
+    industry = req.industry.strip()
+    try:
+        sync_info = hk_redlowvol_service.ensure_data(industry, req.years, max_stocks=req.max_stocks)
+        items = hk_redlowvol_service.screen(industry, req.years, sort_by=req.sort_by,
+                                            order=req.order, filters=req.filters, limit=req.limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"港股红利低波选股失败: {e}")
     return {
         "industry": industry,
         "years": req.years,

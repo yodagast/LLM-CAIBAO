@@ -4,6 +4,7 @@
 
   const $ = (s) => document.querySelector(s);
   let chart = null;
+  let isHk = false;   // 港股 (单位用港元, 无前复权)
 
   function fmtNum(v, d = 2) {
     if (v === null || v === undefined || isNaN(v)) return "—";
@@ -43,7 +44,7 @@
     }
   }
 
-  function renderKline(bars) {
+  function renderKline(bars, currency = "元") {
     const el = $("#kchart");
     if (!chart) chart = echarts.init(el);
     const dates = bars.map((b) => fmtDate(b.date));
@@ -71,8 +72,8 @@
           html += `最高 ${b.high.toFixed(2)}　最低 ${b.low.toFixed(2)}<br/>`;
           const ampTip = b.pre_close && b.pre_close > 0 ? ((b.high - b.low) / b.pre_close * 100).toFixed(2) + "%" : "—";
           const trTip = b.turnover_rate != null ? b.turnover_rate.toFixed(2) + "%" : "—";
-          const volTip = b.vol != null ? (b.vol >= 10000 ? (b.vol / 10000).toFixed(2) + "万" : b.vol.toFixed(0)) + "手" : "—";
-          const amtTip = b.amount != null ? (b.amount >= 100000 ? (b.amount / 100000).toFixed(2) + "亿" : b.amount.toFixed(0) + "千") + "元" : "—";
+          const volTip = b.vol != null ? (b.vol >= 10000 ? (b.vol / 10000).toFixed(2) + "万" : b.vol.toFixed(0)) + (isHk ? "股" : "手") : "—";
+          const amtTip = b.amount != null ? (b.amount >= 100000 ? (b.amount / 100000).toFixed(2) + "亿" : b.amount.toFixed(0) + "千") + currency : "—";
           html += `涨跌 <b style="color:${b.pct_chg >= 0 ? "#e65050" : "#26a69a"}">${b.pct_chg >= 0 ? "+" : ""}${b.pct_chg.toFixed(2)}%</b>　振幅 <b>${ampTip}</b><br/>`;
           html += `成交量 ${volTip}　成交额 ${amtTip}<br/>`;
           html += `换手率 ${trTip}`;
@@ -179,10 +180,12 @@
     const last = data.last_close;
     const prev = data.bars && data.bars.length > 1 ? data.bars[data.bars.length - 2].close : null;
     const chg = prev ? (last / prev - 1) * 100 : null;
+    isHk = info.kind === "hk" || String(info.ts_code).endsWith(".HK");
+    const currency = isHk ? "港元" : "元";
 
     $("#d-name").textContent = info.name;
     $("#d-code-line").textContent =
-      `${info.ts_code} · ${info.industry || "—"} · ${info.kind === "fund" ? "基金/ETF" : "股票"}`;
+      `${info.ts_code} · ${info.industry || "—"} · ${info.kind === "fund" ? "基金/ETF" : (isHk ? "港股" : "股票")}`;
     $("#d-price").textContent = fmtNum(last);
     $("#d-chg").textContent = chg === null ? "" : `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`;
     $("#d-chg").className = "chg " + (chg !== null ? cls(chg) : "");
@@ -190,18 +193,28 @@
 
     $("#c-pb").textContent = fmtNum(data.pb);
     $("#c-pe").textContent = fmtNum(data.pe_ttm ?? data.pe);
-    $("#c-div").textContent = data.div_per_share == null ? "—" : fmtNum(data.div_per_share) + " 元";
+    $("#c-div").textContent = data.div_per_share == null ? "—" : fmtNum(data.div_per_share) + ` ${currency}`;
     $("#c-div-end").textContent = data.dividend_end ? `分红年度 ${data.dividend_end.slice(0, 4)}` : "";
     $("#c-dy").textContent = data.dividend_yield == null ? "—" : fmtNum(data.dividend_yield) + "%";
     $("#c-52l").textContent = fmtNum(data.week52_low);
     $("#c-52h").textContent = fmtNum(data.week52_high);
     $("#c-share").textContent = fmtYi(data.total_share) + " 股";
     $("#c-float-share").textContent = data.float_share ? `流通 ${fmtYi(data.float_share)} 股` : "";
-    $("#c-mv").textContent = fmtYi(data.total_mv) + " 元";
-    $("#c-circ-mv").textContent = data.circ_mv ? `流通市值 ${fmtYi(data.circ_mv)} 元` : "";
+    $("#c-mv").textContent = fmtYi(data.total_mv) + ` ${currency}`;
+    $("#c-circ-mv").textContent = data.circ_mv ? `流通市值 ${fmtYi(data.circ_mv)} ${currency}` : "";
+
+    // 港股: 行情卡成交量单位 手→股, 成交额单位 元→港元
+    if (isHk) {
+      const setSub = (id, txt) => {
+        const el = document.querySelector(id);
+        if (el) el.parentElement.querySelector(".d-sub").textContent = txt;
+      };
+      setSub("#q-vol", "股");
+      setSub("#q-amt", "港元");
+    }
 
     if (data.bars && data.bars.length) {
-      renderKline(data.bars);
+      renderKline(data.bars, currency);
       setupDatePicker(data.bars, data);
       renderQuoteSnap(data.bars[data.bars.length - 1]);
     }
@@ -277,6 +290,7 @@
       render(data);
       bindAddMyStock();
       bindKlineToolbar();
+      if (isHk) klineAdj = "";   // 港股无可靠前复权, 默认不复权
       reloadKline();   // 初始按默认(日线+前复权)加载 K 线
       requestAnimationFrame(() => chart && chart.resize());
     } catch (err) {

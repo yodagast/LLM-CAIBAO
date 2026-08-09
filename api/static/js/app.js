@@ -318,7 +318,7 @@
 
   // ---------- 基本面选股 (ROE 杜邦拆分) ----------
   const SCREEN_SORT_LABELS = {
-    year: "年份", close: "最近价", roe: "ROE", net_margin: "净利润率",
+    year: "年份", name: "名称", close: "最近价", roe: "ROE", net_margin: "净利润率",
     assets_turn: "总资产周转率", equity_multiplier: "权益乘数", gross_margin: "毛利率",
     debt_to_assets: "资产负债率", total_cur_assets: "流动资产", money_cap: "现金",
     invturn_days: "存货周转天数", arturn_days: "应收周转天数",
@@ -406,7 +406,7 @@
         screenSort.order = screenSort.order === "desc" ? "asc" : "desc";
       } else {
         screenSort.by = by;
-        screenSort.order = "desc";
+        screenSort.order = by === "name" ? "asc" : "desc";
       }
       const payload = buildScreenPayload();
       if (!payload.years.length) return;
@@ -481,7 +481,7 @@
       <tr>
         <td class="num">${it.year}</td>
         <td>${it.ts_code}</td>
-        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
         <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
         <td class="num ${cls(it.net_margin || 0)}">${fmtPctVal(it.net_margin)}</td>
         <td class="num">${it.assets_turn == null ? "—" : Number(it.assets_turn).toFixed(2)}</td>
@@ -519,7 +519,7 @@
   }
 
   // 当前排序状态 (表头点击修改; 默认股息率降序)
-  const rlvSort = { by: "dividend_yield", order: "desc" };
+  const rlvSort = { by: "dividend_yield_ttm", order: "desc" };
 
   // 红利低波年份区间: 起始~结束 (空=最新/不限), 生成年份数组
   function _rlvYears() {
@@ -544,7 +544,7 @@
 
     const filters = {};
     const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
-    const dy = fNum("#rlv_f_dy"); if (dy !== null) filters.dividend_yield = { min: dy };
+    const dy = fNum("#rlv_f_dy"); if (dy !== null) filters.dividend_yield_ttm = { min: dy };
     const vol = fNum("#rlv_f_vol"); if (vol !== null) filters.volatility = { max: vol };
     const div = fNum("#rlv_f_div"); if (div !== null) filters.div_per_share = { min: div };
     const roeMin = fNum("#rlv_f_roe_min");
@@ -707,7 +707,7 @@
       <tr>
         <td class="num">${it.year}</td>
         <td>${it.ts_code}</td>
-        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
         <td>${it.industry || "—"}</td>
         <td class="num ${cls(it.dividend_yield || 0)}">${fmtPctVal(it.dividend_yield)}</td>
         <td class="num ${cls(it.dividend_yield_ttm || 0)}">${fmtPctVal(it.dividend_yield_ttm)}</td>
@@ -782,7 +782,7 @@
     dividend_growth_3y: "3年股利增长", roe: "ROE", debt_to_assets: "资产负债率",
     avg_daily_mv: "总市值", avg_daily_amt: "日均成交额",
   };
-  const hkRlvSort = { by: "dividend_yield", order: "desc" };
+  const hkRlvSort = { by: "dividend_yield_ttm", order: "desc" };
 
   function _hkRlvYears() {
     const yMin = parseInt($("#hk_rlv_year_min").value, 10);
@@ -803,9 +803,9 @@
     const dyMin = fNum("#hk_rlv_f_dy");
     const dyMax = fNum("#hk_rlv_f_dy_max");
     if (dyMin !== null || dyMax !== null) {
-      filters.dividend_yield = {};
-      if (dyMin !== null) filters.dividend_yield.min = dyMin;
-      if (dyMax !== null) filters.dividend_yield.max = dyMax;
+      filters.dividend_yield_ttm = {};
+      if (dyMin !== null) filters.dividend_yield_ttm.min = dyMin;
+      if (dyMax !== null) filters.dividend_yield_ttm.max = dyMax;
     }
     const vol = fNum("#hk_rlv_f_vol"); if (vol !== null) filters.volatility = { max: vol };
     const roeMin = fNum("#hk_rlv_f_roe_min");
@@ -977,7 +977,7 @@
 
   // ---------- 港股基本面 ----------
   const HK_SCREEN_SORT_LABELS = {
-    year: "年份", close: "最近价", roe: "ROE", net_margin: "净利润率",
+    year: "年份", name: "名称", close: "最近价", roe: "ROE", net_margin: "净利润率",
     assets_turn: "总资产周转率", equity_multiplier: "权益乘数", gross_margin: "毛利率",
     debt_to_assets: "资产负债率", current_ratio: "流动比率", total_cur_assets: "流动资产",
     money_cap: "现金", invturn_days: "存货周转天数", arturn_days: "应收周转天数",
@@ -1049,7 +1049,7 @@
         hkScreenSort.order = hkScreenSort.order === "desc" ? "asc" : "desc";
       } else {
         hkScreenSort.by = by;
-        hkScreenSort.order = "desc";
+        hkScreenSort.order = by === "name" ? "asc" : "desc";
       }
       const payload = buildHkScreenPayload();
       if (!payload.years.length) return;
@@ -1415,7 +1415,7 @@
     bandResult.classList.remove("hidden");
 
     $("#band-result-title").innerHTML =
-      `<a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(info.ts_code)}" target="_blank" title="查看详情">${info.name}</a> (${info.ts_code}) · 区间交易最优参数`;
+      `<a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(info.ts_code)}" title="查看详情">${info.name}</a> (${info.ts_code}) · 区间交易最优参数`;
     const achievedTxt = search.achieved ? "✅ 夏普达标" : "⚠️ 未达目标夏普 (已取折中)";
     const maxTradesTxt = search.max_trades ? ` · 最大交易 ≤ ${search.max_trades}` : "";
     $("#band-result-sub").textContent =
@@ -1712,7 +1712,7 @@
     const body = _sortedDaily().map((it) => `
       <tr>
         <td>${it.ts_code}</td>
-        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
         <td>${it.kind === "fund" ? "基金" : "股票"}</td>
         <td class="num">${Number(it.close).toFixed(2)}</td>
         <td class="num">${Number(it.buy_price).toFixed(2)}</td>
@@ -1752,7 +1752,7 @@
     const body = _sortedDailyDiv().map((it) => `
       <tr>
         <td>${it.ts_code}</td>
-        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
         <td>${it.industry || "—"}</td>
         <td class="num">${it.year}</td>
         <td class="num ${cls(it.dividend_yield_ttm)}">${_dp(it.dividend_yield_ttm)}%</td>
@@ -2005,7 +2005,7 @@
   function _renderMyTable() {
     const body = _sortedMyStocks().map((it) => `
       <tr>
-        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank" title="查看详情">${it.name}</a></td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
         <td>${it.ts_code}</td>
         <td>${it.industry || "—"}</td>
         <td class="num">${it.last_close == null ? "—" : Number(it.last_close).toFixed(2)}</td>

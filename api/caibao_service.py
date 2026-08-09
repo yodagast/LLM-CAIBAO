@@ -351,6 +351,109 @@ def _latest_valuation(ts_code: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 港股财报收集 (东财港股数据, 输出与 collect_financials 同结构)
+# ---------------------------------------------------------------------------
+
+def _yi(wan):
+    """万港元 → 亿港元; 空返回 None。"""
+    if wan is None:
+        return None
+    try:
+        return round(float(wan) / 10000.0, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hk_valuation(ts_code: str) -> dict:
+    """港股最新估值 (PE/PB/股息率/市值, 东财指标 + 腾讯最新收盘)。"""
+    from . import hk_data_service as hkd
+    try:
+        m = hkd.stock_metrics(ts_code)
+    except Exception:
+        return {}
+    fina = m.get("fina") or {}
+    if not fina:
+        return {}
+    latest_year = max(fina.keys())
+    f = fina[latest_year]
+    close = m.get("last_close")
+    dps = (m.get("dividends") or {}).get(latest_year)
+    dv = (dps / close * 100.0) if (dps and close) else None
+    return {
+        "close": round(close, 2) if close else None,
+        "pe_ttm": round(f["pe_ttm"], 2) if f.get("pe_ttm") is not None else None,
+        "pb": round(f["pb"], 2) if f.get("pb") is not None else None,
+        "dv_ratio_%": round(dv, 2) if dv is not None else None,
+        "total_mv_亿": _yi(f.get("total_mv_wan")),
+    }
+
+
+def collect_hk_financials(ts_code: str, years: list[int]) -> dict:
+    """港股各年财务指标 (东财港股 MAININDICATOR + 资产负债表 + 分红)。
+
+    返回与 collect_financials 同结构 {year: {指标}}; 金额单位: 亿港元 (与 A 股亿元口径一致),
+    比率: %。费用科目 (销售/管理/研发) 港股报表口径不同, 置 None (报告显示 —)。
+    """
+    from . import hk_data_service as hkd
+    m = hkd.stock_metrics(ts_code)
+    fina = m.get("fina") or {}
+    balance = m.get("balance") or {}
+    out: dict = {}
+    for y in years:
+        f = fina.get(y)
+        if not f:
+            print(f"  [hk] {ts_code} {y} 年财报未披露, 跳过")
+            continue
+        b = balance.get(y) or {}
+        n_income_wan = f.get("net_profit_wan")
+        ocf_wan = f.get("ocf_wan")
+        # 净现比 = 经营现金流 / 净利润
+        cash_ratio = None
+        if n_income_wan and abs(n_income_wan) > 0 and ocf_wan is not None:
+            cash_ratio = round(ocf_wan / n_income_wan, 2)
+        out[y] = {
+            "year": y,
+            # 盈利
+            "total_revenue_亿": _yi(f.get("operate_income_wan")),
+            "oper_cost_亿": None,  # 港股费用口径不同, 置 None
+            "net_income_亿": _yi(n_income_wan),
+            "gross_margin_%": f.get("gross_margin"),
+            "net_margin_%": f.get("net_margin"),
+            "roe_%": f.get("roe"),
+            "or_yoy_%": f.get("or_yoy"),
+            "netprofit_yoy_%": f.get("netprofit_yoy"),
+            # 费用率 (港股口径不同, 置 None)
+            "sell_exp_亿": None, "admin_exp_亿": None, "fin_exp_亿": None, "rd_exp_亿": None,
+            # 资产结构
+            "total_assets_亿": _yi(f.get("total_assets_wan")),
+            "total_cur_assets_亿": _yi(b.get("total_cur_assets_wan")),
+            "money_cap_亿": _yi(b.get("money_cap_wan")),
+            "accounts_receiv_亿": _yi(b.get("accounts_receiv_wan")),
+            "inventory_亿": _yi(b.get("inventory_wan")),
+            "fixed_assets_亿": _yi(b.get("fixed_assets_wan")),
+            "contract_liab_亿": None,
+            "inv_assets_亿": None,
+            # 负债与偿债
+            "total_liab_亿": _yi(f.get("total_liab_wan")),
+            "total_cur_liab_亿": _yi(b.get("total_cur_liab_wan")),
+            "debt_to_assets_%": f.get("debt_to_assets"),
+            "current_ratio": f.get("current_ratio"),
+            "quick_ratio": None,
+            # 周转 (东财给的是周转天数, 换算为周转率次/年)
+            "ar_turn": (365.0 / f["arturn_days"]) if f.get("arturn_days") else None,
+            "inv_turn": (365.0 / f["invturn_days"]) if f.get("invturn_days") else None,
+            "assets_turn": f.get("assets_turn"),
+            "equity_multiplier": f.get("equity_multiplier"),
+            # 现金流
+            "ocf_亿": _yi(ocf_wan),
+            "icf_亿": _yi(f.get("icf_wan")),
+            "fcf_亿": _yi(f.get("fncf_wan")),
+            "净现比": cash_ratio,
+        }
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 4) 规则化分析 (无需 LLM)
 # ---------------------------------------------------------------------------
 
@@ -368,7 +471,8 @@ def _trend(vals: list, reverse: bool = False) -> str:
     return f"{'上升' if chg > 0 else '下降'} {abs(chg):.0f}%"
 
 
-def analyze_rule_based(info: dict, financials: dict, valuation: dict) -> str:
+def analyze_rule_based(info: dict, financials: dict, valuation: dict,
+                      source_label: str = "tushare 年度财务数据 (年报口径)") -> str:
     """基于指标数据生成结构化 Markdown 财报分析报告 (对应 skill 框架)。"""
     years = sorted(financials.keys())
     y0, y1 = years[0], years[-1] if years else 0
@@ -393,7 +497,7 @@ def analyze_rule_based(info: dict, financials: dict, valuation: dict) -> str:
     L = []
     A = L.append
     A(f"# {name}（{code}）{y0}~{y1} 年财报分析报告\n")
-    A(f"> 数据来源: tushare 年度财务数据 (年报口径) · 分析生成时间 {datetime.now():%Y-%m-%d %H:%M}\n")
+    A(f"> 数据来源: {source_label} · 分析生成时间 {datetime.now():%Y-%m-%d %H:%M}\n")
 
     # ---- 3. 财务数据概览 ----
     A("\n## 3. 财务数据概览\n")
@@ -616,8 +720,9 @@ def _skill_prompt() -> str:
     return "你是一位专业财务分析师, 请对给定的公司财报数据进行分析。"
 
 
-def analyze_llm(info: dict, financials: dict, valuation: dict) -> str:
-    """用 LLM 生成深度分析报告 (仅基于 tushare 财务指标, 不依赖 PDF)。"""
+def analyze_llm(info: dict, financials: dict, valuation: dict,
+                source_label: str = "tushare 年度财务数据") -> str:
+    """用 LLM 生成深度分析报告 (仅基于财务指标, 不依赖 PDF)。"""
     y0 = min(financials.keys()) if financials else ""
     y1 = max(financials.keys()) if financials else ""
     name = info.get("name", "")
@@ -636,7 +741,7 @@ def analyze_llm(info: dict, financials: dict, valuation: dict) -> str:
         f"请对上市公司 {name}（{code}）{y0}~{y1} 年度财务报告进行深度分析。\n\n"
         f"## 公司信息\n名称: {name}\n代码: {code}\n行业: {info.get('industry','—')}\n"
         f"最新估值: {valuation if valuation else '暂无'}\n\n"
-        f"## tushare 年度财务指标 (tushare 年报口径, 金额单位: 亿元, 比率: %)\n```\n{fin_table}\n```\n\n"
+        f"## tushare 年度财务指标 ({source_label}, 金额单位: 亿元, 比率: %)\n```\n{fin_table}\n```\n\n"
         "请严格按照上述 skill 的输出格式要求 (1 执行摘要 … 8 投资建议) 生成 Markdown 报告, "
         "务必基于给定数据, 严禁编造数字。"
     )
@@ -751,18 +856,30 @@ def ensure_financials(ts_code: str, years: list[int]) -> tuple[dict, dict]:
 
 def analyze(ts_code: str, start_year: int, end_year: int,
             use_llm: bool = False, save_dir: Path | None = None) -> dict:
-    """基于 tushare 财报数据 (存 pgsql) 生成分析报告, 不依赖 PDF 下载。
+    """基于财报数据 (存 pgsql 或港股东财数据) 生成分析报告, 不依赖 PDF 下载。
 
+    支持 A股 (tushare, 存 pgsql) 与港股 (东财港股, 实时计算)。
     返回 {info, source, financials, valuation, markdown, llm_used, report_path, range}。
     """
     info = data_service.resolve_code(ts_code)
-    ts = info["ts_code"]  # 带后缀, tushare 接口需要 (如 600036.SH)
+    ts = info["ts_code"]  # 带后缀, 接口需要 (如 600036.SH / 00700.HK)
+    is_hk = info.get("kind") == "hk" or str(ts).endswith(".HK")
     if end_year < start_year:
         start_year, end_year = end_year, start_year
     years = list(range(start_year, end_year + 1))
 
-    # 财务数据 (pgsql 优先, 缺失自动同步 tushare 入库)
-    financials, valuation = ensure_financials(ts, years)
+    if is_hk:
+        # 港股: 东财港股数据实时计算
+        source_label = "东方财富港股年度财务数据 (金额单位: 亿港元)"
+        financials = collect_hk_financials(ts, years)
+        valuation = _hk_valuation(ts)
+        source = "hk_eastmoney"
+    else:
+        # A股: pgsql financial_data 优先, 缺失自动同步 tushare 入库
+        source_label = "tushare 年度财务数据 (年报口径)"
+        financials, valuation = ensure_financials(ts, years)
+        source = "tushare"
+
     # 跳过数据完全缺失的年份 (如 2026 年报未披露 / 旧脏数据全空行)
     financials = {y: d for y, d in financials.items() if not _is_blank_year(d)}
     if not financials:
@@ -772,13 +889,13 @@ def analyze(ts_code: str, start_year: int, end_year: int,
     llm_used = False
     if use_llm and llm_available():
         try:
-            markdown = analyze_llm(info, financials, valuation)
+            markdown = analyze_llm(info, financials, valuation, source_label)
             llm_used = True
         except Exception as e:
             print(f"LLM 分析失败, 回退规则化: {e}")
-            markdown = analyze_rule_based(info, financials, valuation)
+            markdown = analyze_rule_based(info, financials, valuation, source_label)
     else:
-        markdown = analyze_rule_based(info, financials, valuation)
+        markdown = analyze_rule_based(info, financials, valuation, source_label)
 
     # 保存报告
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -788,7 +905,7 @@ def analyze(ts_code: str, start_year: int, end_year: int,
 
     return {
         "info": info,
-        "source": "tushare",
+        "source": source,
         "financials": financials,
         "valuation": valuation,
         "markdown": markdown,

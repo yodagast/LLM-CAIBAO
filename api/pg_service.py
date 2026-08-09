@@ -243,6 +243,7 @@ CREATE INDEX IF NOT EXISTS idx_fs_ind_year ON fundamental_screen (industry, year
 
 FUNDAMENTAL_SORTABLE_COLUMNS = {
     "year": "year",
+    "name": "name",
     "close": "close",
     "roe": "roe",
     "net_margin": "net_margin",
@@ -944,6 +945,7 @@ CREATE INDEX IF NOT EXISTS idx_hk_fs_ind_year ON hk_fundamental_screen (industry
 
 HK_FUNDAMENTAL_SORTABLE_COLUMNS = {
     "year": "year",
+    "name": "name",
     "close": "close",
     "roe": "roe",
     "net_margin": "net_margin",

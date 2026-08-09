@@ -245,7 +245,7 @@
           <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
           <div class="grid">
             <div class="field">
-              <label for="rlv_f_dy">股息率 ≥ (%)</label>
+              <label for="rlv_f_dy">动态股息率 ≥ (%)</label>
               <input type="number" id="rlv_f_dy" placeholder="如 5" min="0" step="0.1" />
             </div>
             <div class="field">
@@ -391,7 +391,7 @@
                 <tr>
                   <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
                   <th>代码</th>
-                  <th>名称</th>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="net_margin">净利润率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="assets_turn">总资产周转率<span class="sort-arrow"></span></th>
@@ -438,11 +438,11 @@
           <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
           <div class="grid">
             <div class="field">
-              <label for="hk_rlv_f_dy">股息率 ≥ (%)</label>
+              <label for="hk_rlv_f_dy">动态股息率 ≥ (%)</label>
               <input type="number" id="hk_rlv_f_dy" placeholder="如 5" min="0" step="0.1" />
             </div>
             <div class="field">
-              <label for="hk_rlv_f_dy_max">股息率 ≤ (%)</label>
+              <label for="hk_rlv_f_dy_max">动态股息率 ≤ (%)</label>
               <input type="number" id="hk_rlv_f_dy_max" placeholder="如 10" min="0" step="0.1" />
             </div>
             <div class="field">
@@ -584,7 +584,7 @@
                 <tr>
                   <th class="sortable" data-sort="year">年份<span class="sort-arrow"></span></th>
                   <th>代码</th>
-                  <th>名称</th>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
                   <th>行业</th>
                   <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="net_margin">净利润率<span class="sort-arrow"></span></th>
@@ -935,6 +935,6 @@
     <span>智能选股回测平台 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=41"></script>
+  <script src="/static/js/app.js?v=43"></script>
 </body>
 </html>

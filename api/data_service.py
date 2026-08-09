@@ -73,12 +73,33 @@ def _fund_basic() -> pd.DataFrame:
     return df
 
 
-def resolve_code(code: str) -> dict:
-    """解析股票/ETF 代码, 返回 {"ts_code", "symbol", "name", "kind"}。
+def _resolve_hk(ts_code: str) -> dict:
+    """解析港股代码 → {"ts_code", "symbol", "name", "kind", "market"}。
 
-    支持两种输入:
-      - 6 位数字代码, 如 "000858" → "000858.SZ" (五粮液)
-      - 带后缀代码, 如 "000858.SZ" / "513050.SH"
+    延迟导入 hk_data_service 避免循环依赖 (hk_data_service 依赖本模块的 _init_pro)。
+    """
+    from . import hk_data_service
+    stocks = hk_data_service.hk_stock_list()
+    hit = stocks[stocks["ts_code"].astype(str) == ts_code]
+    if hit.empty:
+        raise ValueError(f"未找到港股代码 [{ts_code}]。")
+    row = hit.iloc[0]
+    return {
+        "ts_code": ts_code,
+        "symbol": ts_code.split(".")[0],
+        "name": str(row.get("name") or ""),
+        "kind": "hk",
+        "market": "HK",
+    }
+
+
+def resolve_code(code: str) -> dict:
+    """解析股票/ETF/港股 代码, 返回 {"ts_code", "symbol", "name", "kind"}。
+
+    支持:
+      - A股/基金: 6 位数字代码 (如 "000858" → "000858.SZ") 或带后缀 ("513050.SH")
+      - 港股: 带 .HK 后缀 ("00700.HK") 或 4~5 位数字代码 (如 "0700"/"700" → "00700.HK")
+      - kind: stock(A股) / fund(基金ETF) / hk(港股)
     """
     code = code.strip().upper()
     if not code:
@@ -86,6 +107,13 @@ def resolve_code(code: str) -> dict:
 
     # 规范输入: 去掉空格等
     ts_code = code if "." in code else None
+
+    # 港股: 显式 .HK 后缀
+    if ts_code is not None and ts_code.endswith(".HK"):
+        return _resolve_hk(ts_code)
+    # 港股: 4~5 位纯数字代码 (A股均为 6 位, 5 位即视为港股零填充)
+    if ts_code is None and code.isdigit() and 4 <= len(code) <= 5:
+        return _resolve_hk(f"{code.zfill(5)}.HK")
 
     stocks = _stock_basic()
     funds = _fund_basic()
@@ -111,6 +139,9 @@ def resolve_code(code: str) -> dict:
     if not hit_f.empty:
         row = hit_f.iloc[0]
         return {"ts_code": ts_code, "symbol": row["symbol"], "name": row["name"], "kind": "fund"}
+    # 港股带 .HK 后缀但不在 A股表 (如 00700.HK 前缀等)
+    if ts_code.endswith(".HK"):
+        return _resolve_hk(ts_code)
     raise ValueError(f"未找到代码 [{ts_code}] 对应的股票/基金。")
 
 
@@ -154,6 +185,24 @@ def search_stock(keyword: str, limit: int = 20) -> list[dict]:
             for _, row in funds[fmask].head(limit - len(items)).iterrows()
         ]
         items.extend(fund_items)
+
+    # 补充港股 (输入 4~5 位代码或 .HK 后缀或港股名称时)
+    if len(items) < limit:
+        try:
+            from . import hk_data_service
+            hk = hk_data_service.hk_stock_list()
+            hkmask = (
+                hk["ts_code"].astype(str).str.contains(keyword, na=False)
+                | hk["name"].astype(str).str.contains(keyword, na=False)
+            )
+            hk_items = [
+                {"ts_code": str(row["ts_code"]), "symbol": str(row["ts_code"]).split(".")[0],
+                 "name": str(row.get("name") or ""), "kind": "hk", "market": "HK"}
+                for _, row in hk[hkmask].head(limit - len(items)).iterrows()
+            ]
+            items.extend(hk_items)
+        except Exception:
+            pass
     return items[:limit]
 
 
@@ -206,19 +255,61 @@ def _adj_close(df: pd.DataFrame) -> pd.Series:
     return pd.Series(out, index=df.index)
 
 
+def _get_hk_daily(ts_code: str, start_date: str, end_date: str,
+                  adj: str = "") -> pd.DataFrame:
+    """港股日线 (数据源: 腾讯港股 K 线, 不复权), 返回 tushare daily 同构 DataFrame。
+
+    列: trade_date(YYYYMMDD) / open / high / low / close / vol / amount /
+        pre_close / pct_chg。amount 为近似值 (成交量×收盘价)。
+    注意: 港股不提供可靠前复权序列, adj="qfq" 时仍返回原始价 (与 A 股 qfq 口径不同)。
+    """
+    from . import hk_data_service
+    df = hk_data_service._tencent_kline_df(ts_code)
+    if df.empty:
+        raise ValueError(f"未获取到 {ts_code} 的港股日线数据。")
+    # 日期过滤 (start_date/end_date 为 YYYYMMDD)
+    s = start_date or "20000101"
+    e = end_date or datetime.now().strftime("%Y%m%d")
+    df = df[(df["date"] >= pd.to_datetime(s)) & (df["date"] <= pd.to_datetime(e))]
+    if df.empty:
+        raise ValueError(f"未获取到 {ts_code} 在 {s}~{e} 的港股日线数据。")
+    df = df.reset_index(drop=True)
+    close = df["close"].astype(float)
+    out = pd.DataFrame({
+        "trade_date": df["date"].dt.strftime("%Y%m%d"),
+        "open": df["open"].astype(float),
+        "high": df["high"].astype(float),
+        "low": df["low"].astype(float),
+        "close": close,
+        "vol": df["vol"].astype(float),
+        # 成交额统一为千元 (与 tushare daily 口径一致); 港股 vol 单位为股, 成交额≈量×价
+        "amount": (df["vol"] * df["close"] / 1000.0).astype(float),
+        "pre_close": close.shift(1).fillna(close),
+        "pct_chg": close.pct_change().fillna(0.0) * 100.0,
+    })
+    return out
+
+
 def get_daily(ts_code: str, kind: str = "stock",
               start_date: str = "20170101", end_date: str = "",
               adj: str = "") -> pd.DataFrame:
-    """获取单只股票/ETF 日线 (trade_date 升序), 带内存缓存。
+    """获取单只股票/ETF/港股 日线 (trade_date 升序), 带内存缓存。
 
-    adj: "" 不复权(原始价格) / "qfq" 前复权 (用 pct_chg 重建连续价, 消除拆分/分红跳空)。
-    回测/收益计算建议用 "qfq"; 行情展示用默认不复权。
+    adj: "" 不复权(原始价格) / "qfq" 前复权 (A股用 pct_chg 重建; 港股无可靠前复权, 返回原始价)。
+    回测/收益计算建议用 "qfq" (A股); 港股回测用原始价 (数据源限制)。
     """
     end_date = end_date or datetime.now().strftime("%Y%m%d")
     adj_key = str(adj).strip().lower()
     cache_key = f"{ts_code}:{kind}:{start_date}:{end_date}:{adj_key}"
     if cache_key in _DAILY_CACHE:
         return _DAILY_CACHE[cache_key]
+
+    # 港股走腾讯日线
+    if kind == "hk" or str(ts_code).endswith(".HK"):
+        df = _get_hk_daily(ts_code, start_date, end_date, adj_key)
+        df = df.sort_values("trade_date").reset_index(drop=True)
+        _DAILY_CACHE[cache_key] = df
+        return df
 
     pro = _init_pro()
     df = pd.DataFrame()
@@ -261,7 +352,11 @@ def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
 
     基于 tushare pro_bar 接口。返回升序 bars (含 open/high/low/close/pre_close/change/pct_chg/vol/amount/amplitude)。
     D 线额外附带 turnover_rate (换手率, 来自 daily_basic); W/M 线换手率为空。
+    港股 (kind=hk / .HK) 走腾讯日线 (不复权), W/M 由日线聚合。
     """
+    if kind == "hk" or str(ts_code).endswith(".HK"):
+        return _hk_kline(ts_code, freq, adj, start_date, end_date, hist_years)
+
     end = end_date or datetime.now().strftime("%Y%m%d")
     start = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
     adj_param = adj.strip() or None
@@ -313,12 +408,75 @@ def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
     return bars
 
 
+def _hk_kline(ts_code: str, freq: str = "D", adj: str = "",
+              start_date: str = "", end_date: str = "",
+              hist_years: int = 20) -> list[dict]:
+    """港股 K 线 (腾讯日线, 不复权); D 直接返回, W/M 由日线聚合。"""
+    from . import hk_data_service
+    df = hk_data_service._tencent_kline_df(ts_code)
+    if df.empty:
+        raise ValueError(f"未获取到 {ts_code} 的港股日线数据。")
+    s = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
+    e = end_date or datetime.now().strftime("%Y%m%d")
+    df = df[(df["date"] >= pd.to_datetime(s)) & (df["date"] <= pd.to_datetime(e))].copy()
+    if df.empty:
+        raise ValueError(f"未获取到 {ts_code} 在 {s}~{e} 的港股K线数据。")
+    df = df.sort_values("date").reset_index(drop=True)
+    df["trade_date"] = df["date"].dt.strftime("%Y%m%d")
+    # 成交额≈量×价 (千元, 与 tushare 口径一致)
+    df["amount"] = (df["vol"] * df["close"] / 1000.0)
+
+    # W/M 聚合
+    if freq.upper() in ("W", "M"):
+        rule = "W" if freq.upper() == "W" else "ME"
+        g = df.set_index("date").resample(rule)
+        df = pd.DataFrame({
+            "trade_date": g["trade_date"].last().values,
+            "open": g["open"].first().values,
+            "high": g["high"].max().values,
+            "low": g["low"].min().values,
+            "close": g["close"].last().values,
+            "vol": g["vol"].sum().values,
+            "amount": g["amount"].sum().values,
+        }).dropna(subset=["close"])
+
+    bars = []
+    prev = None
+    for _, row in df.iterrows():
+        td = str(row["trade_date"])
+        close = float(row["close"])
+        pre = prev if prev is not None else close
+        hi = float(row["high"])
+        lo = float(row["low"])
+        amp = ((hi - lo) / pre * 100.0) if pre and pre > 0 else None
+        pct = (close / pre - 1) * 100.0 if pre and pre > 0 else 0.0
+        bars.append({
+            "date": td,
+            "open": float(row["open"]),
+            "high": hi,
+            "low": lo,
+            "close": close,
+            "pre_close": pre,
+            "change": close - pre,
+            "pct_chg": round(pct, 4),
+            "vol": float(row.get("vol") or 0),
+            "amount": _to_float(row.get("amount")),
+            "amplitude": amp,
+            "turnover_rate": None,
+        })
+        prev = close
+    return bars
+
+
 def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
                      hist_years: int = 20, date: str = "") -> dict:
     """股票详情聚合: 最多 hist_years 年 K 线 + 52 周高低 + PB/PE/股本/市值 + 分红/股息率。
 
     date: 指定交易日 (YYYYMMDD) 查看该日行情快照, 空=最新交易日。
+    港股 (kind=hk / .HK) 走 _get_hk_stock_detail (东财指标 + 腾讯日线, 金额单位万港元)。
     """
+    if kind == "hk" or str(ts_code).endswith(".HK"):
+        return _get_hk_stock_detail(ts_code, days, hist_years, date)
     pro = _init_pro()
     end_date = datetime.now().strftime("%Y%m%d")
     # K 线历史: 最多 hist_years 年 (约 250 交易日/年)
@@ -444,6 +602,121 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
         "pe_ttm": pe_ttm,
         "total_share": total_share,
         "float_share": float_share,
+        "total_mv": total_mv,
+        "circ_mv": circ_mv,
+        "dv_ratio": dv_ratio,
+        "div_per_share": div_per_share,
+        "dividend_end": dividend_end,
+        "dividend_yield": dividend_yield,
+        "bars": bars,
+    }
+
+
+def _get_hk_stock_detail(ts_code: str, days: int = 250,
+                         hist_years: int = 20, date: str = "") -> dict:
+    """港股个股详情 (东财财务指标/分红 + 腾讯日线, 金额单位: 万港元)。
+
+    返回与 A 股 get_stock_detail 同结构 (pb/pe_ttm/total_share万股/total_mv万港元/
+    div_per_share港元/dividend_yield%)。港股无 daily_basic, 换手率/流通市值置 None。
+    """
+    from . import hk_data_service as hkd
+    end_date = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
+    df = get_daily(ts_code, "hk", start_date=start, end_date=end_date)
+
+    # 选中目标交易日
+    if date:
+        target = df[df["trade_date"].astype(str) == str(date)]
+        if target.empty:
+            raise ValueError(f"交易日 {date} 无行情数据 (可能停牌或未上市)")
+        quote_row = target.iloc[0]
+    else:
+        quote_row = df.iloc[-1]
+
+    recent = df.tail(days).reset_index(drop=True)  # 52 周窗口
+    last_close = float(quote_row["close"])
+    last_date = str(quote_row["trade_date"])
+    week52_high = float(recent["high"].max())
+    week52_low = float(recent["low"].min())
+    pre_close = _to_float(quote_row.get("pre_close"))
+    q_hi = _to_float(quote_row.get("high"))
+    q_lo = _to_float(quote_row.get("low"))
+    amp_quote = ((q_hi - q_lo) / pre_close * 100.0) if (pre_close and pre_close > 0 and q_hi is not None and q_lo is not None) else None
+    quote = {
+        "trade_date": last_date,
+        "open": _to_float(quote_row.get("open")),
+        "high": q_hi,
+        "low": q_lo,
+        "close": _to_float(quote_row.get("close")),
+        "pre_close": pre_close,
+        "change": _to_float(quote_row.get("change")),
+        "pct_chg": _to_float(quote_row.get("pct_chg")),
+        "vol": _to_float(quote_row.get("vol")),
+        "amount": _to_float(quote_row.get("amount")),
+        "amplitude": amp_quote,
+        "turnover_rate": None,
+        "after_vol": None,
+    }
+
+    # 东财港股财务指标 (最新财年) → 估值
+    try:
+        m = hkd.stock_metrics(ts_code)
+    except Exception:
+        m = {}
+    fina = m.get("fina") or {}
+    latest_year = max(fina.keys()) if fina else 0
+    f = fina.get(latest_year) or {}
+    pb = f.get("pb")
+    pe_ttm = f.get("pe_ttm")
+    pe = None
+    shares = f.get("issued_shares")
+    total_share = (shares / 10000.0) if shares else None  # 股 → 万股 (与 A 股 total_share 口径一致)
+    total_mv = f.get("total_mv_wan")                        # 万港元
+    circ_mv = None
+
+    # 分红/股息率: 最新财政年度每股现金分红 (港元) / 最新收盘价
+    dividends = m.get("dividends") or {}
+    div_per_share = dividends.get(latest_year)
+    dividend_end = f"{latest_year}-12-31" if latest_year else ""
+    dividend_yield = (div_per_share / last_close * 100.0) if (div_per_share and last_close) else None
+    dv_ratio = dividend_yield
+
+    # K 线 bars (全部历史)
+    bars = []
+    for _, row in df.iterrows():
+        td = str(row["trade_date"])
+        pre = _to_float(row.get("pre_close"))
+        hi = float(row["high"])
+        lo = float(row["low"])
+        amp = ((hi - lo) / pre * 100.0) if (pre and pre > 0) else None
+        bars.append({
+            "date": td,
+            "open": float(row["open"]),
+            "high": hi,
+            "low": lo,
+            "close": float(row["close"]),
+            "pre_close": pre,
+            "change": _to_float(row.get("change")),
+            "pct_chg": float(row.get("pct_chg", 0.0) or 0.0),
+            "vol": float(row.get("vol", 0.0) or 0.0),
+            "amount": _to_float(row.get("amount")),
+            "amplitude": amp,
+            "turnover_rate": None,
+        })
+
+    return {
+        "last_close": last_close,
+        "last_date": last_date,
+        "week52_high": week52_high,
+        "week52_low": week52_low,
+        "hist_years": hist_years,
+        "bars_count": len(bars),
+        "quote": quote,
+        "pb": pb,
+        "pe": pe,
+        "pe_ttm": pe_ttm,
+        "total_share": total_share,
+        "float_share": None,
         "total_mv": total_mv,
         "circ_mv": circ_mv,
         "dv_ratio": dv_ratio,

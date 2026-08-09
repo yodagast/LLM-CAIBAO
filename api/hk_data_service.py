@@ -198,6 +198,9 @@ def _fina_indicator_map(ts_code: str) -> dict[int, dict]:
             "eps": _to_float(r.get("BASIC_EPS")),
             "bps": _to_float(r.get("BPS")),
             "roe": _to_float(r.get("ROE_AVG")),
+            "roa": _to_float(r.get("ROA")),
+            "or_yoy": _to_float(r.get("OPERATE_INCOME_YOY")),
+            "netprofit_yoy": _to_float(r.get("HOLDER_PROFIT_YOY")),
             # 杜邦分量统一用归母口径从原始分量计算, 保证 roe≈净利率×周转×权益乘数 内部一致:
             #   净利率 = 归母净利润/营业收入; 周转 = 营业收入/总资产; 权益乘数 = 总资产/归母权益
             "net_margin": None,
@@ -218,6 +221,8 @@ def _fina_indicator_map(ts_code: str) -> dict[int, dict]:
             "fncf_wan": _wan(r.get("NETCASH_FINANCE")),
             "total_mv_wan": _wan(r.get("TOTAL_MARKET_CAP")),
             "issued_shares": _to_float(r.get("ISSUED_COMMON_SHARES")),
+            "pe_ttm": _to_float(r.get("PE_TTM")),
+            "pb": _to_float(r.get("PB_TTM")),
             "dps_hkd": _to_float(r.get("DPS_HKD")),
             "payout_ratio_em": _to_float(r.get("DIVI_RATIO")),
         }
@@ -330,11 +335,14 @@ def _dividend_map(ts_code: str) -> dict[int, float]:
 # 资产负债表 (RPT_HKF10_FN_BALANCE_PC) — 流动资产/现金/存货
 # ---------------------------------------------------------------------------
 
-# 关键科目代码: 流动资产合计 / 现金及等价物 / 存货
+# 关键科目代码: 流动资产合计 / 现金及等价物 / 存货 / 应收账款 / 流动负债 / 固定资产
 _BAL_ITEMS = {
     "004002999": "total_cur_assets",   # 流动资产合计
     "004002010": "money_cap",          # 现金及等价物
     "004002001": "inventory",          # 存货
+    "004002003": "accounts_receiv",    # 应收账款
+    "004011999": "total_cur_liab",     # 流动负债合计
+    "004001002": "fixed_assets",       # 物业厂房及设备
     "004009999": "total_assets",       # 总资产 (校验)
 }
 

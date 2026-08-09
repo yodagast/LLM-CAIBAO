@@ -85,15 +85,23 @@ body {
 .hint { color: var(--text-soft); font-size: 13px; }
 
 /* ---------- Tab 导航 ---------- */
+/* 横向排列, 窄屏时左右滑动切换 (不换行竖排) */
 .tabs {
   display: flex; gap: 4px; margin-bottom: 0;
   border-bottom: 1px solid var(--border);
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;               /* Firefox 隐藏滚动条 */
+  overscroll-behavior-x: contain;
 }
+.tabs::-webkit-scrollbar { display: none; }  /* Chrome/Safari 隐藏滚动条 */
 .tab {
   background: transparent; border: 1px solid transparent;
   border-bottom: none; color: var(--text-soft);
   padding: 11px 24px; border-radius: 12px 12px 0 0;
   font-size: 15px; font-weight: 600; cursor: pointer;
+  flex: 0 0 auto; white-space: nowrap;
   transition: background .15s, color .15s, border-color .15s;
 }
 .tab:hover { background: var(--primary-light); color: var(--primary-dark); }
@@ -317,8 +325,31 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
   .grid { grid-template-columns: repeat(2, 1fr); }
   .metric-cards { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* 手机/平板: 顶栏竖排收窄 / 容器与卡片紧凑 */
+@media (max-width: 768px) {
+  .topbar-inner {
+    flex-direction: column; align-items: flex-start; gap: 10px;
+    padding: 14px 16px;
+  }
+  .health { align-self: flex-end; }
+  .container { padding: 14px; }
+  .card { padding: 16px; }
+  .tab { padding: 10px 14px; font-size: 14px; }
+}
+
+/* 窄屏手机 */
 @media (max-width: 560px) {
   .grid { grid-template-columns: 1fr; }
   .metric-cards { grid-template-columns: 1fr; }
   .chart { height: 320px; }
+  .brand h1 { font-size: 18px; }
+  .brand p { font-size: 12px; }
+  .brand-logo { font-size: 28px; }
+  .btn-primary, .btn-ghost { width: 100%; justify-content: center; }
+  .form-actions { flex-direction: column; align-items: stretch; }
+  .trade-filters { margin-left: 0; width: 100%; flex-wrap: wrap; }
+  .result-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .card-title { flex-wrap: wrap; }
+  .metric .m-value { font-size: 19px; }
 }

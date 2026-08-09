@@ -955,7 +955,7 @@
       <tr>
         <td class="num">${it.year}</td>
         <td>${it.ts_code}</td>
-        <td class="stock-name">${it.name}</td>
+        <td class="stock-name"><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
         <td>${it.industry || "—"}</td>
         <td>${it.market || "—"}</td>
         <td class="num ${cls(it.dividend_yield || 0)}">${fmtPctVal(it.dividend_yield)}</td>
@@ -1124,7 +1124,7 @@
       <tr>
         <td class="num">${it.year}</td>
         <td>${it.ts_code}</td>
-        <td class="stock-name">${it.name}</td>
+        <td class="stock-name"><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
         <td>${it.industry || "—"}</td>
         <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
         <td class="num ${cls(it.net_margin || 0)}">${fmtPctVal(it.net_margin)}</td>

@@ -184,6 +184,18 @@ API（`ensure_data` 自动补数, 行业模式约 1~3 分钟/年）:
 `scripts/nightly_update.sh` 为每日 20:00 自动更新 A股 + 港股全部选股数据的定时脚本
 (已在用户 crontab 安装: `0 20 * * * .../scripts/nightly_update.sh`)。
 
+**Linux 服务器版**: `scripts/nightly_update_linux.sh` (适配 Alibaba Cloud Linux / RHEL8,
+GNU date)。部署到 Linux 后按实际路径配置环境变量 (crontab 示例):
+
+```bash
+# 部署路径不同时可覆盖 (crontab 中可通过设置环境或用默认路径)
+PROJECT_ROOT=/srv/LLM-CAIBAO PYTHON_BIN=/srv/LLM-CAIBAO/.venv/bin/python \
+  bash scripts/nightly_update_linux.sh
+
+# crontab 示例 (每天 20:00):
+# 0 20 * * * /srv/LLM-CAIBAO/scripts/nightly_update_linux.sh >/dev/null 2>&1
+```
+
 ```bash
 # 手动运行一次 (默认只更新最近 1 个完整财年, 如 2025)
 bash scripts/nightly_update.sh
@@ -229,7 +241,8 @@ api/
   static/               # 前端页面 (index.html / css / js)
   requirements.txt
 scripts/
-  nightly_update.sh     # 每日 20:00 定时更新 A股+港股 (crontab)
+  nightly_update.sh     # 每日 20:00 定时更新 A股+港股 (crontab, macOS 版)
+  nightly_update_linux.sh # 同上, Linux 版 (Alibaba Cloud Linux/RHEL8, GNU date, 路径可配置)
   init_hk_all_market.py # 港股全市场初始化 (红利低波+基本面一次遍历, 支持并行/断点续跑)
   init_hk_redlowvol.py  # 港股红利低波数据初始化
   init_hk_fundamental.py# 港股基本面数据初始化

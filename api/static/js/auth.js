@@ -20,17 +20,47 @@
     });
   }
 
-  // 普通页面 (首页/详情页) 顶栏用户区: 未登录=登录(链接到登录页), 已登录=用户名(进个人页)+退出
+  // 普通页面 (首页/详情页) 顶栏用户区 (参考主流产品账号体系):
+  //   未登录 = [登录](描边次按钮) + [注册](实心主按钮)
+  //   已登录 = 圆形首字符头像 + 昵称 → 点击弹下拉菜单 (个人中心 / 退出登录)
+  //   注销账号仅在个人中心页 (user.html) 提供 (防误触)
+  function loginUrl(reg) {
+    var q = (reg ? "?mode=register" : "");
+    if (location.pathname !== "/") {
+      q += (q ? "&" : "?") + "next=" + encodeURIComponent(location.pathname + location.search);
+    }
+    return "/static/login.html" + q;
+  }
   function renderZone() {
     var zone = $("#auth-zone");
     if (!zone) return;
     if (user) {
+      var initial = (user.username || "?").charAt(0).toUpperCase();
       zone.innerHTML =
-        '<a class="auth-user" href="/static/user.html" title="个人中心">👤 ' + esc(user.username) + "</a>" +
-        '<button type="button" class="auth-link ghost" data-aa="logout">退出</button>';
+        '<div class="auth-user" id="auth-user" role="button" tabindex="0" title="账号菜单">' +
+        '  <span class="auth-avatar">' + esc(initial) + "</span>" +
+        '  <span class="auth-name">' + esc(user.username) + "</span>" +
+        '  <span class="auth-caret">▾</span>' +
+        "</div>" +
+        '<div class="auth-menu hidden" id="auth-menu">' +
+        '  <div class="auth-menu-header">' + esc(user.username) + "</div>" +
+        '  <a class="auth-menu-item" href="/static/user.html">个人中心</a>' +
+        '  <button type="button" class="auth-menu-item danger" data-aa="logout">退出登录</button>' +
+        "</div>";
+      var trigger = $("#auth-user"), menu = $("#auth-menu");
+      if (trigger && menu) {
+        trigger.addEventListener("click", function (e) {
+          e.stopPropagation();
+          menu.classList.toggle("hidden");
+        });
+        trigger.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); menu.classList.toggle("hidden"); }
+        });
+      }
     } else {
       zone.innerHTML =
-        '<a class="auth-link" href="/static/login.html" data-aa="login">登录</a>';
+        '<button type="button" class="auth-link ghost" data-aa="login">登录</button>' +
+        '<button type="button" class="auth-link" data-aa="register">注册</button>';
     }
     zone.querySelectorAll("[data-aa]").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -40,8 +70,10 @@
   }
 
   function onAction(a) {
-    if (a === "login" || a === "register") {
-      location.href = "/static/login.html";
+    if (a === "login") {
+      location.href = loginUrl(false);
+    } else if (a === "register") {
+      location.href = loginUrl(true);
     } else if (a === "logout") {
       doLogout();
     }
@@ -135,6 +167,7 @@
     loginPage = true;
     var q = new URLSearchParams(location.search);
     loginNext = q.get("next") || "/";
+    if (q.get("mode") === "register") mode = "register";  // 右上角「注册」直达注册态
     await me();
     if (user) { location.href = loginNext; return; }
     updateModalUI();
@@ -151,6 +184,18 @@
   async function init() {
     await me();
     renderZone();
+    // 点击账号区外部 / 按 Esc 关闭下拉菜单 (只绑定一次)
+    document.addEventListener("click", function (e) {
+      var menu = $("#auth-menu");
+      if (!menu || menu.classList.contains("hidden")) return;
+      if (!(e.target.closest && e.target.closest("#auth-zone"))) menu.classList.add("hidden");
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        var menu = $("#auth-menu");
+        if (menu) menu.classList.add("hidden");
+      }
+    });
     var sub = $("#auth-submit");
     if (sub) sub.addEventListener("click", submit);
     var tg = $("#auth-toggle");
@@ -171,7 +216,7 @@
     var el = $("#user-content");
     if (!el) return;
     el.innerHTML =
-      '<div class="user-avatar">👤</div>' +
+      '<div class="user-avatar">' + esc((user.username || "?").charAt(0).toUpperCase()) + "</div>" +
       "<h2>" + esc(user.username) + "</h2>" +
       '<p class="user-meta">注册时间: ' + esc(user.created_at || "—") + "</p>" +
       '<p class="user-meta">绑定自选股将随账号删除</p>' +

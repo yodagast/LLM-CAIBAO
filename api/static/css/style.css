@@ -76,11 +76,21 @@ body {
 
 /* ---------- 用户认证 (登录/注册/注销) ---------- */
 .auth-user {
+  display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; font-weight: 700; color: var(--primary);
-  white-space: nowrap; max-width: 96px; overflow: hidden; text-overflow: ellipsis;
-  text-decoration: none; cursor: pointer;
+  white-space: nowrap; text-decoration: none; cursor: pointer;
+  user-select: none; padding: 3px 6px; border-radius: 999px;
+  transition: background .15s;
 }
-.auth-user:hover { color: var(--primary-dark); }
+.auth-user:hover { background: var(--primary-light); }
+.auth-avatar {
+  width: 24px; height: 24px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--primary); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700;
+}
+.auth-name { max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+.auth-caret { font-size: 10px; color: var(--text-soft); }
 .auth-link {
   background: var(--primary); color: #fff; border: none;
   padding: 5px 12px; border-radius: 8px; font-size: 12px; font-weight: 600;
@@ -91,6 +101,35 @@ body {
   background: transparent; color: var(--primary); border: 1px solid var(--primary);
 }
 .auth-link.ghost:hover { background: var(--primary-light); }
+
+/* 已登录下拉菜单 (个人中心 / 退出登录) */
+.auth-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
+  min-width: 150px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow-lg); padding: 6px;
+}
+.auth-menu-header {
+  padding: 8px 12px; font-size: 12px; color: var(--text-soft);
+  border-bottom: 1px solid var(--border); margin-bottom: 4px;
+  max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.auth-menu-item {
+  display: block; width: 100%; text-align: left; box-sizing: border-box;
+  padding: 9px 12px; font-size: 13px; color: var(--text);
+  background: transparent; border: none; border-radius: 8px; cursor: pointer;
+  text-decoration: none; white-space: nowrap;
+}
+.auth-menu-item:hover { background: var(--primary-light); color: var(--primary-dark); }
+.auth-menu-item.danger { color: #dc2626; }
+.auth-menu-item.danger:hover { background: #fef2f2; color: #b91c1c; }
+
+/* 移动端: 账号区只保留头像 (昵称/箭头隐藏) */
+@media (max-width: 560px) {
+  .auth-name, .auth-caret { display: none; }
+  .auth-avatar { width: 26px; height: 26px; font-size: 14px; }
+  .tabs-auth { padding: 0 8px; gap: 6px; }
+  .auth-link { padding: 5px 10px; }
+}
 .btn-danger {
   background: #dc2626; color: #fff; border: none;
   padding: 10px 20px; border-radius: 10px; font-size: 14px; font-weight: 600;
@@ -188,6 +227,7 @@ body.auth-loading .container { visibility: hidden; }
   flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
   padding: 0 12px; border-left: 1px solid var(--border);
   background: var(--bg);
+  position: relative;   /* 供账号下拉菜单定位 */
 }
 .tab {
   background: transparent; border: 1px solid transparent;

@@ -4,10 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>个人中心</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=36" />
+  <link rel="stylesheet" href="/static/css/style.css?v=37" />
   <style>
     .user-page { max-width: 460px; margin: 24px auto; text-align: center; padding: 30px 24px; }
-    .user-avatar { font-size: 56px; margin-bottom: 10px; }
+    .user-avatar {
+      width: 72px; height: 72px; border-radius: 50%;
+      background: var(--primary); color: #fff;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 32px; font-weight: 700; margin-bottom: 12px;
+    }
     .user-page h2 { font-size: 22px; margin-bottom: 8px; word-break: break-all; }
     .user-meta { color: var(--text-soft); font-size: 13px; margin: 4px 0; }
     .user-actions { display: flex; gap: 12px; justify-content: center; margin-top: 30px; flex-wrap: wrap; }
@@ -25,7 +30,7 @@
     <span>数据源 tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/auth.js?v=3"></script>
+  <script src="/static/js/auth.js?v=4"></script>
   <script>
     /* 个人中心页: 未登录自动跳回首页 */
     CaiBaoAuth.initUserPage();

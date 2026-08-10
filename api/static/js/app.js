@@ -46,22 +46,17 @@
   const caibaoInput = $("#caibao_ts_code");
   const caibaoTip = $("#caibao-ts-tip");
 
-  // 每日推荐元素
-  const dailyForm = $("#daily-form");
-  const dailyMethod = $("#daily_method");
-  const dailyScanBtn = $("#daily-scan-btn");
-  const dailyRefreshBtn = $("#daily-refresh-btn");
-  const dailyLoading = $("#daily-loading");
-  const dailyError = $("#daily-error");
-  const dailyResult = $("#daily-result");
-  const dailyTable = $("#daily-table");
-  const dailyBandResult = $("#daily-band-result");
-  const dailyDivResult = $("#daily-div-result");
-  const dailyDivTable = $("#daily-div-table");
-  let dailyItems = [];
-  let dailySort = { key: "close", order: "desc" };
-  let dailyDivItems = [];
-  let dailyDivSort = { key: "dividend_yield_ttm", order: "desc" };
+  // ETF 筛选元素
+  const etfForm = $("#etf-form");
+  const etfBtn = $("#etf-btn");
+  const etfRefreshBtn = $("#etf-refresh-btn");
+  const etfLoading = $("#etf-loading");
+  const etfError = $("#etf-error");
+  const etfResult = $("#etf-result");
+  const etfTable = $("#etf-table");
+  const etfSub = $("#etf-sub");
+  let etfItems = [];
+  let etfSort = { key: "scale", order: "desc" };
 
   // 我的股票元素
   const myRefreshBtn = $("#my-refresh-btn");
@@ -184,7 +179,6 @@
   }
   bindIndustrySuggest($("#sc_industry"), $("#sc-ind-panel"));
   bindIndustrySuggest($("#rlv_industry"), $("#rlv-ind-panel"));
-  bindIndustrySuggest($("#daily_industry"), $("#daily-ind-panel"));
 
   // 输入代码后尝试解析显示名称 + 加载最近行情
   stockInput.addEventListener("change", async () => {
@@ -1688,276 +1682,154 @@
     caibaoResult.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // ---------- 每日公司推荐 ----------
-  function _sortedDaily() {
-    const k = dailySort.key;
-    const arr = dailyItems.slice();
-    arr.sort((a, b) => {
-      let va = a[k], vb = b[k];
-      let cmp;
-      if (k === "achieved") {
-        cmp = (va ? 1 : 0) - (vb ? 1 : 0);
-      } else if (typeof va === "number" && typeof vb === "number") {
-        cmp = va - vb;
-      } else {
-        const na = parseFloat(va), nb = parseFloat(vb);
-        cmp = (!isNaN(na) && !isNaN(nb)) ? na - nb : String(va).localeCompare(String(vb), "zh");
-      }
-      return dailySort.order === "asc" ? cmp : -cmp;
-    });
-    return arr;
-  }
+  // ---------- ETF 筛选 ----------
+  const _efmt = (v, d = 2, suffix = "") =>
+    (v === null || v === undefined || isNaN(Number(v))) ? "—" : Number(v).toFixed(d) + suffix;
+  const _esign = (v, d = 2, suffix = "") =>
+    (v === null || v === undefined || isNaN(Number(v))) ? "—"
+      : (v > 0 ? "+" : "") + Number(v).toFixed(d) + suffix;
 
-  function _renderDailyTable() {
-    const body = _sortedDaily().map((it) => `
-      <tr>
-        <td>${it.ts_code}</td>
-        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
-        <td>${it.kind === "fund" ? "基金" : "股票"}</td>
-        <td class="num">${Number(it.close).toFixed(2)}</td>
-        <td class="num">${Number(it.buy_price).toFixed(2)}</td>
-        <td class="num">${Number(it.sell_price).toFixed(2)}</td>
-        <td class="num">${Number(it.stop_price).toFixed(2)}</td>
-        <td class="num ${cls(it.total_return)}">${fmtPct(it.total_return)}</td>
-        <td class="num">${Number(it.sharpe).toFixed(2)}</td>
-        <td class="num">${it.trades}</td>
-        <td>${it.achieved ? "✅" : "—"}</td>
-      </tr>`).join("")
-      || `<tr><td colspan="11" style="text-align:center;color:var(--text-soft)">暂无推荐, 请先扫描</td></tr>`;
-    $("#daily-table tbody").innerHTML = body;
-    // 表头排序指示
-    dailyTable.querySelectorAll("th[data-key]").forEach((th) => {
-      const active = th.dataset.key === dailySort.key;
-      th.classList.toggle("sort-active", active);
-      th.textContent = th.textContent.replace(/\s*[▲▼]\s*$/, "");
-      if (active) th.textContent = `${th.textContent} ${dailySort.order === "asc" ? "▲" : "▼"}`;
-    });
-  }
-
-  // 方法2: 红利低波 (动态股息率) 表格
-  const _dp = (v, d = 2) =>
-    (v === null || v === undefined || isNaN(Number(v))) ? "—" : Number(v).toFixed(d);
-  function _sortedDailyDiv() {
-    const k = dailyDivSort.key;
-    const arr = dailyDivItems.slice();
+  function _sortedEtf() {
+    const k = etfSort.key;
+    const dir = etfSort.order === "asc" ? 1 : -1;
+    const arr = etfItems.slice();
     arr.sort((a, b) => {
-      let va = a[k], vb = b[k];
+      const va = a[k], vb = b[k];
+      const aNull = va === null || va === undefined || va === "";
+      const bNull = vb === null || vb === undefined || vb === "";
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;      // 空值排最后
+      if (bNull) return -1;
       const na = parseFloat(va), nb = parseFloat(vb);
-      const cmp = (!isNaN(na) && !isNaN(nb)) ? na - nb : String(va).localeCompare(String(vb), "zh");
-      return dailyDivSort.order === "asc" ? cmp : -cmp;
+      let cmp;
+      if (!isNaN(na) && !isNaN(nb)) cmp = na - nb;
+      else cmp = String(va).localeCompare(String(vb), "zh");
+      return cmp * dir;
     });
     return arr;
   }
-  function _renderDailyDivTable() {
-    const body = _sortedDailyDiv().map((it) => `
-      <tr>
-        <td>${it.ts_code}</td>
-        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
-        <td>${it.industry || "—"}</td>
-        <td class="num">${it.year}</td>
-        <td class="num ${cls(it.dividend_yield_ttm)}">${_dp(it.dividend_yield_ttm)}%</td>
-        <td class="num ${cls(it.dividend_yield)}">${_dp(it.dividend_yield)}%</td>
-        <td class="num">${_dp(it.last_close)}</td>
-        <td class="num">${_dp(it.volatility)}%</td>
-        <td class="num">${_dp(it.div_per_share)}</td>
-        <td class="num">${_dp(it.payout_ratio)}%</td>
-        <td class="num">${_dp(it.roe)}%</td>
-        <td class="num">${_dp(it.dividend_growth_3y)}%</td>
-      </tr>`).join("")
-      || `<tr><td colspan="12" style="text-align:center;color:var(--text-soft)">暂无推荐, 请先确认红利低波数据已同步或调整阈值</td></tr>`;
-    $("#daily-div-table tbody").innerHTML = body;
-    dailyDivTable.querySelectorAll("th[data-key]").forEach((th) => {
-      const active = th.dataset.key === dailyDivSort.key;
-      th.classList.toggle("sort-active", active);
-      th.textContent = th.textContent.replace(/\s*[▲▼]\s*$/, "");
-      if (active) th.textContent = `${th.textContent} ${dailyDivSort.order === "asc" ? "▲" : "▼"}`;
+
+  function updateEtfSortArrows() {
+    document.querySelectorAll("#etf-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === etfSort.key) {
+        arrow.textContent = etfSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
     });
   }
 
-  // 每日推荐方法2: 年份区间标签 (year_min/year_max → 显示文本)
-  function _dailyYearLabel(data) {
-    const mn = data.year_min, mx = data.year_max;
-    if (mn && mx) return `${mn}~${mx}`;
-    if (mn) return `≥${mn}`;
-    if (mx) return `≤${mx}`;
-    return "最新";
+  function _renderEtfTable() {
+    const body = _sortedEtf().map((it) => `
+      <tr>
+        <td>${it.ts_code}</td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
+        <td>${it.fund_type || "—"}</td>
+        <td class="num">${_efmt(it.close, 3)}</td>
+        <td class="num ${cls(it.pct_chg || 0)}">${_esign(it.pct_chg, 2, "%")}</td>
+        <td class="num">${_efmt(it.scale, 2)}</td>
+        <td class="num">${_efmt(it.m_fee, 2)}</td>
+        <td class="num">${_efmt(it.c_fee, 2)}</td>
+        <td class="num">${_efmt(it.avg_amount_20, 0)}</td>
+        <td class="num ${cls(it.premium || 0)}">${_esign(it.premium, 2, "%")}</td>
+        <td class="num">${_efmt(it.track_dev, 3, "%")}</td>
+        <td class="num">${_efmt(it.pos52, 2)}</td>
+        <td class="num">${_efmt(it.high52, 3)}</td>
+        <td class="num">${_efmt(it.low52, 3)}</td>
+        <td class="num">${_efmt(it.age_years, 1)}</td>
+        <td class="num">${it.list_date || "—"}</td>
+      </tr>`).join("")
+      || `<tr><td colspan="16" style="text-align:center;color:var(--text-soft)">暂无符合条件的 ETF, 请放宽筛选条件</td></tr>`;
+    $("#etf-table tbody").innerHTML = body;
+    updateEtfSortArrows();
   }
 
-  function renderDaily(data) {
-    dailyResult.classList.remove("hidden");
-    const isDiv = data.method === "dividend";
-    dailyBandResult.classList.toggle("hidden", isDiv);
-    dailyDivResult.classList.toggle("hidden", !isDiv);
-    if (isDiv) {
-      $("#daily-title").textContent = `每日公司推荐 · 方法2 红利低波 (动态股息率 > ${data.min_dy_ttm}%)`;
-      const indTag = data.industry ? ` · 行业 ${data.industry}` : "";
-      const yearTag = ` · 年份 ${_dailyYearLabel(data)}`;
-      let payoutTag = "";
-      if (data.payout_min != null && data.payout_max != null) {
-        payoutTag = ` · 分红率 ${data.payout_min}~${data.payout_max}%`;
-      } else if (data.payout_min != null) {
-        payoutTag = ` · 分红率 ≥ ${data.payout_min}%`;
-      } else if (data.payout_max != null) {
-        payoutTag = ` · 分红率 ≤ ${data.payout_max}%`;
-      }
-      let roeTag = "";
-      if (data.roe_min != null && data.roe_max != null) {
-        roeTag = ` · ROE ${data.roe_min}~${data.roe_max}%`;
-      } else if (data.roe_min != null) {
-        roeTag = ` · ROE ≥ ${data.roe_min}%`;
-      } else if (data.roe_max != null) {
-        roeTag = ` · ROE ≤ ${data.roe_max}%`;
-      }
-      $("#daily-sub").textContent =
-        `推荐 ${data.count} 只${indTag}${yearTag}${roeTag}${payoutTag} · 数据来自 PostgreSQL (red_low_vol)`;
-      dailyDivItems = data.items || [];
-      _renderDailyDivTable();
-    } else {
-      $("#daily-title").textContent = "每日公司推荐 (方法1 · 买入价 ≥ 当日收盘价)";
-      const scanInfo = data.recommend_count !== undefined
-        ? ` · 扫描 ${data.scanned} 只 / 入库 ${data.stored} 行` : "";
-      const dateRange = data.start_date
-        ? ` · 区间 ${data.start_date}~${data.end_date || "最新"}` : "";
-      const indTag = data.industry ? ` · 行业 ${data.industry}` : "";
-      $("#daily-sub").textContent =
-        `计算日 ${data.calc_date || "—"} · 推荐 ${data.count} 只${indTag}${scanInfo}${dateRange}`;
-      dailyItems = data.items || [];
-      _renderDailyTable();
-    }
-    dailyResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  function renderEtf(data) {
+    etfResult.classList.remove("hidden");
+    const src = data.source === "db"
+      ? ` · 数据来自初始化 (计算日 ${data.calc_date || "—"})`
+      : (data.cached ? " · 命中缓存" : " · 已刷新数据");
+    etfSub.textContent =
+      `共 ${data.count} 只 · 扫描 ${(data.ok || 0) + (data.fail || 0)} 只 / 成功 ${data.ok || 0} 只` +
+      src + " · 点击表头排序";
+    etfItems = data.items || [];
+    _renderEtfTable();
+    etfResult.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function toggleDailyFields() {
-    const m = dailyMethod.value;
-    $("#daily-band-fields").classList.toggle("hidden", m !== "band");
-    $("#daily-dividend-fields").classList.toggle("hidden", m !== "dividend");
-    dailyScanBtn.innerHTML = m === "dividend"
-      ? '<span class="btn-icon">📈</span> 获取推荐'
-      : '<span class="btn-icon">📅</span> 扫描全市场';
+  function buildEtfPayload(refresh) {
+    const num = (id) => {
+      const v = parseFloat($(id).value);
+      return isNaN(v) ? null : v;
+    };
+    return {
+      keyword: $("#etf_keyword").value.trim(),
+      fund_type: $("#etf_type").value,
+      min_scale: num("#etf_min_scale"),
+      max_m_fee: num("#etf_max_mfee"),
+      max_c_fee: num("#etf_max_cfee"),
+      min_amount_20: num("#etf_min_amount"),
+      max_premium: num("#etf_max_premium"),
+      limit: parseInt($("#etf_limit").value, 10) || 300,
+      sort_by: etfSort.key,
+      order: etfSort.order,
+      refresh: !!refresh,
+    };
   }
-  dailyMethod.addEventListener("change", toggleDailyFields);
-  toggleDailyFields();
 
-  async function runDailyScan(payload) {
-    dailyError.classList.add("hidden");
-    dailyResult.classList.add("hidden");
-    dailyScanBtn.disabled = true;
-    dailyRefreshBtn.disabled = true;
-    dailyLoading.classList.remove("hidden");
-    $("#daily-hint").textContent = "";
+  async function runEtfScreen(refresh) {
+    etfError.classList.add("hidden");
+    etfResult.classList.add("hidden");
+    etfBtn.disabled = true;
+    etfRefreshBtn.disabled = true;
+    etfLoading.classList.remove("hidden");
+    $("#etf-hint").textContent = "";
     try {
-      const res = await fetch("/api/dailyrecommend/scan", {
+      const res = await fetch("/api/etf/screen", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildEtfPayload(refresh)),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "扫描失败");
-      if (data.method === "dividend") {
-        $("#daily-hint").textContent =
-          `✓ 查询完成: 推荐 ${data.count} 只 (动态股息率 > ${data.min_dy_ttm}%, 年份 ${_dailyYearLabel(data)})`;
-      } else {
-        $("#daily-hint").textContent = data.cached
-          ? `✓ 命中缓存 (计算日 ${data.calc_date} 已有数据): 推荐 ${data.recommend_count} 只, 直接读取 pgsql`
-          : `扫描完成: 推荐 ${data.recommend_count} 只, 已入库 ${data.stored} 行 (计算日 ${data.calc_date}, 区间 ${data.start_date}~${data.end_date || "最新"})`;
-      }
-      await loadDailyRecommend();
+      if (!res.ok) throw new Error(data.detail || "筛选失败");
+      const srcTag = data.source === "db" ? " · 读取初始化数据"
+        : (data.cached ? " · 命中缓存" : " · 已刷新");
+      $("#etf-hint").textContent =
+        `✓ 筛选完成: 匹配 ${data.count} 只 (成功 ${data.ok} / 失败 ${data.fail}${srcTag})`;
+      renderEtf(data);
     } catch (err) {
-      dailyError.textContent = err.message || "请求失败, 请检查后端服务。";
-      dailyError.classList.remove("hidden");
+      etfError.textContent = err.message || "请求失败, 请检查后端服务。";
+      etfError.classList.remove("hidden");
     } finally {
-      dailyLoading.classList.add("hidden");
-      dailyScanBtn.disabled = false;
-      dailyRefreshBtn.disabled = false;
+      etfLoading.classList.add("hidden");
+      etfBtn.disabled = false;
+      etfRefreshBtn.disabled = false;
     }
   }
 
-  async function loadDailyRecommend() {
-    dailyError.classList.add("hidden");
-    try {
-      const method = dailyMethod.value;
-      const ind = encodeURIComponent($("#daily_industry").value.trim());
-      let url = `/api/dailyrecommend/list?method=${method}&industry=${ind}`;
-      if (method === "dividend") {
-        const minDy = parseFloat($("#daily_min_dy").value);
-        const yMin = parseInt($("#daily_year_min").value, 10);
-        const yMax = parseInt($("#daily_year_max").value, 10);
-        const pMin = parseFloat($("#daily_payout_min").value);
-        const pMax = parseFloat($("#daily_payout_max").value);
-        const rMin = parseFloat($("#daily_roe_min").value);
-        url += `&min_dy_ttm=${isNaN(minDy) ? 3 : minDy}`;
-        if (!isNaN(yMin) && yMin) url += `&year_min=${yMin}`;
-        if (!isNaN(yMax) && yMax) url += `&year_max=${yMax}`;
-        if (!isNaN(pMin)) url += `&payout_min=${pMin}`;
-        if (!isNaN(pMax)) url += `&payout_max=${pMax}`;
-        if (!isNaN(rMin)) url += `&roe_min=${rMin}`;
-      }
-      const res = await fetch(url);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "获取失败");
-      renderDaily(data);
-    } catch (err) {
-      dailyError.textContent = err.message || "请求失败, 请检查后端服务。";
-      dailyError.classList.remove("hidden");
-    }
-  }
-
-  dailyForm.addEventListener("submit", (e) => {
+  etfForm.addEventListener("submit", (e) => {
     e.preventDefault();
-    const method = dailyMethod.value;
-    const pMin = parseFloat($("#daily_payout_min").value);
-    const pMax = parseFloat($("#daily_payout_max").value);
-    const rMin = parseFloat($("#daily_roe_min").value);
-    const yMin = parseInt($("#daily_year_min").value, 10);
-    const yMax = parseInt($("#daily_year_max").value, 10);
-    const payload = {
-      method,
-      ts_codes: "",
-      industry: $("#daily_industry").value.trim(),
-      limit: parseInt($("#daily_limit").value, 10) || 0,
-      objective: $("#daily_objective").value,
-      max_trades: parseInt($("#daily_max_trades").value, 10) || 100,
-      start_date: $("#daily_start").value.trim() || "20170101",
-      end_date: $("#daily_end").value.trim(),
-      use_cache: true,
-      min_dy_ttm: parseFloat($("#daily_min_dy").value) || 3,
-      year_min: (!isNaN(yMin) && yMin) ? yMin : null,
-      year_max: (!isNaN(yMax) && yMax) ? yMax : null,
-      payout_min: isNaN(pMin) ? null : pMin,
-      payout_max: isNaN(pMax) ? null : pMax,
-      roe_min: isNaN(rMin) ? null : rMin,
-    };
-    runDailyScan(payload);
+    runEtfScreen(false);
   });
+  etfRefreshBtn.addEventListener("click", () => runEtfScreen(true));
 
-  // 表格表头点击排序
-  dailyTable.querySelectorAll("th[data-key]").forEach((th) => {
+  // 表头点击排序
+  document.querySelectorAll("#etf-table thead th.sortable").forEach((th) => {
     th.addEventListener("click", () => {
-      const key = th.dataset.key;
-      if (dailySort.key === key) {
-        dailySort.order = dailySort.order === "asc" ? "desc" : "asc";
+      const by = th.dataset.sort;
+      if (etfSort.key === by) {
+        etfSort.order = etfSort.order === "desc" ? "asc" : "desc";
       } else {
-        dailySort.key = key;
-        dailySort.order = "desc";
+        etfSort.key = by;
+        etfSort.order = "desc";
       }
-      _renderDailyTable();
+      _renderEtfTable();
     });
   });
-
-  dailyDivTable.querySelectorAll("th[data-key]").forEach((th) => {
-    th.addEventListener("click", () => {
-      const key = th.dataset.key;
-      if (dailyDivSort.key === key) {
-        dailyDivSort.order = dailyDivSort.order === "asc" ? "desc" : "asc";
-      } else {
-        dailyDivSort.key = key;
-        dailyDivSort.order = "desc";
-      }
-      _renderDailyDivTable();
-    });
-  });
-
-  dailyRefreshBtn.addEventListener("click", loadDailyRecommend);
 
   // ---------- 我的股票 (自选股) ----------
   let myItems = [];
@@ -1973,7 +1845,6 @@
       if (!res.ok) throw new Error(data.detail || "获取失败");
       renderMyStocks(data.items || []);
       mySub.textContent = data.count ? `共 ${data.count} 只自选股 · 行情截至 ${data.items[0] && data.items[0].last_date || "—"} · 点击表头排序` : "";
-      $("#my-hint").textContent = "";
     } catch (err) {
       myError.textContent = err.message || "请求失败, 请检查后端服务。";
       myError.classList.remove("hidden");
@@ -2070,6 +1941,68 @@
   });
 
   myRefreshBtn.addEventListener("click", loadMyStocks);
+
+  // ---------- 移动端下拉刷新 (我的股票) ----------
+  (function initMyPullRefresh() {
+    // 仅支持触摸的移动端启用
+    const isTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints || 0) > 0;
+    if (!isTouch) return;
+    const THRESHOLD = 64;
+    const myTab = document.getElementById("tab-my");
+    let startY = 0, pulling = false, pullDist = 0;
+    let indicator = null;
+
+    function ensureIndicator() {
+      if (indicator) return indicator;
+      indicator = document.createElement("div");
+      indicator.className = "pull-indicator";
+      indicator.innerHTML = '<span class="pi-arrow">↓</span><span class="pi-text">下拉刷新</span>';
+      document.body.appendChild(indicator);
+      return indicator;
+    }
+    function showIndicator(state) {
+      const el = ensureIndicator();
+      const arrow = el.querySelector(".pi-arrow");
+      const text = el.querySelector(".pi-text");
+      if (state === "pull") {
+        arrow.textContent = "↓"; text.textContent = "下拉刷新";
+        el.style.opacity = String(0.4 + 0.6 * Math.min(pullDist / THRESHOLD, 1));
+      } else if (state === "ready") {
+        arrow.textContent = "↑"; text.textContent = "释放刷新";
+        el.style.opacity = "1";
+      }
+    }
+    function hideIndicator() { if (indicator) indicator.style.opacity = "0"; }
+    function myTabActive() { return !myTab.classList.contains("hidden"); }
+    function setPullDist(v) {
+      pullDist = v;
+      myTab.style.transform = v > 0 ? `translateY(${Math.round(Math.min(v * 0.3, 24))}px)` : "";
+    }
+
+    document.addEventListener("touchstart", (e) => {
+      if (!myTabActive() || window.scrollY > 0) { pulling = false; return; }
+      startY = e.touches[0].clientY; pulling = true; pullDist = 0;
+    }, { passive: true });
+
+    document.addEventListener("touchmove", (e) => {
+      if (!pulling) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy <= 0 || window.scrollY > 0) { setPullDist(0); hideIndicator(); pulling = false; return; }
+      const d = Math.min(dy * 0.45, 100);
+      setPullDist(d);
+      showIndicator(d >= THRESHOLD ? "ready" : "pull");
+    }, { passive: true });
+
+    function endPull() {
+      if (!pulling) return;
+      pulling = false;
+      const ok = pullDist >= THRESHOLD;
+      setPullDist(0); hideIndicator(); pullDist = 0;
+      if (ok) loadMyStocks();
+    }
+    document.addEventListener("touchend", endPull, { passive: true });
+    document.addEventListener("touchcancel", endPull, { passive: true });
+  })();
 
   // 窗口尺寸变化时, 防抖自适应图表
   let resizeTimer = null;

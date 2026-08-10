@@ -1080,3 +1080,175 @@ def hk_synced_ts_codes(years: list[int]) -> set:
                 s = {str(r[0]) for r in cur.fetchall()}
         result = s if result is None else (result & s)
     return result or set()
+
+
+# ---------------------------------------------------------------------------
+# ETF 筛选表 etf_screen (夜间初始化脚本 scripts/init_etf.py 写入, 前端读库)
+# ---------------------------------------------------------------------------
+
+ETF_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS etf_screen (
+    ts_code        VARCHAR(16) PRIMARY KEY,
+    name           VARCHAR(100) DEFAULT '',
+    fund_type      VARCHAR(20)  DEFAULT '',
+    management     VARCHAR(100) DEFAULT '',
+    found_date     VARCHAR(8)   DEFAULT '',
+    list_date      VARCHAR(8)   DEFAULT '',
+    age_years      DOUBLE PRECISION,   -- 存续年限 (上市日至今)
+    close          DOUBLE PRECISION,   -- 最新收盘价
+    pct_chg        DOUBLE PRECISION,   -- 当日涨跌幅 %
+    unit_nav       DOUBLE PRECISION,   -- 最新单位净值
+    fd_share       DOUBLE PRECISION,   -- 最新份额 (亿份)
+    scale          DOUBLE PRECISION,   -- 基金规模 (亿元 = 份额×净值)
+    m_fee          DOUBLE PRECISION,   -- 管理费率 %
+    c_fee          DOUBLE PRECISION,   -- 托管费率 %
+    total_fee      DOUBLE PRECISION,   -- 合计费率 %
+    avg_amount_20  DOUBLE PRECISION,   -- 近20日均成交额 (万元)
+    avg_amount_5   DOUBLE PRECISION,   -- 近5日均成交额 (万元)
+    avg_vol_20     DOUBLE PRECISION,   -- 近20日均成交量 (手)
+    premium        DOUBLE PRECISION,   -- 折溢价 % (收盘-净值)/净值×100
+    track_dev      DOUBLE PRECISION,   -- 近20日日均跟踪偏离度 %
+    high52         DOUBLE PRECISION,   -- 52周最高
+    low52          DOUBLE PRECISION,   -- 52周最低
+    pos52          DOUBLE PRECISION,   -- 52周位置 (0~1)
+    calc_date      VARCHAR(8)  DEFAULT '',   -- 计算日 (最新交易日)
+    updated_at     TIMESTAMP DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_etf_type  ON etf_screen (fund_type);
+CREATE INDEX IF NOT EXISTS idx_etf_scale ON etf_screen (scale);
+CREATE INDEX IF NOT EXISTS idx_etf_calc  ON etf_screen (calc_date);
+"""
+
+ETF_SORTABLE_COLUMNS = {
+    "ts_code": "ts_code",
+    "name": "name",
+    "fund_type": "fund_type",
+    "close": "close",
+    "pct_chg": "pct_chg",
+    "scale": "scale",
+    "fd_share": "fd_share",
+    "m_fee": "m_fee",
+    "c_fee": "c_fee",
+    "total_fee": "total_fee",
+    "avg_amount_20": "avg_amount_20",
+    "premium": "premium",
+    "track_dev": "track_dev",
+    "pos52": "pos52",
+    "high52": "high52",
+    "low52": "low52",
+    "age_years": "age_years",
+    "list_date": "list_date",
+}
+
+_ETF_COLS = [
+    "ts_code", "name", "fund_type", "management", "found_date", "list_date",
+    "age_years", "close", "pct_chg", "unit_nav", "fd_share", "scale",
+    "m_fee", "c_fee", "total_fee", "avg_amount_20", "avg_amount_5", "avg_vol_20",
+    "premium", "track_dev", "high52", "low52", "pos52", "calc_date",
+]
+
+_ETF_UPSERT_SQL = f"""
+INSERT INTO etf_screen ({", ".join(_ETF_COLS)})
+VALUES ({", ".join("%(" + c + ")s" for c in _ETF_COLS)})
+ON CONFLICT (ts_code) DO UPDATE SET
+{", ".join(f"{c} = EXCLUDED.{c}" for c in _ETF_COLS if c != "ts_code")},
+updated_at = now();
+"""
+
+
+def init_etf_schema() -> None:
+    """创建 etf_screen 表与索引 (幂等)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(ETF_SCHEMA_DDL)
+        conn.commit()
+
+
+def upsert_etf_rows(rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for r in rows:
+                cur.execute(_ETF_UPSERT_SQL, {c: r.get(c) for c in _ETF_COLS})
+        conn.commit()
+    return len(rows)
+
+
+def latest_etf_calc_date() -> str:
+    """etf_screen 中最近计算日 (空串=尚无数据)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT max(calc_date) FROM etf_screen;")
+            v = cur.fetchone()[0]
+            return str(v) if v else ""
+
+
+def count_etf_by_calc_date(calc_date: str) -> int:
+    """指定计算日的 ETF 记录数。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM etf_screen WHERE calc_date = %s;",
+                        (calc_date,))
+            return int(cur.fetchone()[0])
+
+
+def query_etf(calc_date: str = "", keyword: str = "", fund_type: str = "",
+              min_scale: float | None = None, max_m_fee: float | None = None,
+              max_c_fee: float | None = None, min_amount_20: float | None = None,
+              max_premium: float | None = None, min_pos52: float | None = None,
+              max_pos52: float | None = None,
+              sort_by: str = "scale", order: str = "desc",
+              limit: int = 300) -> list[dict]:
+    """查询 ETF 筛选数据, 支持阈值筛选与排序 (NULL 值排最后)。"""
+    col = ETF_SORTABLE_COLUMNS.get(sort_by, "scale")
+    order_sql = "ASC" if str(order).lower() == "asc" else "DESC"
+
+    conds: list[str] = []
+    params: list = []
+    if calc_date:
+        conds.append("calc_date = %s")
+        params.append(calc_date)
+    if keyword:
+        conds.append("(name ILIKE %s OR ts_code ILIKE %s)")
+        params.append(f"%{keyword}%")
+        params.append(f"%{keyword}%")
+    if fund_type:
+        conds.append("fund_type ILIKE %s")
+        params.append(f"%{fund_type}%")
+    if min_scale is not None:
+        conds.append("scale >= %s")
+        params.append(min_scale)
+    if max_m_fee is not None:
+        conds.append("m_fee <= %s")
+        params.append(max_m_fee)
+    if max_c_fee is not None:
+        conds.append("c_fee <= %s")
+        params.append(max_c_fee)
+    if min_amount_20 is not None:
+        conds.append("avg_amount_20 >= %s")
+        params.append(min_amount_20)
+    if max_premium is not None:
+        conds.append("ABS(premium) <= %s")
+        params.append(max_premium)
+    if min_pos52 is not None:
+        conds.append("pos52 >= %s")
+        params.append(min_pos52)
+    if max_pos52 is not None:
+        conds.append("pos52 <= %s")
+        params.append(max_pos52)
+
+    where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
+    sql = f"""
+        SELECT {", ".join(_ETF_COLS)}
+        FROM etf_screen
+        {where_sql}
+        ORDER BY {col} {order_sql} NULLS LAST, ts_code ASC
+        LIMIT %s;
+    """
+    params.append(int(limit))
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]

@@ -74,6 +74,15 @@ body {
 }
 .health-float .dot { width: 8px; height: 8px; }
 
+/* ---------- 我的股票: 移动端下拉刷新指示 ---------- */
+.pull-indicator {
+  position: fixed; top: 56px; left: 0; right: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  color: var(--text-soft); font-size: 13px; font-weight: 600;
+  pointer-events: none; opacity: 0; transition: opacity .12s;
+}
+.pull-indicator .pi-arrow { display: inline-block; width: 20px; text-align: center; }
+
 /* ---------- 布局 ---------- */
 .container {
   max-width: 1200px;
@@ -368,6 +377,12 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
   .field input, .field select,
   .tf-item input, .tf-item select,
   .date-picker input[type="date"] { font-size: 16px; }
+
+  /* 关闭原生下拉刷新/回弹, 改用"我的股票"自定义下拉刷新 */
+  body { overscroll-behavior-y: contain; }
+  /* 我的股票: 标题与刷新按钮同行, 按钮不全宽 */
+  #my-result .result-head { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  #my-refresh-btn { width: auto; padding: 9px 16px; font-size: 13px; }
 }
 
 /* 窄屏手机 */

@@ -16,13 +16,14 @@
 #   2) A股  红利低波          (init_redlowvol.py  → red_low_vol)
 #   3) A股  基本面            (init_fundamental.py → fundamental_screen)
 #   4) A股  财报              (init_financial.py   → financial_data)
-#   5) A股  每日推荐          (scan_all_market.py, 默认关闭; 全市场较慢, 设 RUN_A_RECOMMEND=1 开启)
+#   5) ETF  筛选数据          (init_etf.py         → etf_screen)
+#   6) A股  每日推荐          (scan_all_market.py, 默认关闭; 全市场较慢, 设 RUN_A_RECOMMEND=1 开启)
 #
 # 默认更新最近 1 个完整财年 (当前年-1); 可用环境变量覆盖:
 #   PROJECT_ROOT  项目根目录 (默认: 本脚本所在目录的上级)
 #   PYTHON_BIN    解释器路径 (默认: $PROJECT_ROOT/.venv/bin/python, 可按部署环境指定)
 #   START_YEAR / END_YEAR   年份区间
-#   RUN_HK / RUN_A_RLV / RUN_A_FUND / RUN_A_FIN / RUN_A_RECOMMEND  各步骤开关 (0=关 1=开)
+#   RUN_HK / RUN_A_RLV / RUN_A_FUND / RUN_A_FIN / RUN_A_ETF / RUN_A_RECOMMEND  各步骤开关 (0=关 1=开)
 #
 # 日志写入 $PROJECT_ROOT/logs/nightly_<时间戳>.log; 锁文件防止上次未跑完导致本次重叠。
 # ============================================================================
@@ -70,6 +71,7 @@ RUN_HK="${RUN_HK:-1}"
 RUN_A_RLV="${RUN_A_RLV:-1}"
 RUN_A_FUND="${RUN_A_FUND:-1}"
 RUN_A_FIN="${RUN_A_FIN:-1}"
+RUN_A_ETF="${RUN_A_ETF:-1}"
 RUN_A_RECOMMEND="${RUN_A_RECOMMEND:-0}"
 
 log() { echo "[$(date '+%F %T')] $*"; }
@@ -118,7 +120,13 @@ if [ "$RUN_A_FIN" = "1" ]; then
     "$PYTHON_BIN" scripts/init_financial.py --start "$START_YEAR" --end "$END_YEAR"
 fi
 
-# 5) A股 每日推荐 (可选, 默认关闭; 全市场估算区间交易参数较慢, 支持断点续跑)
+# 5) ETF 筛选数据 etf_screen (ETF 筛选 tab 数据, 幂等 upsert, 约 20~60 分钟)
+if [ "$RUN_A_ETF" = "1" ]; then
+  run_step "ETF 筛选数据 (全市场)" \
+    "$PYTHON_BIN" scripts/init_etf.py --batch 200
+fi
+
+# 6) A股 每日推荐 (可选, 默认关闭; 全市场估算区间交易参数较慢, 支持断点续跑)
 if [ "$RUN_A_RECOMMEND" = "1" ]; then
   run_step "A股 每日推荐 (全市场)" \
     "$PYTHON_BIN" scripts/scan_all_market.py

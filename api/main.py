@@ -17,8 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import backtest_engine, band_service, caibao_service, data_service, daily_recommend_service
-from . import fundamental_service, hk_data_service, hk_fundamental_service, hk_redlowvol_service
-from . import pg_service, redlowvol_service
+from . import etf_service, fundamental_service, hk_data_service, hk_fundamental_service
+from . import hk_redlowvol_service, pg_service, redlowvol_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -40,6 +40,7 @@ def _startup() -> None:
         pg_service.init_my_stocks_schema()
         pg_service.init_hk_rlv_schema()
         pg_service.init_hk_fundamental_schema()
+        pg_service.init_etf_schema()
     except Exception:
         pass
 
@@ -162,6 +163,23 @@ class DailyRecRequest(BaseModel):
     payout_max: float | None = Field(None, ge=0, le=1000, description="方法2: 分红率上限 % (可选)")
     roe_min: float | None = Field(None, ge=-100, le=1000, description="方法2: ROE下限 % (可选)")
     roe_max: float | None = Field(None, ge=-100, le=1000, description="方法2: ROE上限 % (可选)")
+
+
+class EtfScreenRequest(BaseModel):
+    """ETF 筛选请求。"""
+    keyword: str = Field("", description="名称/代码关键字, 空=全部")
+    fund_type: str = Field("", description="基金类型 (如 股票型/债券型/商品型/跨境型/货币型), 空=全部")
+    min_scale: float | None = Field(None, ge=0, description="基金规模 ≥ (亿元, 可选)")
+    max_m_fee: float | None = Field(None, ge=0, le=10, description="管理费率 ≤ (% , 可选)")
+    max_c_fee: float | None = Field(None, ge=0, le=10, description="托管费率 ≤ (% , 可选)")
+    min_amount_20: float | None = Field(None, ge=0, description="近20日均成交额 ≥ (万元, 可选)")
+    max_premium: float | None = Field(None, ge=0, le=50, description="折溢价 |≤| (% , 可选)")
+    min_pos52: float | None = Field(None, ge=0, le=1, description="52周位置 ≥ (0~1, 可选)")
+    max_pos52: float | None = Field(None, ge=0, le=1, description="52周位置 ≤ (0~1, 可选)")
+    sort_by: str = Field("scale", description="排序字段 (scale/avg_amount_20/premium/m_fee/total_fee/pos52/close 等)")
+    order: str = Field("desc", description="排序方向: asc / desc")
+    limit: int = Field(300, ge=1, le=2000, description="最多返回数量 (受基础过滤后逐只计算)")
+    refresh: bool = Field(False, description="是否强制刷新 tushare 缓存 (默认用 15 分钟缓存)")
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +507,20 @@ def dailyrecommend_list(calc_date: str = Query("", description="计算日 YYYYMM
         return daily_recommend_service.get_recommendations(calc_date, limit, industry)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取每日推荐失败: {e}")
+
+
+@app.post("/api/etf/screen")
+def etf_screen(req: EtfScreenRequest) -> dict:
+    """ETF 筛选: 计算 费用/规模/流动性/折溢价/跟踪偏离/52周 等关键指标并按条件过滤排序。"""
+    try:
+        return etf_service.screen_etfs(
+            keyword=req.keyword.strip(), fund_type=req.fund_type.strip(),
+            min_scale=req.min_scale, max_m_fee=req.max_m_fee, max_c_fee=req.max_c_fee,
+            min_amount_20=req.min_amount_20, max_premium=req.max_premium,
+            min_pos52=req.min_pos52, max_pos52=req.max_pos52,
+            sort_by=req.sort_by, order=req.order, limit=req.limit, refresh=req.refresh)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ETF 筛选失败: {e}")
 
 
 @app.post("/api/redlowvol/sync")

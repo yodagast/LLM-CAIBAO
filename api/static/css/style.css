@@ -423,6 +423,35 @@ body.auth-loading .container { visibility: hidden; }
 .metric.accent1 { border-top-color: #4f46e5; }
 .metric.accent2 { border-top-color: #ea580c; }
 .metric.accent3 { border-top-color: #059669; }
+/* 财报挖掘: 指标卡趋势色 (红=优/涨, 绿=差/跌) */
+.metric .t-up { color: var(--red); font-weight: 600; }
+.metric .t-down { color: var(--green); font-weight: 600; }
+
+/* 财报挖掘: 财务趋势图表 */
+.caibao-chart-card { margin-bottom: 20px; }
+.caibao-chart { width: 100%; height: 320px; }
+
+/* 财报挖掘: 报告区移动端可横向滚动 (宽表格不撑破页面) */
+.markdown-body { overflow-x: auto; }
+/* 财报挖掘: 移动端指标卡双列 */
+@media (max-width: 560px) {
+  #caibao-cards { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  #caibao-cards .metric { padding: 12px 14px; }
+  #caibao-cards .metric .m-value { font-size: 18px; }
+}
+
+/* 财报挖掘: 报告目录 */
+.caibao-toc {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  padding: 10px 14px; margin: 8px 0 12px;
+  background: #f8fafc; border: 1px solid var(--border); border-radius: 10px;
+  font-size: 13px;
+}
+.caibao-toc .toc-title { font-weight: 700; color: var(--text-soft); align-self: center; }
+.caibao-toc a { color: var(--primary); text-decoration: none; }
+.caibao-toc a:hover { text-decoration: underline; }
+.caibao-toc a.toc-h3 { padding-left: 14px; color: var(--text-soft); font-size: 12px; }
+@media (max-width: 560px) { .caibao-chart { height: 260px; } }
 
 .chart { width: 100%; height: 420px; }
 /* 行情 K 线图: 高度自适应浏览器视口, 便于在 Chrome 中观察 120 日行情 */

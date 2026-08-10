@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=39" />
+  <link rel="stylesheet" href="/static/css/style.css?v=41" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -613,11 +613,25 @@
             <span class="hint" id="caibao-sub"></span>
           </div>
         </div>
+
+        <!-- 核心指标概览 (由 JS 从 financials/valuation 渲染) -->
+        <div class="metric-cards" id="caibao-cards"></div>
+
+        <!-- 财务趋势图表 (ECharts 双轴折线) -->
+        <div class="card caibao-chart-card hidden" id="caibao-chart-card">
+          <div class="card-title">
+            <h3>财务趋势</h3>
+            <span class="hint" id="caibao-chart-sub"></span>
+          </div>
+          <div class="caibao-chart" id="caibao-chart"></div>
+        </div>
+
         <div class="card report-card">
           <div class="card-title">
             <h3>分析报告</h3>
             <span class="hint" id="caibao-meta"></span>
           </div>
+          <div class="caibao-toc hidden" id="caibao-toc"></div>
           <div class="markdown-body" id="caibao-report"></div>
         </div>
       </section>
@@ -885,6 +899,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=51"></script>
+  <script src="/static/js/app.js?v=52"></script>
 </body>
 </html>

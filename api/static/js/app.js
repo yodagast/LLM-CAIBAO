@@ -68,6 +68,7 @@
   let chart = null;
   let quoteChart = null;
   let bandChart = null;
+  let caibaoChart = null;
   let searchTimer = null;
 
   // ---------- 工具 ----------
@@ -238,7 +239,8 @@
         const info = await r.json();
         caibaoTip.classList.add("ok");
         caibaoTip.classList.remove("err");
-        caibaoTip.textContent = `✓ ${info.name} · ${info.ts_code}`;
+        const isHkTip = String(info.ts_code).endsWith(".HK");
+        caibaoTip.textContent = `✓ ${info.name} · ${info.ts_code}` + (isHkTip ? " · 东财港股数据" : "");
       } else {
         const err = await r.json();
         caibaoTip.classList.add("err");
@@ -307,6 +309,7 @@
         if (chart) chart.resize();
         if (quoteChart) quoteChart.resize();
         if (bandChart) bandChart.resize();
+        if (caibaoChart) caibaoChart.resize();
       }, 80);
     });
   });
@@ -1686,18 +1689,116 @@
   function renderCaibao(data) {
     caibaoResult.classList.remove("hidden");
     $("#caibao-title").textContent = `${data.info.name} (${data.info.ts_code}) · 财报分析`;
+    const isHk = String(data.info.ts_code).endsWith(".HK");
     $("#caibao-sub").textContent =
       `${data.range.start}~${data.range.end} 年 · ` +
-      (data.llm_used ? "🤖 LLM 深度分析" : "📊 TUSHARE 财报数据分析");
+      (data.llm_used ? "🤖 LLM 深度分析" : "📊 TUSHARE 财报数据分析") +
+      (isHk ? " · 东财港股数据" : "");
     $("#caibao-meta").textContent = data.llm_used
       ? "基于财报分析框架由大模型生成, 仅供参考"
       : "基于 tushare 财务指标, 仅供参考";
     $("#caibao-report").innerHTML = marked.parse(data.markdown || "");
+    renderCaibaoCards(data);
+    renderCaibaoChart(data);
+    buildCaibaoToc();
     $("#caibao-hint").textContent =
-      `数据来源: tushare · 已保存至本地 PostgreSQL (financial_data 表)`;
+      `数据来源: ${isHk ? "东方财富港股" : "tushare"} · 已保存至本地 PostgreSQL (financial_data 表)`;
     $("#caibao-download").onclick = () =>
       downloadMarkdown(data.markdown || "", `${data.info.name}-${data.info.ts_code.split(".")[0]}_财报分析.md`);
     caibaoResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // 核心指标概览卡片 (从 financials / valuation 渲染, 复用 .metric-cards 样式)
+  function renderCaibaoCards(data) {
+    const cards = $("#caibao-cards");
+    const fin = data.financials || {};
+    const val = data.valuation || {};
+    const years = Object.keys(fin).sort();
+    if (!years.length) { cards.innerHTML = ""; return; }
+    const last = fin[years[years.length - 1]] || {};
+    const first = fin[years[0]] || {};
+    const num = (v) => (v === null || v === undefined || isNaN(Number(v))) ? null : Number(v);
+    const fmt2 = (v, suffix = "") => (v === null || v === undefined || isNaN(Number(v))) ? "—" : Number(v).toFixed(2) + suffix;
+    const growth = (k) => { const a = num(first[k]), b = num(last[k]); return (a === null || b === null || a === 0) ? null : ((b - a) / Math.abs(a)) * 100; };
+    const delta = (k) => { const a = num(first[k]), b = num(last[k]); return (a === null || b === null) ? null : (b - a); };
+    const trendSub = (k, reverse, suffix = "") => {
+      const g = growth(k); if (g === null) return "";
+      const good = reverse ? g < 0 : g > 0;
+      return `<span class="m-sub ${good ? "t-up" : "t-down"}">区间 ${g >= 0 ? "+" : ""}${g.toFixed(1)}%</span>`;
+    };
+    const diffSub = (k, reverse, suffix = "pp") => {
+      const d = delta(k); if (d === null) return "";
+      const good = reverse ? d < 0 : d > 0;
+      return `<span class="m-sub ${good ? "t-up" : "t-down"}">区间 ${d >= 0 ? "+" : ""}${d.toFixed(1)}${suffix}</span>`;
+    };
+    const items = [
+      { label: "营业收入", value: fmt2(last["total_revenue_亿"], " 亿"), sub: trendSub("total_revenue_亿") },
+      { label: "净利润", value: fmt2(last["net_income_亿"], " 亿"), sub: trendSub("net_income_亿") },
+      { label: "毛利率", value: fmt2(last["gross_margin_%"], "%"), sub: diffSub("gross_margin_%") },
+      { label: "净利率", value: fmt2(last["net_margin_%"], "%"), sub: diffSub("net_margin_%") },
+      { label: "ROE", value: fmt2(last["roe_%"], "%"), sub: diffSub("roe_%") },
+      { label: "资产负债率", value: fmt2(last["debt_to_assets_%"], "%"), sub: diffSub("debt_to_assets_%", true) },
+      { label: "净现比", value: fmt2(last["净现比"]), sub: (num(last["净现比"]) !== null && num(last["净现比"]) >= 1) ? '<span class="m-sub t-up">≥1 现金流较健康</span>' : '<span class="m-sub t-down">＜1 关注利润含金量</span>' },
+      { label: "经营现金流", value: fmt2(last["ocf_亿"], " 亿"), sub: trendSub("ocf_亿") },
+    ];
+    if (val && (num(val.pe_ttm) !== null || num(val.pb) !== null)) {
+      items.push({
+        label: "估值",
+        value: "PE " + fmt2(val.pe_ttm) + " · PB " + fmt2(val.pb),
+        sub: (num(val["dv_ratio_%"]) !== null) ? `股息率 ${fmt2(val["dv_ratio_%"], "%")}` : "",
+      });
+    }
+    cards.innerHTML = items.map((it, i) =>
+      `<div class="metric accent${(i % 3) + 1}"><div class="m-label">${it.label}</div><div class="m-value">${it.value}</div>${it.sub || ""}</div>`
+    ).join("");
+  }
+
+  // 财务趋势图表 (ECharts 双轴折线: 左=金额亿, 右=比率%)
+  function renderCaibaoChart(data) {
+    const card = $("#caibao-chart-card");
+    const el = $("#caibao-chart");
+    const fin = data.financials || {};
+    const years = Object.keys(fin).sort();
+    if (!years.length) { card.classList.add("hidden"); return; }
+    const s = (k) => years.map((y) => { const v = fin[y][k]; return (v === null || v === undefined || isNaN(Number(v))) ? null : Number(v); });
+    card.classList.remove("hidden");
+    if (!caibaoChart) caibaoChart = echarts.init(el);
+    caibaoChart.setOption({
+      color: ["#4f46e5", "#059669", "#ea580c", "#0ea5e9", "#d946ef"],
+      tooltip: { trigger: "axis" },
+      legend: { data: ["营业收入", "净利润", "毛利率", "净利率", "ROE"], top: 0 },
+      grid: { left: 54, right: 54, top: 36, bottom: 24 },
+      xAxis: { type: "category", data: years, boundaryGap: false },
+      yAxis: [
+        { type: "value", name: "金额 (亿)", position: "left", splitLine: { lineStyle: { type: "dashed" } } },
+        { type: "value", name: "比率 (%)", position: "right", splitLine: { show: false }, axisLabel: { formatter: "{value}%" } },
+      ],
+      series: [
+        { name: "营业收入", type: "line", data: s("total_revenue_亿"), smooth: true },
+        { name: "净利润", type: "line", data: s("net_income_亿"), smooth: true },
+        { name: "毛利率", type: "line", yAxisIndex: 1, data: s("gross_margin_%"), smooth: true },
+        { name: "净利率", type: "line", yAxisIndex: 1, data: s("net_margin_%"), smooth: true },
+        { name: "ROE", type: "line", yAxisIndex: 1, data: s("roe_%"), smooth: true },
+      ],
+    });
+    $("#caibao-chart-sub").textContent = `${years[0]}~${years[years.length - 1]} 年 · 左轴金额(亿) / 右轴比率(%)`;
+    requestAnimationFrame(() => caibaoChart && caibaoChart.resize());
+  }
+
+  // 报告目录锚点 (为 h2/h3 生成锚点 + 目录导航)
+  function buildCaibaoToc() {
+    const body = $("#caibao-report");
+    const toc = $("#caibao-toc");
+    const heads = body.querySelectorAll("h2, h3");
+    if (!heads.length) { toc.classList.add("hidden"); toc.innerHTML = ""; return; }
+    const items = [];
+    heads.forEach((h, i) => {
+      const id = "cb-sec-" + i;
+      h.id = id;
+      items.push(`<a class="toc-${h.tagName.toLowerCase()}" href="#${id}">${h.textContent}</a>`);
+    });
+    toc.innerHTML = '<span class="toc-title">目录</span>' + items.join("");
+    toc.classList.remove("hidden");
   }
 
   // ---------- ETF 筛选 ----------
@@ -2037,6 +2138,7 @@
       if (chart) chart.resize();
       if (quoteChart) quoteChart.resize();
       if (bandChart) bandChart.resize();
+      if (caibaoChart) caibaoChart.resize();
     }, 150);
   });
 

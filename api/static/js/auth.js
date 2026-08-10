@@ -1,7 +1,8 @@
 /* 用户认证 (登录/注册/注销) + 顶部用户状态。
-   index.html 与 stock_detail.html 共用:
-     - 页面需包含 <div id="auth-zone"> (用户状态按钮区) 与登录弹窗元素 (auth-modal 等)
-     - 调用 CaiBaoAuth.init() 初始化; CaiBaoAuth.requireLogin() 未登录时弹出登录框
+   index.html / stock_detail.html / login.html / user.html 共用:
+     - 普通页 (首页/详情页) 需 <div id="auth-zone">; 未登录的普通页应跳转到登录页
+     - login.html 为独立登录/注册页 (无 Tab 标签), 登录成功跳回 next
+     - CaiBaoAuth.init() 初始化; requireLogin() 未登录跳转登录页
 */
 (function () {
   "use strict";
@@ -9,6 +10,8 @@
   var user = null;      // {id, username} | null
   var mode = "login";   // login | register
   var changeCb = null;
+  var loginPage = false;    // 是否在独立登录页
+  var loginNext = "/";      // 登录成功后的跳转地址
 
   function $(s) { return document.querySelector(s); }
   function esc(s) {
@@ -17,7 +20,7 @@
     });
   }
 
-  // 普通页面 (首页/详情页) 顶栏用户区: 未登录=登录, 已登录=用户名(进个人页)+退出
+  // 普通页面 (首页/详情页) 顶栏用户区: 未登录=登录(链接到登录页), 已登录=用户名(进个人页)+退出
   function renderZone() {
     var zone = $("#auth-zone");
     if (!zone) return;
@@ -27,7 +30,7 @@
         '<button type="button" class="auth-link ghost" data-aa="logout">退出</button>';
     } else {
       zone.innerHTML =
-        '<button type="button" class="auth-link" data-aa="login">登录</button>';
+        '<a class="auth-link" href="/static/login.html" data-aa="login">登录</a>';
     }
     zone.querySelectorAll("[data-aa]").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -37,28 +40,15 @@
   }
 
   function onAction(a) {
-    if (a === "login") openModal("login");
-    else if (a === "register") openModal("register");
-    else if (a === "logout") doLogout();
+    if (a === "login" || a === "register") {
+      location.href = "/static/login.html";
+    } else if (a === "logout") {
+      doLogout();
+    }
   }
 
-  function openModal(m) {
-    mode = m || "login";
-    var modal = $("#auth-modal");
-    if (!modal) return;
-    modal.classList.remove("hidden");
-    updateModalUI();
-    var u = $("#auth-username");
-    if (u) setTimeout(function () { u.focus(); }, 30);
-  }
-  function closeModal() {
-    var modal = $("#auth-modal");
-    if (modal) modal.classList.add("hidden");
-  }
   function updateModalUI() {
     var isReg = mode === "register";
-    var title = $("#auth-title");
-    if (title) title.textContent = isReg ? "注册新账号" : "登录";
     var cw = $("#auth-confirm-wrap");
     if (cw) cw.classList.toggle("hidden", !isReg);
     var sub = $("#auth-submit");
@@ -101,7 +91,10 @@
       if (u) u.value = "";
       if (p) p.value = "";
       if (cf) cf.value = "";
-      closeModal();
+      if (loginPage) {
+        location.href = loginNext || "/";
+        return;
+      }
       renderZone();
       if (changeCb) changeCb(user);
     } catch (e) {
@@ -130,11 +123,30 @@
   function isLoggedIn() { return !!user; }
   function requireLogin() {
     if (user) return true;
-    openModal("login");
+    location.href = "/static/login.html?next=" +
+      encodeURIComponent(location.pathname + location.search);
     return false;
   }
   function getUser() { return user; }
   function onAuthChange(cb) { changeCb = cb; }
+
+  // ---------- 独立登录/注册页 (login.html) ----------
+  async function initLoginPage() {
+    loginPage = true;
+    var q = new URLSearchParams(location.search);
+    loginNext = q.get("next") || "/";
+    await me();
+    if (user) { location.href = loginNext; return; }
+    updateModalUI();
+    var sub = $("#auth-submit");
+    if (sub) sub.addEventListener("click", submit);
+    var tg = $("#auth-toggle");
+    if (tg) tg.addEventListener("click", toggleMode);
+    ["auth-username", "auth-password", "auth-confirm"].forEach(function (id) {
+      var el = $("#" + id);
+      if (el) el.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
+    });
+  }
 
   async function init() {
     await me();
@@ -143,10 +155,6 @@
     if (sub) sub.addEventListener("click", submit);
     var tg = $("#auth-toggle");
     if (tg) tg.addEventListener("click", toggleMode);
-    var cancel = $("#auth-cancel");
-    if (cancel) cancel.addEventListener("click", closeModal);
-    var mask = $("#auth-modal");
-    if (mask) mask.addEventListener("click", function (e) { if (e.target === mask) closeModal(); });
     ["auth-username", "auth-password", "auth-confirm"].forEach(function (id) {
       var el = $("#" + id);
       if (el) el.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
@@ -194,9 +202,9 @@
 
   window.CaiBaoAuth = {
     init: init, me: me, render: renderZone,
-    openModal: openModal, closeModal: closeModal,
     isLoggedIn: isLoggedIn, requireLogin: requireLogin,
     getUser: getUser, onAuthChange: onAuthChange, doLogout: doLogout,
     initUserPage: initUserPage, deleteAccount: deleteAccount,
+    initLoginPage: initLoginPage,
   };
 })();

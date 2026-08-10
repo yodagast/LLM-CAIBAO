@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>登录 · 智能选股回测平台</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=37" />
+  <style>
+    .login-page {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      padding: 24px 16px;
+      background: linear-gradient(135deg, #eef2ff 0%, #f5f7fb 100%);
+    }
+    .login-card {
+      background: var(--card); border-radius: 16px; box-shadow: var(--shadow-lg);
+      padding: 34px 30px; width: 100%; max-width: 400px;
+    }
+    .login-brand { text-align: center; margin-bottom: 24px; }
+    .login-brand h1 { font-size: 22px; letter-spacing: .5px; }
+    .login-brand p { color: var(--text-soft); font-size: 13px; margin-top: 6px; }
+    .login-form { display: flex; flex-direction: column; gap: 14px; }
+    .login-form .btn-primary { justify-content: center; }
+    .login-foot { text-align: center; margin-top: 18px; font-size: 12px; color: var(--text-soft); }
+  </style>
+</head>
+<body>
+  <div class="login-page">
+    <div class="login-card">
+      <div class="login-brand">
+        <h1>智能选股回测平台</h1>
+        <p>登录后查看自选股 / ETF筛选 / 选股等全部功能</p>
+      </div>
+      <div class="login-form">
+        <div class="field">
+          <label for="auth-username">用户名</label>
+          <input id="auth-username" autocomplete="username" maxlength="32" placeholder="2~32 个字符" />
+        </div>
+        <div class="field">
+          <label for="auth-password">密码</label>
+          <input id="auth-password" type="password" autocomplete="current-password" placeholder="至少 6 位" />
+        </div>
+        <div class="field hidden" id="auth-confirm-wrap">
+          <label for="auth-confirm">确认密码</label>
+          <input id="auth-confirm" type="password" autocomplete="new-password" />
+        </div>
+        <div class="error hidden" id="auth-error"></div>
+        <button type="button" class="btn-primary" id="auth-submit">登录</button>
+        <button type="button" class="btn-ghost" id="auth-toggle">没有账号? 去注册</button>
+      </div>
+      <div class="login-foot">数据源 tushare · 仅供研究参考, 不构成投资建议</div>
+    </div>
+  </div>
+
+  <script src="/static/js/auth.js?v=3"></script>
+  <script>
+    /* 独立登录/注册页: 已登录自动跳回 next; 登录成功跳回 next */
+    CaiBaoAuth.initLoginPage();
+  </script>
+</body>
+</html>

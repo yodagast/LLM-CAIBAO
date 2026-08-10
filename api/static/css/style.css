@@ -159,6 +159,10 @@ body {
 .card-title h3 { font-size: 16px; }
 .hint { color: var(--text-soft); font-size: 13px; }
 
+/* 登录校验期间隐藏 Tab 与内容 (未登录会跳转独立登录页, 避免闪现) */
+body.auth-loading .tabs,
+body.auth-loading .container { visibility: hidden; }
+
 /* ---------- Tab 导航 ---------- */
 /* 横向排列, 窄屏时左右滑动切换 (不换行竖排); 右侧固定用户状态区 */
 .tabs {

@@ -1836,27 +1836,19 @@
   let myItems = [];
   let mySort = { key: "last_close", order: "desc" };
 
-  function showMyLoginPrompt() {
-    myLoading.classList.add("hidden");
-    myResult.classList.add("hidden");
-    $("#my-login-prompt").classList.remove("hidden");
-    myRefreshBtn.disabled = false;
-  }
-
   async function loadMyStocks() {
-    // 未登录: 显示登录提示
+    // 首页仅登录后可访问: 未登录跳转独立登录页
     if (!window.CaiBaoAuth || !CaiBaoAuth.isLoggedIn()) {
-      showMyLoginPrompt();
+      location.replace("/static/login.html");
       return;
     }
     myError.classList.add("hidden");
-    $("#my-login-prompt").classList.add("hidden");
     myResult.classList.remove("hidden");
     myLoading.classList.remove("hidden");
     myRefreshBtn.disabled = true;
     try {
       const res = await fetch("/api/my_stocks");
-      if (res.status === 401) { showMyLoginPrompt(); return; }
+      if (res.status === 401) { location.replace("/static/login.html"); return; }
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "获取失败");
       renderMyStocks(data.items || []);
@@ -2031,20 +2023,22 @@
     }, 150);
   });
 
-  // ---------- 用户认证: 登录/注册/注销 + 我的股票按用户加载 ----------
+  // ---------- 用户认证: 未登录跳转独立登录页, 登录后展示 Tab 并加载自选股 ----------
   if (window.CaiBaoAuth) {
     CaiBaoAuth.onAuthChange(() => {
       if (CaiBaoAuth.isLoggedIn()) loadMyStocks();
-      else showMyLoginPrompt();
+      else location.replace("/static/login.html");
     });
-    // 未登录提示里的「去登录/注册」按钮
-    var myLoginBtn = $("#my-login-btn");
-    if (myLoginBtn) myLoginBtn.addEventListener("click", () => CaiBaoAuth.openModal("login"));
     CaiBaoAuth.init().then(() => {
-      if (CaiBaoAuth.isLoggedIn()) loadMyStocks();
-      else showMyLoginPrompt();
+      if (CaiBaoAuth.isLoggedIn()) {
+        document.body.classList.remove("auth-loading");  // 已登录, 显示 Tab 与内容
+        loadMyStocks();
+      } else {
+        location.replace("/static/login.html");          // 未登录跳登录页 (不显示 Tab)
+      }
     });
   } else {
+    document.body.classList.remove("auth-loading");
     loadMyStocks();
   }
 

@@ -352,7 +352,15 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
     padding: 12px 16px;
   }
   .health { align-self: flex-end; }
-  .container { padding: 14px; }
+  /* 移动端 Tab 栏固定在顶部, 始终可见, 仅支持左右滑动切换 */
+  .tabs {
+    position: fixed; top: 0; left: 0; right: 0;
+    z-index: 100; background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 1px 4px rgba(16, 24, 40, .06);
+    touch-action: pan-x;               /* 只响应横向手势, 纵向滚动不被打断 */
+  }
+  .container { padding: 62px 14px 14px; }  /* 顶部为固定 Tab 栏让出空间 */
   .card { padding: 16px; }
   .tab { padding: 12px 14px; font-size: 14px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
 

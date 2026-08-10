@@ -62,6 +62,18 @@ body {
 .health.ok .dot { background: #4ade80; }
 .health.err .dot { background: #f87171; }
 
+/* 主页面移除了顶部标题栏, 连接状态改为右下角悬浮小徽章 (不占布局, 不遮挡吸顶 Tab 栏) */
+.health-float {
+  position: fixed; bottom: 16px; right: 14px; z-index: 100;
+  padding: 4px 10px; border-radius: 999px;
+  background: rgba(255, 255, 255, .92);
+  color: var(--text-soft); font-size: 12px; font-weight: 600;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--border);
+}
+.health-float .dot { width: 8px; height: 8px; }
+
 /* ---------- 布局 ---------- */
 .container {
   max-width: 1200px;
@@ -94,6 +106,13 @@ body {
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;               /* Firefox 隐藏滚动条 */
   overscroll-behavior-x: contain;
+  /* 顶栏移除后 Tab 栏吸顶, 滚动长结果时仍可随时切换 */
+  position: sticky; top: 0; z-index: 5;
+  background: var(--bg);
+  padding: 2px 0 0;
+}
+.tabs::after {
+  content: ""; flex: 0 0 8px;           /* 右侧留白避免最后一个 tab 贴边 */
 }
 .tabs::-webkit-scrollbar { display: none; }  /* Chrome/Safari 隐藏滚动条 */
 .tab {
@@ -329,27 +348,46 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
 /* 手机/平板: 顶栏竖排收窄 / 容器与卡片紧凑 */
 @media (max-width: 768px) {
   .topbar-inner {
-    flex-direction: column; align-items: flex-start; gap: 10px;
-    padding: 14px 16px;
+    flex-direction: column; align-items: flex-start; gap: 8px;
+    padding: 12px 16px;
   }
   .health { align-self: flex-end; }
   .container { padding: 14px; }
   .card { padding: 16px; }
-  .tab { padding: 10px 14px; font-size: 14px; }
+  .tab { padding: 12px 14px; font-size: 14px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+
+  /* iOS: 输入框字号 ≥16px, 聚焦时避免页面自动放大 */
+  .field input, .field select,
+  .tf-item input, .tf-item select,
+  .date-picker input[type="date"] { font-size: 16px; }
 }
 
 /* 窄屏手机 */
 @media (max-width: 560px) {
+  body {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;   /* 去掉双击缩放延迟 */
+  }
   .grid { grid-template-columns: 1fr; }
   .metric-cards { grid-template-columns: 1fr; }
   .chart { height: 320px; }
-  .brand h1 { font-size: 18px; }
-  .brand p { font-size: 12px; }
-  .brand-logo { font-size: 28px; }
+  /* 详情页等顶栏在窄屏压缩: 隐藏副标题, 缩小 logo/标题, 节省竖向空间 */
+  .brand h1 { font-size: 17px; }
+  .brand p { display: none; }
+  .brand-logo { font-size: 24px; }
   .btn-primary, .btn-ghost { width: 100%; justify-content: center; }
   .form-actions { flex-direction: column; align-items: stretch; }
   .trade-filters { margin-left: 0; width: 100%; flex-wrap: wrap; }
   .result-head { flex-direction: column; align-items: flex-start; gap: 6px; }
   .card-title { flex-wrap: wrap; }
   .metric .m-value { font-size: 19px; }
+
+  /* 窄屏下表格更紧凑, 保持横向滚动可完整查看 */
+  table { font-size: 13px; }
+  thead th { padding: 9px 10px; }
+  tbody td { padding: 10px 10px; }
+  .hint { font-size: 12px; }
+  .result-head h2 { font-size: 18px; }
+  .field label { font-size: 12.5px; }
+  .footer { padding: 14px 12px; font-size: 11px; }
 }

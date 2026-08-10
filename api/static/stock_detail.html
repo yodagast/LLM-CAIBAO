@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>股票详情</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=16" />
+  <link rel="stylesheet" href="/static/css/style.css?v=17" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <style>
     .detail-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -70,7 +70,13 @@
     .kline-loading { margin-left: auto; }
     @media (max-width: 960px) { .detail-cards { grid-template-columns: repeat(2, 1fr); } }
     @media (max-width: 560px) {
-      .detail-cards { grid-template-columns: 1fr; }
+      /* 手机端信息卡保持双列紧凑展示 (PB/PE/股息率/52周高低等) */
+      .detail-cards { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      .d-card { padding: 10px 12px; }
+      .d-card .d-label { font-size: 11px; }
+      .d-card .d-value { font-size: 17px; }
+      .d-card.hl52 .d-value { font-size: 15px; }
+      .d-card .d-sub { font-size: 10px; }
       .detail-head { gap: 10px; }
       .detail-title h1 { font-size: 20px; }
       .detail-price { text-align: left; }

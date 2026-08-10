@@ -4,23 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=32" />
+  <link rel="stylesheet" href="/static/css/style.css?v=33" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">
-        <span class="brand-logo">📈</span>
-        <div>
-          <h1>智能选股回测平台</h1>
-          <p>数据源 tushare · 自选股 / 每日推荐 / 红利低波选股 / 基本面选股 / 财报挖掘 / 区间交易估价 / 策略回测</p>
-        </div>
-      </div>
-      <div class="health" id="health"><span class="dot"></span><span id="health-text">连接检测中…</span></div>
-    </div>
-  </header>
+  <!-- 悬浮连接状态指示 (不再占用顶部标题栏空间) -->
+  <div class="health health-float" id="health" title="后端连接状态">
+    <span class="dot"></span><span id="health-text">连接检测中…</span>
+  </div>
 
   <main class="container">
     <!-- Tab 导航 -->
@@ -932,9 +924,9 @@
   </main>
 
   <footer class="footer">
-    <span>智能选股回测平台 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
+    <span>数据源 tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=44"></script>
+  <script src="/static/js/app.js?v=45"></script>
 </body>
 </html>

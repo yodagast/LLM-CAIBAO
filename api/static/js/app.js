@@ -311,6 +311,23 @@
     });
   });
 
+  // ---------- 选股 tab: 市场(A股/港股) × 策略(红利低波/基本面) 切换 ----------
+  const screenerState = { mkt: "a", strat: "rlv" };
+  function setScreenerView(mkt, strat) {
+    screenerState.mkt = mkt; screenerState.strat = strat;
+    document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mkt === mkt));
+    document.querySelectorAll("#seg-strat .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.strat === strat));
+    document.querySelectorAll('#tab-screener [data-view]').forEach((v) => {
+      v.classList.toggle("hidden", v.dataset.view !== mkt + "-" + strat);
+    });
+  }
+  document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) =>
+    b.addEventListener("click", () => setScreenerView(b.dataset.mkt, screenerState.strat)));
+  document.querySelectorAll("#seg-strat .seg-btn").forEach((b) =>
+    b.addEventListener("click", () => setScreenerView(screenerState.mkt, b.dataset.strat)));
+  // 初始默认 A股 + 红利低波
+  setScreenerView("a", "rlv");
+
   // ---------- 基本面选股 (ROE 杜邦拆分) ----------
   const SCREEN_SORT_LABELS = {
     year: "年份", name: "名称", close: "最近价", roe: "ROE", net_margin: "净利润率",

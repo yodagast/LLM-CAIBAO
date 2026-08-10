@@ -229,6 +229,26 @@ body.auth-loading .container { visibility: hidden; }
   background: var(--bg);
   position: relative;   /* 供账号下拉菜单定位 */
 }
+
+/* 选股 tab: 市场(A股/港股) × 策略(红利低波/基本面) 分段控件 */
+.screener-nav {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+  margin-bottom: 16px; padding: 10px 2px 0;
+}
+.seg-group {
+  display: inline-flex; padding: 3px; gap: 2px;
+  background: #f1f5f9; border-radius: 10px;
+}
+.seg-btn {
+  border: none; background: transparent; color: var(--text-soft);
+  padding: 7px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; transition: all .15s;
+}
+.seg-btn:hover { color: var(--primary-dark); }
+.seg-btn.active {
+  background: var(--primary); color: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .2);
+}
 .tab {
   background: transparent; border: 1px solid transparent;
   border-bottom: none; color: var(--text-soft);

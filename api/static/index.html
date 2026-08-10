@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=38" />
+  <link rel="stylesheet" href="/static/css/style.css?v=39" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -20,9 +20,7 @@
       <div class="tabs-scroll">
         <button type="button" class="tab active" data-tab="my">我的股票</button>
         <button type="button" class="tab" data-tab="etf">ETF筛选</button>
-        <button type="button" class="tab" data-tab="redlowvol">红利低波选股</button>
-        <button type="button" class="tab" data-tab="fundamental">基本面选股</button>
-        <button type="button" class="tab" data-tab="hk">港股选股</button>
+        <button type="button" class="tab" data-tab="screener">选股</button>
         <button type="button" class="tab" data-tab="caibao">财报挖掘</button>
         <button type="button" class="tab" data-tab="band">区间交易估价</button>
         <button type="button" class="tab" data-tab="backtest">策略回测</button>
@@ -170,8 +168,21 @@
       </section>
     </section>
 
-    <!-- ================= Tab: 红利低波选股 ================= -->
-    <section id="tab-redlowvol" class="hidden">
+    <!-- ================= Tab: 选股 (A股/港股 × 红利低波/基本面) ================= -->
+    <section id="tab-screener" class="hidden">
+      <div class="screener-nav">
+        <div class="seg-group" id="seg-mkt">
+          <button type="button" class="seg-btn active" data-mkt="a">A股</button>
+          <button type="button" class="seg-btn" data-mkt="hk">港股</button>
+        </div>
+        <div class="seg-group" id="seg-strat">
+          <button type="button" class="seg-btn active" data-strat="rlv">红利低波</button>
+          <button type="button" class="seg-btn" data-strat="fund">基本面</button>
+        </div>
+      </div>
+
+      <!-- A股 × 红利低波 -->
+      <div data-view="a-rlv">
       <div class="card">
         <form id="rlv-form" autocomplete="off">
           <div class="grid">
@@ -273,10 +284,10 @@
           </div>
         </div>
       </section>
-    </section>
+      </div>
 
-    <!-- ================= Tab: 基本面选股 ================= -->
-    <section id="tab-fundamental" class="hidden">
+      <!-- A股 × 基本面 -->
+      <div data-view="a-fund">
       <div class="card">
         <form id="screen-form" autocomplete="off">
           <div class="grid">
@@ -353,13 +364,13 @@
           </div>
         </div>
       </section>
-    </section>
+      </div>
 
-    <!-- ================= Tab: 港股选股 ================= -->
-    <section id="tab-hk" class="hidden">
+      <!-- 港股 × 红利低波 -->
+      <div data-view="hk-rlv">
       <div class="card">
         <div class="card-title">
-          <h2>港股红利低波选股 🇭🇰</h2>
+          <h2>港股红利低波选股</h2>
         </div>
         <form id="hk-rlv-form" autocomplete="off">
           <div class="grid">
@@ -458,12 +469,13 @@
           </div>
         </div>
       </section>
+      </div>
 
-      <div style="height:32px"></div>
-
+      <!-- 港股 × 基本面 -->
+      <div data-view="hk-fund">
       <div class="card">
         <div class="card-title">
-          <h2>港股基本面选股 🇭🇰</h2>
+          <h2>港股基本面选股</h2>
         </div>
         <form id="hk-screen-form" autocomplete="off">
           <div class="grid">
@@ -546,6 +558,7 @@
           </div>
         </div>
       </section>
+      </div>
     </section>
 
     <!-- ================= Tab: 财报分析 ================= -->
@@ -872,6 +885,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=50"></script>
+  <script src="/static/js/app.js?v=51"></script>
 </body>
 </html>

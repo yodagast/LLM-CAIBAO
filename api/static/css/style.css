@@ -453,6 +453,32 @@ body.auth-loading .container { visibility: hidden; }
 .caibao-toc a.toc-h3 { padding-left: 14px; color: var(--text-soft); font-size: 12px; }
 @media (max-width: 560px) { .caibao-chart { height: 260px; } }
 
+/* 财报挖掘: 报告章节卡片 (执行摘要/风险提示/投资建议 高亮) */
+.cb-section.cb-summary {
+  background: #eff6ff; border-left: 4px solid #3b82f6;
+  border-radius: 10px; padding: 10px 16px; margin: 14px 0;
+}
+.cb-section.cb-risk {
+  background: #fef2f2; border-left: 4px solid #ef4444;
+  border-radius: 10px; padding: 10px 16px; margin: 14px 0;
+}
+.cb-section.cb-advice {
+  background: #f0fdf4; border-left: 4px solid #22c55e;
+  border-radius: 10px; padding: 10px 16px; margin: 14px 0;
+}
+.cb-section .cb-badge {
+  display: inline-block; margin-left: 8px; vertical-align: 2px;
+  padding: 2px 10px; border-radius: 999px; color: #fff;
+  font-size: 12px; font-weight: 700;
+  background: #f59e0b;
+}
+.cb-section .cb-badge.good { background: #ef4444; }  /* 买入/增持 = 红(优) */
+.cb-section .cb-badge.bad { background: #22c55e; }   /* 回避/卖出 = 绿(差) */
+
+/* 财报挖掘: markdown 表格增强 (斑马纹 + 表头强调) */
+.markdown-body thead th { background: #f1f5f9; }
+.markdown-body tbody tr:nth-child(even) { background: #f8fafc; }
+
 .chart { width: 100%; height: 420px; }
 /* 行情 K 线图: 高度自适应浏览器视口, 便于在 Chrome 中观察 120 日行情 */
 .quote-chart {

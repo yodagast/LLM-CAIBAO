@@ -1674,18 +1674,6 @@
     }
   });
 
-  function downloadMarkdown(text, filename) {
-    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
   function renderCaibao(data) {
     caibaoResult.classList.remove("hidden");
     $("#caibao-title").textContent = `${data.info.name} (${data.info.ts_code}) · 财报分析`;
@@ -1700,12 +1688,58 @@
     $("#caibao-report").innerHTML = marked.parse(data.markdown || "");
     renderCaibaoCards(data);
     renderCaibaoChart(data);
+    enhanceCaibaoReport();
     buildCaibaoToc();
     $("#caibao-hint").textContent =
       `数据来源: ${isHk ? "东方财富港股" : "tushare"} · 已保存至本地 PostgreSQL (financial_data 表)`;
-    $("#caibao-download").onclick = () =>
-      downloadMarkdown(data.markdown || "", `${data.info.name}-${data.info.ts_code.split(".")[0]}_财报分析.md`);
     caibaoResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // 报告输出优化: 章节重排(1→8) + 关键章节高亮 + 投资建议标签
+  function enhanceCaibaoReport() {
+    const body = $("#caibao-report");
+    if (!body) return;
+    const kids = [...body.children];
+    const h2Idx = [];
+    kids.forEach((el, i) => { if (el.tagName === "H2") h2Idx.push(i); });
+    // 1) 章节按序号 1→8 重排 (每个 h2 及其后内容为一个章节块)
+    if (h2Idx.length >= 2) {
+      const sections = [];
+      h2Idx.forEach((idx, s) => {
+        const end = (h2Idx[s + 1] !== undefined) ? h2Idx[s + 1] : kids.length;
+        const block = document.createElement("div");
+        block.className = "cb-section";
+        kids.slice(idx, end).forEach((el) => block.appendChild(el));
+        const title = block.querySelector("h2");
+        const num = parseInt((title.textContent.match(/(\d+)\./) || [])[1] || "99", 10);
+        sections.push({ num, block });
+      });
+      body.innerHTML = "";
+      sections.sort((a, b) => a.num - b.num).forEach((s) => body.appendChild(s.block));
+    }
+    // 2) 关键章节高亮 + 3) 投资建议结论标签
+    body.querySelectorAll(".cb-section").forEach((block) => {
+      const title = block.querySelector("h2").textContent || "";
+      let cls = "";
+      if (title.includes("执行摘要")) cls = "cb-summary";
+      else if (title.includes("风险提示")) cls = "cb-risk";
+      else if (title.includes("投资建议")) cls = "cb-advice";
+      if (cls) block.classList.add(cls);
+      if (cls === "cb-advice") {
+        const order = ["强烈推荐", "买入", "增持", "推荐", "持有", "观望", "回避", "卖出", "谨慎"];
+        const text = block.textContent || "";
+        let hit = null;
+        for (const w of order) { if (text.includes(w)) { hit = w; break; } }
+        if (hit) {
+          const badge = document.createElement("span");
+          const good = ["强烈推荐", "买入", "增持", "推荐"].includes(hit);
+          const bad = ["回避", "卖出", "谨慎"].includes(hit);
+          badge.className = "cb-badge" + (good ? " good" : bad ? " bad" : "");
+          badge.textContent = hit;
+          block.querySelector("h2").appendChild(badge);
+        }
+      }
+    });
   }
 
   // 核心指标概览卡片 (从 financials / valuation 渲染, 复用 .metric-cards 样式)

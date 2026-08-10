@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>股票详情</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=17" />
+  <link rel="stylesheet" href="/static/css/style.css?v=18" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <style>
     .detail-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -94,7 +94,10 @@
           <p>K线 · PB/PE · 分红 · 52周高低 · 股本市值</p>
         </div>
       </div>
-      <div class="health" id="health"><span class="dot"></span><span id="health-text">连接检测中…</span></div>
+      <div class="topbar-right">
+        <div class="health" id="health"><span class="dot"></span><span id="health-text">连接检测中…</span></div>
+        <div class="tabs-auth" id="auth-zone"></div>
+      </div>
     </div>
   </header>
 
@@ -182,6 +185,34 @@
     <span>股票详情 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/stock_detail.js?v=23"></script>
+  <!-- 登录 / 注册弹窗 -->
+  <div class="modal-mask hidden" id="auth-modal">
+    <div class="modal">
+      <h3 id="auth-title">登录</h3>
+      <div class="modal-form">
+        <div class="field">
+          <label for="auth-username">用户名</label>
+          <input id="auth-username" autocomplete="username" maxlength="32" placeholder="2~32 个字符" />
+        </div>
+        <div class="field">
+          <label for="auth-password">密码</label>
+          <input id="auth-password" type="password" autocomplete="current-password" placeholder="至少 6 位" />
+        </div>
+        <div class="field hidden" id="auth-confirm-wrap">
+          <label for="auth-confirm">确认密码</label>
+          <input id="auth-confirm" type="password" autocomplete="new-password" />
+        </div>
+        <div class="error hidden" id="auth-error"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="auth-submit">登录</button>
+        <button type="button" class="btn-ghost" id="auth-toggle">没有账号? 去注册</button>
+        <button type="button" class="btn-ghost" id="auth-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/auth.js?v=1"></script>
+  <script src="/static/js/stock_detail.js?v=24"></script>
 </body>
 </html>

@@ -235,8 +235,9 @@
       btn.classList.remove("added");
     }
 
-    // 初始查询该股票是否已在自选股, 决定按钮初始状态
+    // 初始查询该股票是否已在自选股, 决定按钮初始状态 (需登录)
     (async () => {
+      if (!window.CaiBaoAuth || !CaiBaoAuth.isLoggedIn()) return;
       try {
         const r = await fetch(`/api/my_stocks/contains/${encodeURIComponent(curCode)}`);
         const data = await r.json();
@@ -249,6 +250,8 @@
 
     btn.addEventListener("click", async () => {
       if (btn.disabled) return;
+      // 未登录: 弹出登录框, 不做操作
+      if (!window.CaiBaoAuth || !CaiBaoAuth.requireLogin()) return;
       btn.disabled = true;
       try {
         const url = inList ? "/api/my_stocks/remove" : "/api/my_stocks/add";
@@ -342,5 +345,9 @@
 
   window.addEventListener("resize", () => { if (chart) chart.resize(); });
   checkHealth();
-  init();
+  if (window.CaiBaoAuth) {
+    CaiBaoAuth.init().then(() => { init(); });
+  } else {
+    init();
+  }
 })();

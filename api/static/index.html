@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=35" />
+  <link rel="stylesheet" href="/static/css/style.css?v=36" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -15,16 +15,19 @@
   </div>
 
   <main class="container">
-    <!-- Tab 导航 -->
+    <!-- Tab 导航: 左侧可横向滑动, 右侧为登录/用户状态 -->
     <nav class="tabs">
-      <button type="button" class="tab active" data-tab="my">⭐ 我的股票</button>
-      <button type="button" class="tab" data-tab="etf">📈 ETF筛选</button>
-      <button type="button" class="tab" data-tab="redlowvol">💰 红利低波选股</button>
-      <button type="button" class="tab" data-tab="fundamental">🔍 基本面选股</button>
-      <button type="button" class="tab" data-tab="hk">🇭🇰 港股选股</button>
-      <button type="button" class="tab" data-tab="caibao">📚 财报挖掘</button>
-      <button type="button" class="tab" data-tab="band">🎯 区间交易估价</button>
-      <button type="button" class="tab" data-tab="backtest">📊 策略回测</button>
+      <div class="tabs-scroll">
+        <button type="button" class="tab active" data-tab="my">我的股票</button>
+        <button type="button" class="tab" data-tab="etf">ETF筛选</button>
+        <button type="button" class="tab" data-tab="redlowvol">红利低波选股</button>
+        <button type="button" class="tab" data-tab="fundamental">基本面选股</button>
+        <button type="button" class="tab" data-tab="hk">港股选股</button>
+        <button type="button" class="tab" data-tab="caibao">财报挖掘</button>
+        <button type="button" class="tab" data-tab="band">区间交易估价</button>
+        <button type="button" class="tab" data-tab="backtest">策略回测</button>
+      </div>
+      <div class="tabs-auth" id="auth-zone"></div>
     </nav>
 
     <!-- ================= Tab: 我的股票 ================= -->
@@ -34,6 +37,12 @@
         <span>正在加载自选股行情…</span>
       </div>
       <div class="error hidden" id="my-error"></div>
+
+      <!-- 未登录提示 (登录后自动隐藏并加载自选股) -->
+      <div class="login-prompt hidden" id="my-login-prompt">
+        <p>请先登录后查看和管理你的自选股</p>
+        <button type="button" class="btn-primary" id="my-login-btn">去登录 / 注册</button>
+      </div>
 
       <section class="result" id="my-result">
         <div class="result-head">
@@ -868,6 +877,34 @@
     <span>数据源 tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/app.js?v=48"></script>
+  <!-- 登录 / 注册弹窗 -->
+  <div class="modal-mask hidden" id="auth-modal">
+    <div class="modal">
+      <h3 id="auth-title">登录</h3>
+      <div class="modal-form">
+        <div class="field">
+          <label for="auth-username">用户名</label>
+          <input id="auth-username" autocomplete="username" maxlength="32" placeholder="2~32 个字符" />
+        </div>
+        <div class="field">
+          <label for="auth-password">密码</label>
+          <input id="auth-password" type="password" autocomplete="current-password" placeholder="至少 6 位" />
+        </div>
+        <div class="field hidden" id="auth-confirm-wrap">
+          <label for="auth-confirm">确认密码</label>
+          <input id="auth-confirm" type="password" autocomplete="new-password" />
+        </div>
+        <div class="error hidden" id="auth-error"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="auth-submit">登录</button>
+        <button type="button" class="btn-ghost" id="auth-toggle">没有账号? 去注册</button>
+        <button type="button" class="btn-ghost" id="auth-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/auth.js?v=1"></script>
+  <script src="/static/js/app.js?v=49"></script>
 </body>
 </html>

@@ -9,16 +9,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import backtest_engine, band_service, caibao_service, data_service, daily_recommend_service
-from . import etf_service, fundamental_service, hk_data_service, hk_fundamental_service
-from . import hk_redlowvol_service, pg_service, redlowvol_service
+from . import auth_service, backtest_engine, band_service, caibao_service, data_service
+from . import daily_recommend_service, etf_service, fundamental_service, hk_data_service
+from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvol_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -41,8 +42,47 @@ def _startup() -> None:
         pg_service.init_hk_rlv_schema()
         pg_service.init_hk_fundamental_schema()
         pg_service.init_etf_schema()
+        pg_service.init_auth_schema()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# 用户认证辅助 (会话 cookie → 当前用户)
+# ---------------------------------------------------------------------------
+
+SESSION_COOKIE = auth_service.SESSION_COOKIE
+
+
+def _current_user(request: Request) -> dict | None:
+    """从 cookie 解析当前登录用户 (未登录返回 None)。"""
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    return pg_service.get_session_user(token)
+
+
+def _require_user(request: Request) -> dict:
+    """要求已登录, 否则抛 401。"""
+    user = _current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录或登录已过期, 请先登录")
+    return user
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        max_age=auth_service.SESSION_DAYS * 86400,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(key=SESSION_COOKIE, path="/")
 
 # 静态资源 (前端页面)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -163,6 +203,12 @@ class DailyRecRequest(BaseModel):
     payout_max: float | None = Field(None, ge=0, le=1000, description="方法2: 分红率上限 % (可选)")
     roe_min: float | None = Field(None, ge=-100, le=1000, description="方法2: ROE下限 % (可选)")
     roe_max: float | None = Field(None, ge=-100, le=1000, description="方法2: ROE上限 % (可选)")
+
+
+class AuthRequest(BaseModel):
+    """用户注册/登录请求。"""
+    username: str = Field(..., min_length=2, max_length=32, description="用户名")
+    password: str = Field(..., min_length=6, max_length=64, description="密码")
 
 
 class EtfScreenRequest(BaseModel):
@@ -672,34 +718,105 @@ def hk_redlowvol_screen(req: HkRedLowVolRequest) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 我的股票 (自选股)
+# 用户认证 (注册 / 登录 / 注销)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/auth/register")
+def auth_register(req: AuthRequest, response: Response) -> dict:
+    """注册新账号并自动登录。"""
+    username = req.username.strip()
+    if not (2 <= len(username) <= 32):
+        raise HTTPException(status_code=400, detail="用户名长度需在 2~32 之间")
+    hashed = auth_service.hash_password(req.password)
+    user_id, created = pg_service.create_user(username, hashed)
+    if not created:
+        raise HTTPException(status_code=409, detail="用户名已被注册")
+    token = auth_service.new_token()
+    expires = datetime.now(timezone.utc) + timedelta(days=auth_service.SESSION_DAYS)
+    pg_service.create_session(token, user_id, expires)
+    _set_session_cookie(response, token)
+    return {"ok": True, "user": {"id": user_id, "username": username}}
+
+
+@app.post("/api/auth/login")
+def auth_login(req: AuthRequest, response: Response) -> dict:
+    """账号密码登录。"""
+    username = req.username.strip()
+    user = pg_service.get_user_by_username(username)
+    if not user or not auth_service.verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    token = auth_service.new_token()
+    expires = datetime.now(timezone.utc) + timedelta(days=auth_service.SESSION_DAYS)
+    pg_service.create_session(token, user["id"], expires)
+    _set_session_cookie(response, token)
+    return {"ok": True, "user": {"id": user["id"], "username": user["username"]}}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request, response: Response) -> dict:
+    """退出登录: 删除会话并清除 cookie。"""
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        pg_service.delete_session(token)
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.post("/api/auth/delete_account")
+def auth_delete_account(request: Request, response: Response) -> dict:
+    """注销账号: 删除当前用户及其全部数据 (个人中心页按钮)。"""
+    user = _require_user(request)
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        pg_service.delete_session(token)
+    pg_service.delete_user(user["id"])
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict:
+    """当前登录用户 (未登录 user=null, 登录返回 id/username/created_at)。"""
+    u = _current_user(request)
+    if u:
+        full = pg_service.get_user_by_id(u["id"]) or {}
+        u = {"id": u["id"], "username": u["username"],
+             "created_at": str(full.get("created_at") or "")}
+    return {"user": u}
+
+
+# ---------------------------------------------------------------------------
+# 我的股票 (自选股, 按用户隔离)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/my_stocks/add")
-def my_stocks_add(req: MyStockRequest) -> dict:
-    """添加自选股 (从股票详情页), 返回是否新增。"""
+def my_stocks_add(req: MyStockRequest, request: Request) -> dict:
+    """添加自选股 (从股票详情页), 返回是否新增 (需登录)。"""
+    user = _require_user(request)
     try:
         info = data_service.resolve_code(req.ts_code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
-    inserted = pg_service.add_my_stock(info["ts_code"], info["name"])
+    inserted = pg_service.add_my_stock(user["id"], info["ts_code"], info["name"])
     return {"ok": True, "ts_code": info["ts_code"], "name": info["name"],
             "added": inserted, "already": not inserted}
 
 
 @app.post("/api/my_stocks/remove")
-def my_stocks_remove(req: MyStockRequest) -> dict:
-    """移除自选股。"""
-    removed = pg_service.remove_my_stock(req.ts_code.strip().upper())
+def my_stocks_remove(req: MyStockRequest, request: Request) -> dict:
+    """移除自选股 (需登录)。"""
+    user = _require_user(request)
+    removed = pg_service.remove_my_stock(user["id"], req.ts_code.strip().upper())
     return {"ok": True, "removed": removed}
 
 
 @app.get("/api/my_stocks")
-def my_stocks_list() -> dict:
-    """我的股票列表: 最新收盘/涨跌幅/PE/总市值/股息率/每股分红/52周高低 快照。"""
-    stocks = pg_service.list_my_stocks()
+def my_stocks_list(request: Request) -> dict:
+    """我的股票列表: 最新收盘/涨跌幅/PE/总市值/股息率/每股分红/52周高低 快照 (需登录)。"""
+    user = _require_user(request)
+    stocks = pg_service.list_my_stocks(user["id"])
     items = []
     for s in stocks:
         try:
@@ -723,12 +840,13 @@ def my_stocks_list() -> dict:
 
 
 @app.get("/api/my_stocks/contains/{code}")
-def my_stocks_contains(code: str) -> dict:
-    """查询某股票是否已在自选股中 (股票详情页按钮初始状态用)。"""
+def my_stocks_contains(code: str, request: Request) -> dict:
+    """查询某股票是否已在当前用户自选股中 (股票详情页按钮初始状态用, 需登录)。"""
+    user = _require_user(request)
     try:
         info = data_service.resolve_code(code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
-    return {"ts_code": info["ts_code"], "in_list": pg_service.has_my_stock(info["ts_code"])}
+    return {"ts_code": info["ts_code"], "in_list": pg_service.has_my_stock(user["id"], info["ts_code"])}

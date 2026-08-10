@@ -62,6 +62,7 @@
   const myRefreshBtn = $("#my-refresh-btn");
   const myLoading = $("#my-loading");
   const myError = $("#my-error");
+  const myResult = $("#my-result");
   const mySub = $("#my-sub");
 
   let chart = null;
@@ -1835,12 +1836,27 @@
   let myItems = [];
   let mySort = { key: "last_close", order: "desc" };
 
+  function showMyLoginPrompt() {
+    myLoading.classList.add("hidden");
+    myResult.classList.add("hidden");
+    $("#my-login-prompt").classList.remove("hidden");
+    myRefreshBtn.disabled = false;
+  }
+
   async function loadMyStocks() {
+    // 未登录: 显示登录提示
+    if (!window.CaiBaoAuth || !CaiBaoAuth.isLoggedIn()) {
+      showMyLoginPrompt();
+      return;
+    }
     myError.classList.add("hidden");
+    $("#my-login-prompt").classList.add("hidden");
+    myResult.classList.remove("hidden");
     myLoading.classList.remove("hidden");
     myRefreshBtn.disabled = true;
     try {
       const res = await fetch("/api/my_stocks");
+      if (res.status === 401) { showMyLoginPrompt(); return; }
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "获取失败");
       renderMyStocks(data.items || []);
@@ -2015,6 +2031,22 @@
     }, 150);
   });
 
+  // ---------- 用户认证: 登录/注册/注销 + 我的股票按用户加载 ----------
+  if (window.CaiBaoAuth) {
+    CaiBaoAuth.onAuthChange(() => {
+      if (CaiBaoAuth.isLoggedIn()) loadMyStocks();
+      else showMyLoginPrompt();
+    });
+    // 未登录提示里的「去登录/注册」按钮
+    var myLoginBtn = $("#my-login-btn");
+    if (myLoginBtn) myLoginBtn.addEventListener("click", () => CaiBaoAuth.openModal("login"));
+    CaiBaoAuth.init().then(() => {
+      if (CaiBaoAuth.isLoggedIn()) loadMyStocks();
+      else showMyLoginPrompt();
+    });
+  } else {
+    loadMyStocks();
+  }
+
   checkHealth();
-  loadMyStocks();
 })();

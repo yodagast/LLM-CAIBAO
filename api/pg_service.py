@@ -696,60 +696,169 @@ def query_dividend_recommend(min_dy_ttm: float = 3.0, industry: str = "",
 MY_STOCKS_SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS my_stocks (
     id          BIGSERIAL PRIMARY KEY,
-    ts_code     VARCHAR(16)  NOT NULL UNIQUE,
+    user_id     BIGINT       NOT NULL DEFAULT 0,   -- 归属用户 (0=旧数据/未归属, 不对外展示)
+    ts_code     VARCHAR(16)  NOT NULL,
     name        VARCHAR(64)  NOT NULL DEFAULT '',
-    added_at    TIMESTAMP    DEFAULT now()
+    added_at    TIMESTAMP    DEFAULT now(),
+    UNIQUE (user_id, ts_code)
 );
 """
 
 
 def init_my_stocks_schema() -> None:
-    """创建 my_stocks 表 (幂等)。"""
+    """创建 my_stocks 表 (幂等), 并为旧表迁移 user_id 列与唯一约束。"""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(MY_STOCKS_SCHEMA_DDL)
+            # 旧表迁移: 新增 user_id (旧数据归 0 隐藏), 唯一约束从 ts_code 改为 (user_id, ts_code)
+            cur.execute("ALTER TABLE my_stocks ADD COLUMN IF NOT EXISTS user_id BIGINT NOT NULL DEFAULT 0;")
+            cur.execute("ALTER TABLE my_stocks DROP CONSTRAINT IF EXISTS my_stocks_ts_code_key;")
+            cur.execute("DROP INDEX IF EXISTS my_stocks_ts_code_key;")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_my_stocks_user_ts ON my_stocks (user_id, ts_code);")
         conn.commit()
 
 
-def add_my_stock(ts_code: str, name: str) -> bool:
-    """添加自选股 (ts_code 唯一), 返回是否为新插入 (已存在返回 False)。"""
+def add_my_stock(user_id: int, ts_code: str, name: str) -> bool:
+    """为指定用户添加自选股 ((user_id, ts_code) 唯一), 返回是否为新插入。"""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO my_stocks (ts_code, name) VALUES (%s, %s) "
-                "ON CONFLICT (ts_code) DO NOTHING",
-                (ts_code, name),
+                "INSERT INTO my_stocks (user_id, ts_code, name) VALUES (%s, %s, %s) "
+                "ON CONFLICT (user_id, ts_code) DO NOTHING",
+                (user_id, ts_code, name),
             )
             inserted = cur.rowcount > 0
         conn.commit()
     return inserted
 
 
-def remove_my_stock(ts_code: str) -> int:
-    """移除自选股, 返回删除行数。"""
+def remove_my_stock(user_id: int, ts_code: str) -> int:
+    """移除指定用户的自选股, 返回删除行数。"""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM my_stocks WHERE ts_code = %s", (ts_code,))
+            cur.execute("DELETE FROM my_stocks WHERE user_id = %s AND ts_code = %s",
+                        (user_id, ts_code))
             n = cur.rowcount
         conn.commit()
     return n
 
 
-def list_my_stocks() -> list[dict]:
-    """列出全部自选股 (按添加时间升序)。"""
+def list_my_stocks(user_id: int) -> list[dict]:
+    """列出指定用户的全部自选股 (按添加时间升序)。"""
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT ts_code, name, added_at FROM my_stocks ORDER BY added_at ASC, id ASC")
+            cur.execute(
+                "SELECT ts_code, name, added_at FROM my_stocks "
+                "WHERE user_id = %s ORDER BY added_at ASC, id ASC",
+                (user_id,))
             rows = cur.fetchall()
     return [dict(r) for r in rows]
 
 
-def has_my_stock(ts_code: str) -> bool:
-    """某股票是否已在自选股中。"""
+def has_my_stock(user_id: int, ts_code: str) -> bool:
+    """某股票是否已在指定用户的自选股中。"""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM my_stocks WHERE ts_code = %s LIMIT 1", (ts_code,))
+            cur.execute("SELECT 1 FROM my_stocks WHERE user_id = %s AND ts_code = %s LIMIT 1",
+                        (user_id, ts_code))
             return cur.fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
+# 用户认证: users + sessions 表
+# ---------------------------------------------------------------------------
+
+AUTH_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS users (
+    id            BIGSERIAL PRIMARY KEY,
+    username      VARCHAR(32)  NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at    TIMESTAMP    DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token       VARCHAR(64) PRIMARY KEY,
+    user_id     BIGINT NOT NULL,
+    created_at  TIMESTAMP DEFAULT now(),
+    expires_at  TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+"""
+
+
+def init_auth_schema() -> None:
+    """创建 users / sessions 表 (幂等)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(AUTH_SCHEMA_DDL)
+        conn.commit()
+
+
+def create_user(username: str, password_hash: str) -> tuple[int | None, bool]:
+    """创建用户, 返回 (user_id, 是否新插入)。用户名已存在时 user_id 为 None。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (username, password_hash) VALUES (%s, %s) "
+                "ON CONFLICT (username) DO NOTHING RETURNING id",
+                (username, password_hash),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return (int(row[0]) if row else None, row is not None)
+
+
+def get_user_by_username(username: str) -> dict | None:
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, username, password_hash, created_at FROM users WHERE username = %s",
+                        (username,))
+            r = cur.fetchone()
+    return dict(r) if r else None
+
+
+def get_user_by_id(user_id: int) -> dict | None:
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, username, created_at FROM users WHERE id = %s", (user_id,))
+            r = cur.fetchone()
+    return dict(r) if r else None
+
+
+def create_session(token: str, user_id: int, expires_at) -> None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (%s, %s, %s)",
+                        (token, user_id, expires_at))
+        conn.commit()
+
+
+def get_session_user(token: str) -> dict | None:
+    """按会话 token 返回 {id, username} (已过期返回 None)。"""
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id "
+                "WHERE s.token = %s AND s.expires_at > now()",
+                (token,))
+            r = cur.fetchone()
+    return dict(r) if r else None
+
+
+def delete_session(token: str) -> None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        conn.commit()
+
+
+def delete_user(user_id: int) -> None:
+    """注销账号: 删除该用户的会话、自选股及用户记录 (不可恢复)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM my_stocks WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------

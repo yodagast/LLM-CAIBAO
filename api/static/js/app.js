@@ -606,7 +606,6 @@
       if (dyMax !== null) filters.dividend_yield_ttm.max = dyMax;
     }
     const vol = fNum("#rlv_f_vol"); if (vol !== null) filters.volatility = { max: vol };
-    const div = fNum("#rlv_f_div"); if (div !== null) filters.div_per_share = { min: div };
     const roeMin = fNum("#rlv_f_roe_min");
     const roeMax = fNum("#rlv_f_roe_max");
     if (roeMin !== null || roeMax !== null) {

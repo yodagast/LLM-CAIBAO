@@ -437,11 +437,11 @@
   // 3) 筛选徽章: filters 字段 → 输入框映射 (按视图类型)
   const FILTER_BADGE_MAP = {
     rlv: { dividend_yield_ttm: { min: "#rlv_f_dy", max: "#rlv_f_dy_max" }, volatility: { max: "#rlv_f_vol" }, roe: { min: "#rlv_f_roe_min", max: "#rlv_f_roe_max" }, debt_to_assets: { max: "#rlv_f_debt" }, payout_ratio: { min: "#rlv_f_payout_min", max: "#rlv_f_payout_max" } },
-    screen: { roe: { min: "#sc_f_roe", max: "#sc_f_roe_max" }, gross_margin: { min: "#sc_f_gm", max: "#sc_f_gm_max" }, debt_to_assets: { max: "#sc_f_debt" } },
+    screen: { roe: { min: "#sc_f_roe", max: "#sc_f_roe_max" }, debt_to_assets: { max: "#sc_f_debt" }, gross_margin: { min: "#sc_f_gm" } },
     hk_rlv: { dividend_yield_ttm: { min: "#hk_rlv_f_dy", max: "#hk_rlv_f_dy_max" }, volatility: { max: "#hk_rlv_f_vol" }, roe: { min: "#hk_rlv_f_roe_min", max: "#hk_rlv_f_roe_max" }, debt_to_assets: { max: "#hk_rlv_f_debt" }, payout_ratio: { min: "#hk_rlv_f_payout_min", max: "#hk_rlv_f_payout_max" } },
-    hk_screen: { roe: { min: "#hk_sc_f_roe", max: "#hk_sc_f_roe_max" }, gross_margin: { min: "#hk_sc_f_gm", max: "#hk_sc_f_gm_max" }, debt_to_assets: { max: "#hk_sc_f_debt" } },
+    hk_screen: { roe: { min: "#hk_sc_f_roe", max: "#hk_sc_f_roe_max" }, debt_to_assets: { max: "#hk_sc_f_debt" }, gross_margin: { min: "#hk_sc_f_gm" } },
   };
-  const FILTER_BADGE_LABELS = { dividend_yield_ttm: "股息率TTM", volatility: "波动率", roe: "ROE", gross_margin: "毛利率", debt_to_assets: "资产负债率", payout_ratio: "分红率" };
+  const FILTER_BADGE_LABELS = { dividend_yield_ttm: "股息率TTM", volatility: "波动率", roe: "ROE", debt_to_assets: "资产负债率", payout_ratio: "分红率", gross_margin: "毛利率" };
   function filterBadges(filters, view) {
     const map = FILTER_BADGE_MAP[view] || {};
     const badges = [];
@@ -490,15 +490,10 @@
       if (!isNaN(roeMin)) filters.roe.min = roeMin;
       if (!isNaN(roeMax)) filters.roe.max = roeMax;
     }
-    const gmMin = parseFloat($("#sc_f_gm").value);
-    const gmMax = parseFloat($("#sc_f_gm_max").value);
-    if (!isNaN(gmMin) || !isNaN(gmMax)) {
-      filters.gross_margin = {};
-      if (!isNaN(gmMin)) filters.gross_margin.min = gmMin;
-      if (!isNaN(gmMax)) filters.gross_margin.max = gmMax;
-    }
     const debt = parseFloat($("#sc_f_debt").value);
     if (!isNaN(debt)) filters.debt_to_assets = { max: debt };
+    const gm = parseFloat($("#sc_f_gm").value);
+    if (!isNaN(gm)) filters.gross_margin = { min: gm };
 
     return {
       industry: $("#sc_industry").value.trim(),
@@ -1167,15 +1162,10 @@
       if (!isNaN(roeMin)) filters.roe.min = roeMin;
       if (!isNaN(roeMax)) filters.roe.max = roeMax;
     }
-    const gmMin = parseFloat($("#hk_sc_f_gm").value);
-    const gmMax = parseFloat($("#hk_sc_f_gm_max").value);
-    if (!isNaN(gmMin) || !isNaN(gmMax)) {
-      filters.gross_margin = {};
-      if (!isNaN(gmMin)) filters.gross_margin.min = gmMin;
-      if (!isNaN(gmMax)) filters.gross_margin.max = gmMax;
-    }
     const debt = parseFloat($("#hk_sc_f_debt").value);
     if (!isNaN(debt)) filters.debt_to_assets = { max: debt };
+    const gm = parseFloat($("#hk_sc_f_gm").value);
+    if (!isNaN(gm)) filters.gross_margin = { min: gm };
     return {
       industry: $("#hk_sc_industry").value.trim(),
       years, sort_by: hkScreenSort.by, order: hkScreenSort.order,

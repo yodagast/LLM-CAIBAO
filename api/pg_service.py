@@ -1361,3 +1361,156 @@ def query_etf(calc_date: str = "", keyword: str = "", fund_type: str = "",
             cur.execute(sql, params)
             rows = cur.fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# 自定义策略 (策略 Hub, 按用户隔离) + 策略公司
+# ---------------------------------------------------------------------------
+CUSTOM_STRATEGY_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS custom_strategies (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     BIGINT NOT NULL,
+    name        VARCHAR(64) NOT NULL,
+    desc_text   TEXT DEFAULT '',
+    category    VARCHAR(32) DEFAULT '我的策略',
+    source      VARCHAR(16) DEFAULT '',      -- screener=从选股保存 / manual=手动
+    filter_info TEXT DEFAULT '',             -- 来源选股的条件描述 (JSON 字符串)
+    created_at  TIMESTAMP DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_custom_strat_user ON custom_strategies (user_id);
+CREATE TABLE IF NOT EXISTS custom_strategy_stocks (
+    id          BIGSERIAL PRIMARY KEY,
+    strategy_id BIGINT NOT NULL,
+    ts_code     VARCHAR(16) NOT NULL,
+    name        VARCHAR(64) DEFAULT '',
+    note        VARCHAR(255) DEFAULT '',
+    added_at    TIMESTAMP DEFAULT now(),
+    UNIQUE (strategy_id, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_custom_strat_stock ON custom_strategy_stocks (strategy_id);
+"""
+
+
+def init_custom_strategy_schema() -> None:
+    """创建自定义策略表 (幂等)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(CUSTOM_STRATEGY_SCHEMA_DDL)
+        conn.commit()
+
+
+def create_custom_strategy(user_id: int, name: str, desc_text: str = "",
+                           category: str = "我的策略", source: str = "manual",
+                           filter_info: str = "") -> int:
+    """创建自定义策略, 返回策略 id。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO custom_strategies (user_id, name, desc_text, category, source, filter_info) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (user_id, name, desc_text, category, source, filter_info))
+            sid = cur.fetchone()[0]
+        conn.commit()
+    return int(sid)
+
+
+def list_custom_strategies(user_id: int) -> list[dict]:
+    """列出指定用户的全部自定义策略 (含公司数量)。"""
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT c.id, c.name, c.desc_text, c.category, c.source, c.filter_info, c.created_at, "
+                "       (SELECT count(*) FROM custom_strategy_stocks s WHERE s.strategy_id = c.id) AS stock_count "
+                "FROM custom_strategies c WHERE c.user_id = %s ORDER BY c.id DESC",
+                (user_id,))
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_custom_strategy(sid: int) -> dict | None:
+    """按 id 查策略 (不限用户, 调用方自行校验归属)。"""
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, user_id, name, desc_text, category, source, filter_info, created_at "
+                "FROM custom_strategies WHERE id = %s", (sid,))
+            r = cur.fetchone()
+    return dict(r) if r else None
+
+
+def update_custom_strategy(sid: int, user_id: int, name: str | None = None,
+                           desc_text: str | None = None, category: str | None = None) -> int:
+    """更新自定义策略 (仅限本人), 返回受影响行数。"""
+    sets, params = [], []
+    if name is not None:
+        sets.append("name = %s"); params.append(name)
+    if desc_text is not None:
+        sets.append("desc_text = %s"); params.append(desc_text)
+    if category is not None:
+        sets.append("category = %s"); params.append(category)
+    if not sets:
+        return 0
+    params += [sid, user_id]
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE custom_strategies SET {', '.join(sets)} WHERE id = %s AND user_id = %s",
+                params)
+            n = cur.rowcount
+        conn.commit()
+    return n
+
+
+def delete_custom_strategy(sid: int, user_id: int) -> int:
+    """删除自定义策略及其全部公司 (仅限本人), 返回删除行数。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM custom_strategy_stocks WHERE strategy_id = %s", (sid,))
+            cur.execute("DELETE FROM custom_strategies WHERE id = %s AND user_id = %s", (sid, user_id))
+            n = cur.rowcount
+        conn.commit()
+    return n
+
+
+def add_strategy_stock(sid: int, ts_code: str, name: str = "", note: str = "") -> bool:
+    """向策略添加公司 ((strategy_id, ts_code) 唯一), 返回是否为新插入。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO custom_strategy_stocks (strategy_id, ts_code, name, note) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (strategy_id, ts_code) DO NOTHING",
+                (sid, ts_code, name, note))
+            inserted = cur.rowcount > 0
+        conn.commit()
+    return inserted
+
+
+def batch_add_strategy_stocks(sid: int, stocks: list[dict]) -> int:
+    """批量向策略添加公司 (保存选股结果用), 返回新增数。"""
+    n = 0
+    for s in stocks:
+        if add_strategy_stock(sid, s["ts_code"], s.get("name", ""), s.get("note", "")):
+            n += 1
+    return n
+
+
+def remove_strategy_stock(sid: int, ts_code: str) -> int:
+    """从策略移除公司, 返回删除行数。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM custom_strategy_stocks WHERE strategy_id = %s AND ts_code = %s",
+                        (sid, ts_code))
+            n = cur.rowcount
+        conn.commit()
+    return n
+
+
+def list_strategy_stocks(sid: int) -> list[dict]:
+    """列出策略内全部公司 (按添加时间升序)。"""
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT ts_code, name, note, added_at FROM custom_strategy_stocks "
+                "WHERE strategy_id = %s ORDER BY added_at ASC, id ASC", (sid,))
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]

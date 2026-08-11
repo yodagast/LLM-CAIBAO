@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=44" />
+  <link rel="stylesheet" href="/static/css/style.css?v=45" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -180,6 +180,7 @@
           <button type="button" class="seg-btn active" data-strat="rlv">红利低波</button>
           <button type="button" class="seg-btn" data-strat="fund">基本面</button>
         </div>
+        <button type="button" class="btn-ghost btn-sm" id="screener-save-btn" title="把当前筛选结果保存为策略Hub中的自定义策略">＋ 存入策略Hub</button>
       </div>
 
       <!-- A股 × 红利低波 -->
@@ -579,6 +580,26 @@
           </div>
         </div>
       </section>
+
+      <!-- 我的策略: 自定义策略的公司管理 -->
+      <section class="result hidden" id="custom-strategy-result">
+        <div class="result-head">
+          <h2 id="custom-st-title">我的策略</h2>
+          <span class="hint" id="custom-st-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap">
+            <table id="custom-st-table">
+              <thead><tr><th>名称</th><th>代码</th><th>操作</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="custom-st-add">
+            <input id="custom-st-code" placeholder="添加公司: 输入代码, 如 600036 或 00700.HK" />
+            <button type="button" class="btn-primary btn-sm" id="custom-st-add-btn">添加</button>
+          </div>
+        </div>
+      </section>
     </section>
 
     <!-- ================= Tab: 财报分析 ================= -->
@@ -907,6 +928,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=55"></script>
+  <script src="/static/js/app.js?v=56"></script>
 </body>
 </html>

@@ -44,6 +44,7 @@ def _startup() -> None:
         pg_service.init_hk_fundamental_schema()
         pg_service.init_etf_schema()
         pg_service.init_auth_schema()
+        pg_service.init_custom_strategy_schema()
     except Exception:
         pass
 
@@ -160,6 +161,30 @@ class HkRedLowVolRequest(BaseModel):
 class MyStockRequest(BaseModel):
     """我的股票 (自选股) 请求。"""
     ts_code: str = Field(..., description="股票代码, 如 000858 或 000858.SZ")
+
+
+class CustomStrategyCreate(BaseModel):
+    """自定义策略创建 (支持从选股结果批量保存公司)。"""
+    name: str = Field(..., min_length=1, max_length=64, description="策略名称")
+    desc: str = Field("", max_length=500, description="策略描述")
+    category: str = Field("我的策略", max_length=32, description="分类")
+    source: str = Field("manual", max_length=16, description="来源: screener=从选股保存 / manual")
+    filter_info: str = Field("", max_length=1000, description="来源选股条件描述")
+    stocks: list[dict] = Field(default_factory=list, description="初始公司列表 [{ts_code, name}]")
+
+
+class CustomStrategyUpdate(BaseModel):
+    """自定义策略更新。"""
+    name: str | None = Field(None, min_length=1, max_length=64, description="策略名称")
+    desc: str | None = Field(None, max_length=500, description="策略描述")
+    category: str | None = Field(None, max_length=32, description="分类")
+
+
+class StrategyStockAdd(BaseModel):
+    """向策略添加公司。"""
+    ts_code: str = Field(..., description="股票代码, 如 600036.SH 或 00700.HK")
+    name: str = Field("", max_length=64, description="公司名称")
+    note: str = Field("", max_length=255, description="备注")
 
 
 class BandOptimizeRequest(BaseModel):
@@ -888,3 +913,96 @@ def my_stocks_contains(code: str, request: Request) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
     return {"ts_code": info["ts_code"], "in_list": pg_service.has_my_stock(user["id"], info["ts_code"])}
+
+
+# ---------------------------------------------------------------------------
+# 自定义策略 (策略 Hub CRUD, 按用户隔离)
+# ---------------------------------------------------------------------------
+def _get_owned_strategy(sid: int, user_id: int) -> dict:
+    """取策略并校验归属当前用户。"""
+    s = pg_service.get_custom_strategy(sid)
+    if not s:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    if s["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="无权操作该策略")
+    return s
+
+
+@app.post("/api/custom/strategy")
+def custom_strategy_create(req: CustomStrategyCreate, request: Request) -> dict:
+    """创建自定义策略, 可选批量保存公司 (需登录)。"""
+    user = _require_user(request)
+    sid = pg_service.create_custom_strategy(
+        user["id"], req.name.strip(), req.desc.strip(),
+        req.category.strip() or "我的策略", req.source, req.filter_info)
+    added = 0
+    for s in req.stocks:
+        try:
+            info = data_service.resolve_code(s["ts_code"])
+            if pg_service.add_strategy_stock(sid, info["ts_code"], info["name"], s.get("note", "")):
+                added += 1
+        except Exception:
+            continue
+    return {"ok": True, "id": sid, "added_stocks": added}
+
+
+@app.get("/api/custom/strategy/list")
+def custom_strategy_list(request: Request) -> dict:
+    """当前用户的自定义策略列表 (需登录)。"""
+    user = _require_user(request)
+    return {"items": pg_service.list_custom_strategies(user["id"])}
+
+
+@app.put("/api/custom/strategy/{sid}")
+def custom_strategy_update(sid: int, req: CustomStrategyUpdate, request: Request) -> dict:
+    """更新自定义策略 (需登录, 仅限本人)。"""
+    user = _require_user(request)
+    _get_owned_strategy(sid, user["id"])
+    n = pg_service.update_custom_strategy(
+        sid, user["id"],
+        name=req.name.strip() if req.name is not None else None,
+        desc_text=req.desc.strip() if req.desc is not None else None,
+        category=req.category.strip() if req.category is not None else None)
+    return {"ok": True, "updated": n}
+
+
+@app.delete("/api/custom/strategy/{sid}")
+def custom_strategy_delete(sid: int, request: Request) -> dict:
+    """删除自定义策略 (需登录, 仅限本人)。"""
+    user = _require_user(request)
+    _get_owned_strategy(sid, user["id"])
+    n = pg_service.delete_custom_strategy(sid, user["id"])
+    return {"ok": True, "deleted": n}
+
+
+@app.get("/api/custom/strategy/{sid}/stocks")
+def custom_strategy_stocks_list(sid: int, request: Request) -> dict:
+    """策略内公司列表 (需登录, 仅限本人)。"""
+    user = _require_user(request)
+    _get_owned_strategy(sid, user["id"])
+    return {"strategy_id": sid, "items": pg_service.list_strategy_stocks(sid)}
+
+
+@app.post("/api/custom/strategy/{sid}/stocks")
+def custom_strategy_stock_add(sid: int, req: StrategyStockAdd, request: Request) -> dict:
+    """向策略添加公司 (需登录, 仅限本人)。"""
+    user = _require_user(request)
+    _get_owned_strategy(sid, user["id"])
+    try:
+        info = data_service.resolve_code(req.ts_code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
+    inserted = pg_service.add_strategy_stock(sid, info["ts_code"], info["name"], req.note)
+    return {"ok": True, "ts_code": info["ts_code"], "name": info["name"],
+            "added": inserted, "already": not inserted}
+
+
+@app.delete("/api/custom/strategy/{sid}/stocks/{ts_code}")
+def custom_strategy_stock_remove(sid: int, ts_code: str, request: Request) -> dict:
+    """从策略移除公司 (需登录, 仅限本人)。"""
+    user = _require_user(request)
+    _get_owned_strategy(sid, user["id"])
+    removed = pg_service.remove_strategy_stock(sid, ts_code.strip().upper())
+    return {"ok": True, "removed": removed}

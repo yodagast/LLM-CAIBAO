@@ -303,6 +303,8 @@
       document.querySelectorAll('[id^="tab-"]').forEach((p) => {
         p.classList.toggle("hidden", p.id !== `tab-${btn.dataset.tab}`);
       });
+      // 切到策略Hub 时刷新策略列表 (自定义策略可能变化)
+      if (btn.dataset.tab === "strategies") loadStrategies();
       // 切换后重算图表尺寸 (隐藏容器尺寸为 0)
       setTimeout(() => {
         if (chart) chart.resize();
@@ -328,6 +330,45 @@
     b.addEventListener("click", () => setScreenerView(screenerState.mkt, b.dataset.strat)));
   // 初始默认 A股 + 红利低波
   setScreenerView("a", "rlv");
+
+  // 把当前选股结果保存到策略Hub (自定义策略)
+  function _currentScreenerStocks() {
+    const view = document.querySelector('#tab-screener [data-view]:not(.hidden)');
+    if (!view) return [];
+    const tbody = view.querySelector("table tbody");
+    if (!tbody) return [];
+    const out = [];
+    tbody.querySelectorAll("tr").forEach((tr) => {
+      const cells = tr.children;
+      if (cells.length < 3) return;
+      const nameEl = cells[2].querySelector("a.stock-link");
+      const name = nameEl ? nameEl.textContent.trim() : cells[2].textContent.trim();
+      const code = cells[1].textContent.trim();
+      if (code && code !== "暂无") out.push({ ts_code: code, name });
+    });
+    return out;
+  }
+  async function saveScreenerToHub() {
+    const stocks = _currentScreenerStocks();
+    if (!stocks.length) { alert("当前选股结果为空, 无法保存 (请先在选股 tab 执行一次筛选)"); return; }
+    const name = prompt("保存为策略Hub策略, 请输入策略名称:", "");
+    if (!name || !name.trim()) return;
+    const desc = prompt("策略描述 (可选):", "") || "";
+    try {
+      const r = await fetch("/api/custom/strategy", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), desc, source: "screener", stocks }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "保存失败");
+      alert(`已保存策略「${name.trim()}」, 收录 ${d.added_stocks} 家公司 (可在策略Hub「我的策略」中查看)`);
+      loadStrategies();
+    } catch (e) {
+      alert(e.message || "保存失败");
+    }
+  }
+  const screenerSaveBtn = $("#screener-save-btn");
+  if (screenerSaveBtn) screenerSaveBtn.addEventListener("click", saveScreenerToHub);
 
   // ---------- 基本面选股 (ROE 杜邦拆分) ----------
   const SCREEN_SORT_LABELS = {
@@ -1818,24 +1859,161 @@
       <div class="strat-tags">${(it.tags || []).map((t) => `<span>${t}</span>`).join("")}</div>
       <p class="strat-desc">${it.desc}</p>${btHtml}</div>`;
   }
+  let customStrategies = [];
   function renderStrategyCards(items) {
     stratList = items || [];
     const cats = [];
     stratList.forEach((it) => { if (!cats.includes(it.category)) cats.push(it.category); });
-    $("#strategy-cards").innerHTML = cats.map((cat) =>
+    let html = cats.map((cat) =>
       `<div class="strat-cat"><h3 class="strat-cat-title">${cat}</h3><div class="strat-grid">` +
       stratList.filter((it) => it.category === cat).map(_stratCardHtml).join("") +
       `</div></div>`).join("");
-    document.querySelectorAll("#strategy-cards .strat-card").forEach((card) => {
+    // 我的策略 (自定义, 从选股保存或手动创建)
+    html += `<div class="strat-cat"><h3 class="strat-cat-title">我的策略 <span class="hint">${customStrategies.length ? `(${customStrategies.length})` : "从「选股」tab 筛选后点「＋ 存入策略Hub」保存"}</span></h3><div class="strat-grid">`;
+    if (customStrategies.length) {
+      html += customStrategies.map(_customCardHtml).join("");
+    } else {
+      html += `<div class="strat-card strat-custom-empty">
+        <div class="strat-name">新建自定义策略</div>
+        <p class="strat-desc">在「选股」tab 筛选公司后点「＋ 存入策略Hub」即可保存为公司列表; 也可手动创建。</p>
+        <div class="strat-ops"><button type="button" class="strat-op" id="strat-create-btn">＋ 手动创建</button></div>
+      </div>`;
+    }
+    html += `</div></div>`;
+    $("#strategy-cards").innerHTML = html;
+    document.querySelectorAll("#strategy-cards .strat-card[data-key]").forEach((card) => {
       card.addEventListener("click", () => runStrategy(card.dataset.key, card));
     });
+    // 自定义策略卡片: 点击查看公司 / 操作按钮
+    document.querySelectorAll("#strategy-cards .strat-card[data-cid]").forEach((card) => {
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".strat-op")) return;
+        viewCustomStrategy(Number(card.dataset.cid));
+      });
+      card.querySelectorAll(".strat-op").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const op = btn.dataset.op;
+          const cid = Number(card.dataset.cid);
+          if (op === "view") viewCustomStrategy(cid);
+          else if (op === "edit") editCustomStrategy(cid);
+          else if (op === "del") deleteCustomStrategy(cid);
+        });
+      });
+    });
+    const createBtn = $("#strat-create-btn");
+    if (createBtn) createBtn.addEventListener("click", createCustomStrategy);
+  }
+  function _customCardHtml(it) {
+    return `<div class="strat-card strat-custom" data-cid="${it.id}">
+      <div class="strat-name">${it.name} <span class="strat-src">${it.source === "screener" ? "选股保存" : "手动"}</span></div>
+      <div class="strat-tags"><span>${it.stock_count || 0} 家公司</span></div>
+      <p class="strat-desc">${it.desc_text || "（无描述）"}</p>
+      <div class="strat-ops">
+        <button type="button" class="strat-op" data-op="view">查看公司</button>
+        <button type="button" class="strat-op" data-op="edit">编辑</button>
+        <button type="button" class="strat-op danger" data-op="del">删除</button>
+      </div></div>`;
   }
   async function loadStrategies() {
+    const items = [];
     try {
       const r = await fetch("/api/strategy/list");
       const d = await r.json();
-      renderStrategyCards(d.items || []);
+      items.push(...(d.items || []));
     } catch (e) { /* 忽略 */ }
+    try {
+      const r2 = await fetch("/api/custom/strategy/list");
+      const d2 = await r2.json();
+      customStrategies = d2.items || [];
+    } catch (e) { customStrategies = []; }
+    renderStrategyCards(items);
+  }
+  async function createCustomStrategy() {
+    const name = prompt("新建策略名称:", "");
+    if (!name || !name.trim()) return;
+    const desc = prompt("策略描述 (可选):", "") || "";
+    try {
+      const r = await fetch("/api/custom/strategy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), desc }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "创建失败");
+      loadStrategies();
+      viewCustomStrategy(d.id);
+    } catch (e) { alert(e.message || "创建失败"); }
+  }
+  async function editCustomStrategy(cid) {
+    const it = customStrategies.find((x) => x.id === cid);
+    if (!it) return;
+    const name = prompt("策略名称:", it.name);
+    if (name === null) return;
+    const desc = prompt("策略描述:", it.desc_text || "");
+    if (desc === null) return;
+    try {
+      const r = await fetch("/api/custom/strategy/" + cid, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), desc }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "更新失败");
+      loadStrategies();
+    } catch (e) { alert(e.message || "更新失败"); }
+  }
+  async function deleteCustomStrategy(cid) {
+    if (!window.confirm("确定删除该自定义策略及其全部公司？")) return;
+    try {
+      const r = await fetch("/api/custom/strategy/" + cid, { method: "DELETE" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "删除失败");
+      $("#custom-strategy-result").classList.add("hidden");
+      loadStrategies();
+    } catch (e) { alert(e.message || "删除失败"); }
+  }
+  async function viewCustomStrategy(cid) {
+    const it = customStrategies.find((x) => x.id === cid);
+    const res = $("#custom-strategy-result");
+    res.classList.remove("hidden");
+    $("#custom-st-title").textContent = it ? it.name : "我的策略";
+    $("#custom-st-sub").textContent = it ? `${it.desc_text || ""} · ${it.stock_count || 0} 家公司`.trim() : "";
+    document.querySelector("#custom-st-table tbody").innerHTML = "";
+    try {
+      const r = await fetch("/api/custom/strategy/" + cid + "/stocks");
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "加载失败");
+      const rows = (d.items || []).map((s) =>
+        `<tr><td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(s.ts_code)}" target="_blank">${s.name || s.ts_code}</a></td><td>${s.ts_code}</td><td><button type="button" class="strat-op danger" data-rm="${s.ts_code}">移除</button></td></tr>`).join("") ||
+        `<tr><td colspan="3" class="empty">该策略暂无公司</td></tr>`;
+      document.querySelector("#custom-st-table tbody").innerHTML = rows;
+      // 副标题用实际公司数 (移除/添加后立即刷新)
+      $("#custom-st-sub").textContent = it ? `${it.desc_text || ""} · ${(d.items || []).length} 家公司`.trim() : "";
+      document.querySelector("#custom-st-table tbody").querySelectorAll("[data-rm]").forEach((btn) => {
+        btn.addEventListener("click", () => removeCustomStock(cid, btn.dataset.rm));
+      });
+      const addBtn = $("#custom-st-add-btn");
+      const codeInp = $("#custom-st-code");
+      const doAdd = async () => {
+        const code = codeInp.value.trim();
+        if (!code) return;
+        try {
+          const rr = await fetch("/api/custom/strategy/" + cid + "/stocks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ts_code: code }) });
+          const dd = await rr.json();
+          if (!rr.ok) throw new Error(dd.detail || "添加失败");
+          codeInp.value = "";
+          viewCustomStrategy(cid);
+          loadStrategies();
+        } catch (e) { alert(e.message || "添加失败"); }
+      };
+      addBtn.onclick = doAdd;
+      codeInp.onkeydown = (e) => { if (e.key === "Enter") doAdd(); };
+      res.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e) {
+      $("#custom-st-sub").textContent = e.message || "加载失败";
+    }
+  }
+  async function removeCustomStock(cid, code) {
+    try {
+      const r = await fetch("/api/custom/strategy/" + cid + "/stocks/" + encodeURIComponent(code), { method: "DELETE" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "移除失败");
+      viewCustomStrategy(cid);
+      loadStrategies();
+    } catch (e) { alert(e.message || "移除失败"); }
   }
   async function runStrategy(key, card) {
     document.querySelectorAll("#strategy-cards .strat-card").forEach((c) => c.classList.toggle("active", c === card));
@@ -2231,13 +2409,14 @@
   // ---------- 用户认证: 未登录跳转独立登录页, 登录后展示 Tab 并加载自选股 ----------
   if (window.CaiBaoAuth) {
     CaiBaoAuth.onAuthChange(() => {
-      if (CaiBaoAuth.isLoggedIn()) loadMyStocks();
+      if (CaiBaoAuth.isLoggedIn()) { loadMyStocks(); loadStrategies(); }
       else location.replace("/static/login.html");
     });
     CaiBaoAuth.init().then(() => {
       if (CaiBaoAuth.isLoggedIn()) {
         document.body.classList.remove("auth-loading");  // 已登录, 显示 Tab 与内容
         loadMyStocks();
+        loadStrategies();
       } else {
         location.replace("/static/login.html");          // 未登录跳登录页 (不显示 Tab)
       }

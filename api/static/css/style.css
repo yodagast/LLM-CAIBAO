@@ -427,9 +427,6 @@ body.auth-loading .container { visibility: hidden; }
 .metric .t-up { color: var(--red); font-weight: 600; }
 .metric .t-down { color: var(--green); font-weight: 600; }
 
-/* 财报挖掘: 财务趋势图表 */
-.caibao-chart-card { margin-bottom: 20px; }
-.caibao-chart { width: 100%; height: 320px; }
 
 /* 财报挖掘: 报告区移动端可横向滚动 (宽表格不撑破页面) */
 .markdown-body { overflow-x: auto; }
@@ -451,7 +448,6 @@ body.auth-loading .container { visibility: hidden; }
 .caibao-toc a { color: var(--primary); text-decoration: none; }
 .caibao-toc a:hover { text-decoration: underline; }
 .caibao-toc a.toc-h3 { padding-left: 14px; color: var(--text-soft); font-size: 12px; }
-@media (max-width: 560px) { .caibao-chart { height: 260px; } }
 
 /* 财报挖掘: 报告章节卡片 (执行摘要/风险提示/投资建议 高亮) */
 .cb-section.cb-summary {
@@ -478,6 +474,28 @@ body.auth-loading .container { visibility: hidden; }
 /* 财报挖掘: markdown 表格增强 (斑马纹 + 表头强调) */
 .markdown-body thead th { background: #f1f5f9; }
 .markdown-body tbody tr:nth-child(even) { background: #f8fafc; }
+
+/* ---------- 策略 Hub (精选策略) ---------- */
+.strat-cat { margin-bottom: 24px; }
+.strat-cat-title { font-size: 14px; color: var(--text-soft); margin: 0 0 10px; font-weight: 600; letter-spacing: .5px; }
+.strat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.strat-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px 18px; cursor: pointer; box-shadow: var(--shadow);
+  transition: all .15s; display: flex; flex-direction: column;
+}
+.strat-card:hover { border-color: var(--primary); transform: translateY(-2px); }
+.strat-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-light); }
+.strat-name { font-size: 16px; font-weight: 700; }
+.strat-tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.strat-tags span { background: var(--primary-light); color: var(--primary-dark); font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+.strat-desc { font-size: 12px; color: var(--text-soft); line-height: 1.6; margin: 0 0 10px; }
+.strat-bt { display: flex; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; margin-top: auto; }
+.strat-bt span { flex: 1; text-align: center; }
+.strat-bt em { display: block; font-style: normal; font-size: 11px; color: var(--text-soft); margin-bottom: 2px; }
+.strat-bt b { font-size: 14px; color: var(--red); }
+.strat-bt-empty span { font-size: 12px; color: var(--text-soft); text-align: center; }
+@media (max-width: 560px) { .strat-grid { grid-template-columns: 1fr; } }
 
 .chart { width: 100%; height: 420px; }
 /* 行情 K 线图: 高度自适应浏览器视口, 便于在 Chrome 中观察 120 日行情 */

@@ -68,7 +68,6 @@
   let chart = null;
   let quoteChart = null;
   let bandChart = null;
-  let caibaoChart = null;
   let searchTimer = null;
 
   // ---------- 工具 ----------
@@ -309,7 +308,6 @@
         if (chart) chart.resize();
         if (quoteChart) quoteChart.resize();
         if (bandChart) bandChart.resize();
-        if (caibaoChart) caibaoChart.resize();
       }, 80);
     });
   });
@@ -1687,7 +1685,6 @@
       : "基于 tushare 财务指标, 仅供参考";
     $("#caibao-report").innerHTML = marked.parse(data.markdown || "");
     renderCaibaoCards(data);
-    renderCaibaoChart(data);
     enhanceCaibaoReport();
     buildCaibaoToc();
     $("#caibao-hint").textContent =
@@ -1787,38 +1784,6 @@
     ).join("");
   }
 
-  // 财务趋势图表 (ECharts 双轴折线: 左=金额亿, 右=比率%)
-  function renderCaibaoChart(data) {
-    const card = $("#caibao-chart-card");
-    const el = $("#caibao-chart");
-    const fin = data.financials || {};
-    const years = Object.keys(fin).sort();
-    if (!years.length) { card.classList.add("hidden"); return; }
-    const s = (k) => years.map((y) => { const v = fin[y][k]; return (v === null || v === undefined || isNaN(Number(v))) ? null : Number(v); });
-    card.classList.remove("hidden");
-    if (!caibaoChart) caibaoChart = echarts.init(el);
-    caibaoChart.setOption({
-      color: ["#4f46e5", "#059669", "#ea580c", "#0ea5e9", "#d946ef"],
-      tooltip: { trigger: "axis" },
-      legend: { data: ["营业收入", "净利润", "毛利率", "净利率", "ROE"], top: 0 },
-      grid: { left: 54, right: 54, top: 36, bottom: 24 },
-      xAxis: { type: "category", data: years, boundaryGap: false },
-      yAxis: [
-        { type: "value", name: "金额 (亿)", position: "left", splitLine: { lineStyle: { type: "dashed" } } },
-        { type: "value", name: "比率 (%)", position: "right", splitLine: { show: false }, axisLabel: { formatter: "{value}%" } },
-      ],
-      series: [
-        { name: "营业收入", type: "line", data: s("total_revenue_亿"), smooth: true },
-        { name: "净利润", type: "line", data: s("net_income_亿"), smooth: true },
-        { name: "毛利率", type: "line", yAxisIndex: 1, data: s("gross_margin_%"), smooth: true },
-        { name: "净利率", type: "line", yAxisIndex: 1, data: s("net_margin_%"), smooth: true },
-        { name: "ROE", type: "line", yAxisIndex: 1, data: s("roe_%"), smooth: true },
-      ],
-    });
-    $("#caibao-chart-sub").textContent = `${years[0]}~${years[years.length - 1]} 年 · 左轴金额(亿) / 右轴比率(%)`;
-    requestAnimationFrame(() => caibaoChart && caibaoChart.resize());
-  }
-
   // 报告目录锚点 (为 h2/h3 生成锚点 + 目录导航)
   function buildCaibaoToc() {
     const body = $("#caibao-report");
@@ -1834,6 +1799,94 @@
     toc.innerHTML = '<span class="toc-title">目录</span>' + items.join("");
     toc.classList.remove("hidden");
   }
+
+  // ---------- 策略 Hub (精选策略, 参考问财经典策略) ----------
+  let stratList = [];
+  const STRAT_TABLE_COLS = {
+    rlv: [["name", "名称"], ["ts_code", "代码"], ["dividend_yield_ttm", "股息率TTM%"], ["dividend_yield", "静态股息率%"], ["volatility", "波动率%"], ["div_per_share", "每股分红"], ["payout_ratio", "分红率%"], ["roe", "ROE%"], ["debt_to_assets", "资产负债率%"]],
+    fund: [["name", "名称"], ["ts_code", "代码"], ["roe", "ROE%"], ["net_margin", "净利率%"], ["gross_margin", "毛利率%"], ["assets_turn", "总资产周转"], ["debt_to_assets", "资产负债率%"]],
+    etf: [["name", "名称"], ["ts_code", "代码"], ["scale", "规模(亿)"], ["m_fee", "管理费%"], ["c_fee", "托管费%"], ["premium", "折溢价%"], ["avg_amount_20", "日均成交额(万)"], ["pos52", "52周位置"]],
+    hk_rlv: [["name", "名称"], ["ts_code", "代码"], ["dividend_yield_ttm", "股息率TTM%"], ["dividend_yield", "静态股息率%"], ["volatility", "波动率%"], ["roe", "ROE%"], ["payout_ratio", "分红率%"]],
+  };
+  function _stratCardHtml(it) {
+    const bt = (it.backtest && it.backtest.metrics) || null;
+    const btHtml = bt
+      ? `<div class="strat-bt"><span><em>年化</em><b>${bt.annual_pct != null ? fmtPct(bt.annual_pct, 1) : "—"}</b></span><span><em>累计</em><b>${bt.cum_pct != null ? fmtPct(bt.cum_pct, 1) : "—"}</b></span><span><em>最大回撤</em><b>${bt.max_dd_pct != null ? bt.max_dd_pct.toFixed(1) + "%" : "—"}</b></span></div>`
+      : `<div class="strat-bt strat-bt-empty"><span>点击查看选股结果</span></div>`;
+    return `<div class="strat-card" data-key="${it.key}">
+      <div class="strat-name">${it.name}</div>
+      <div class="strat-tags">${(it.tags || []).map((t) => `<span>${t}</span>`).join("")}</div>
+      <p class="strat-desc">${it.desc}</p>${btHtml}</div>`;
+  }
+  function renderStrategyCards(items) {
+    stratList = items || [];
+    const cats = [];
+    stratList.forEach((it) => { if (!cats.includes(it.category)) cats.push(it.category); });
+    $("#strategy-cards").innerHTML = cats.map((cat) =>
+      `<div class="strat-cat"><h3 class="strat-cat-title">${cat}</h3><div class="strat-grid">` +
+      stratList.filter((it) => it.category === cat).map(_stratCardHtml).join("") +
+      `</div></div>`).join("");
+    document.querySelectorAll("#strategy-cards .strat-card").forEach((card) => {
+      card.addEventListener("click", () => runStrategy(card.dataset.key, card));
+    });
+  }
+  async function loadStrategies() {
+    try {
+      const r = await fetch("/api/strategy/list");
+      const d = await r.json();
+      renderStrategyCards(d.items || []);
+    } catch (e) { /* 忽略 */ }
+  }
+  async function runStrategy(key, card) {
+    document.querySelectorAll("#strategy-cards .strat-card").forEach((c) => c.classList.toggle("active", c === card));
+    const res = $("#strategy-result");
+    res.classList.remove("hidden");
+    $("#strategy-title").textContent = "策略加载中…";
+    $("#strategy-sub").textContent = "";
+    $("#strategy-table tbody").innerHTML = "";
+    try {
+      const r = await fetch("/api/strategy/run", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, limit: 20 }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "策略执行失败");
+      renderStrategyResult(d);
+      // 触发回测参考指标 (后台计算, 完成后刷新卡片)
+      fetch("/api/strategy/backtest/" + key).then((rr) => rr.json()).then((bt) => {
+        const idx = stratList.findIndex((x) => x.key === key);
+        if (idx >= 0) stratList[idx].backtest = bt;
+        renderStrategyCards(stratList);
+        const sel = document.querySelector(`#strategy-cards .strat-card[data-key="${key}"]`);
+        if (sel) sel.classList.add("active");
+      }).catch(() => { /* 回测失败不影响展示 */ });
+    } catch (e) {
+      $("#strategy-sub").textContent = e.message || "策略执行失败";
+    }
+  }
+  function renderStrategyResult(d) {
+    const s = d.strategy || {};
+    $("#strategy-title").textContent = s.name || "策略";
+    $("#strategy-sub").textContent = `${s.desc || ""} · 共 ${d.meta ? d.meta.count : 0} 条`;
+    const cols = STRAT_TABLE_COLS[s.type] || STRAT_TABLE_COLS.rlv;
+    document.querySelector("#strategy-table thead").innerHTML =
+      "<tr>" + cols.map((c) => `<th>${c[1]}</th>`).join("") + "</tr>";
+    const link = (it) => `<a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" target="_blank">${it.name}</a>`;
+    const rows = (d.items || []).map((it) => {
+      const tds = cols.map((c) => {
+        if (c[0] === "name") return `<td>${link(it)}</td>`;
+        const v = it[c[0]];
+        const txt = (v === null || v === undefined || v === "") ? "—"
+          : (isNaN(Number(v)) ? v : (Math.abs(Number(v)) >= 100 ? Number(v).toFixed(0) : Number(v).toFixed(2)));
+        return `<td>${txt}</td>`;
+      });
+      return `<tr>${tds.join("")}</tr>`;
+    }).join("");
+    document.querySelector("#strategy-table tbody").innerHTML = rows ||
+      `<tr><td colspan="${cols.length}" class="empty">暂无符合条件的标的</td></tr>`;
+    $("#strategy-result").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  loadStrategies();
 
   // ---------- ETF 筛选 ----------
   const _efmt = (v, d = 2, suffix = "") =>
@@ -2172,7 +2225,6 @@
       if (chart) chart.resize();
       if (quoteChart) quoteChart.resize();
       if (bandChart) bandChart.resize();
-      if (caibaoChart) caibaoChart.resize();
     }, 150);
   });
 

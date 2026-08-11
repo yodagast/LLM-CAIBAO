@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=42" />
+  <link rel="stylesheet" href="/static/css/style.css?v=44" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -21,6 +21,7 @@
         <button type="button" class="tab active" data-tab="my">我的股票</button>
         <button type="button" class="tab" data-tab="etf">ETF筛选</button>
         <button type="button" class="tab" data-tab="screener">选股</button>
+        <button type="button" class="tab" data-tab="strategies">策略Hub</button>
         <button type="button" class="tab" data-tab="caibao">财报挖掘</button>
         <button type="button" class="tab" data-tab="band">区间交易估价</button>
         <button type="button" class="tab" data-tab="backtest">策略回测</button>
@@ -561,6 +562,25 @@
       </div>
     </section>
 
+    <!-- ================= Tab: 策略 Hub (精选策略) ================= -->
+    <section id="tab-strategies" class="hidden">
+      <div class="card">
+        <div class="card-title"><h2>精选策略</h2><span class="hint">参考问财经典策略 · 点击卡片查看该策略的选股结果</span></div>
+        <div id="strategy-cards"></div>
+      </div>
+      <section class="result hidden" id="strategy-result">
+        <div class="result-head">
+          <h2 id="strategy-title">策略</h2>
+          <span class="hint" id="strategy-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap">
+            <table id="strategy-table"><thead></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </section>
+    </section>
+
     <!-- ================= Tab: 财报分析 ================= -->
     <section id="tab-caibao" class="hidden">
       <section class="card form-card">
@@ -613,15 +633,6 @@
 
         <!-- 核心指标概览 (由 JS 从 financials/valuation 渲染) -->
         <div class="metric-cards" id="caibao-cards"></div>
-
-        <!-- 财务趋势图表 (ECharts 双轴折线) -->
-        <div class="card caibao-chart-card hidden" id="caibao-chart-card">
-          <div class="card-title">
-            <h3>财务趋势</h3>
-            <span class="hint" id="caibao-chart-sub"></span>
-          </div>
-          <div class="caibao-chart" id="caibao-chart"></div>
-        </div>
 
         <div class="card report-card">
           <div class="card-title">
@@ -896,6 +907,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=53"></script>
+  <script src="/static/js/app.js?v=55"></script>
 </body>
 </html>

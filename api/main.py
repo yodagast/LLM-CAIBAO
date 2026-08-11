@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from . import auth_service, backtest_engine, band_service, caibao_service, data_service
 from . import daily_recommend_service, etf_service, fundamental_service, hk_data_service
 from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvol_service
+from . import strategy_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -174,6 +175,12 @@ class BandOptimizeRequest(BaseModel):
                                        "balanced 综合平衡")
     max_trades: int = Field(100, ge=1, le=2000,
                             description="交易次数上限 (每笔=买入→卖出完整周期), 超过则淘汰该参数; 默认 100")
+
+
+class StrategyRequest(BaseModel):
+    """精选策略执行请求。"""
+    key: str = Field(..., description="策略 key")
+    limit: int = Field(20, ge=1, le=100, description="返回数量上限")
 
 
 class CaibaoRequest(BaseModel):
@@ -508,6 +515,37 @@ def caibao_analyze(req: CaibaoRequest) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"财报分析失败: {e}")
     return result
+
+
+# ---------------------------------------------------------------------------
+# 精选策略 Hub
+# ---------------------------------------------------------------------------
+@app.get("/api/strategy/list")
+def strategy_list() -> dict:
+    """返回全部精选策略 (附缓存回测指标)。"""
+    return {"items": strategy_service.list_strategies()}
+
+
+@app.post("/api/strategy/run")
+def strategy_run(req: StrategyRequest) -> dict:
+    """执行精选策略选股。"""
+    try:
+        return strategy_service.run_strategy(req.key, req.limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"策略执行失败: {e}")
+
+
+@app.get("/api/strategy/backtest/{key}")
+def strategy_backtest(key: str) -> dict:
+    """计算/获取策略回测参考指标 (缓存 24h)。"""
+    try:
+        return strategy_service.backtest_strategy(key)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"策略回测失败: {e}")
 
 
 @app.post("/api/dailyrecommend/scan")

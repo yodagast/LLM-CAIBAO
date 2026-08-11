@@ -598,7 +598,13 @@
 
     const filters = {};
     const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
-    const dy = fNum("#rlv_f_dy"); if (dy !== null) filters.dividend_yield_ttm = { min: dy };
+    const dyMin = fNum("#rlv_f_dy");
+    const dyMax = fNum("#rlv_f_dy_max");
+    if (dyMin !== null || dyMax !== null) {
+      filters.dividend_yield_ttm = {};
+      if (dyMin !== null) filters.dividend_yield_ttm.min = dyMin;
+      if (dyMax !== null) filters.dividend_yield_ttm.max = dyMax;
+    }
     const vol = fNum("#rlv_f_vol"); if (vol !== null) filters.volatility = { max: vol };
     const div = fNum("#rlv_f_div"); if (div !== null) filters.div_per_share = { min: div };
     const roeMin = fNum("#rlv_f_roe_min");
@@ -870,7 +876,13 @@
       if (roeMax !== null) filters.roe.max = roeMax;
     }
     const debt = fNum("#hk_rlv_f_debt"); if (debt !== null) filters.debt_to_assets = { max: debt };
-    const payoutMin = fNum("#hk_rlv_f_payout_min"); if (payoutMin !== null) filters.payout_ratio = { min: payoutMin };
+    const payoutMin = fNum("#hk_rlv_f_payout_min");
+    const payoutMax = fNum("#hk_rlv_f_payout_max");
+    if (payoutMin !== null || payoutMax !== null) {
+      filters.payout_ratio = {};
+      if (payoutMin !== null) filters.payout_ratio.min = payoutMin;
+      if (payoutMax !== null) filters.payout_ratio.max = payoutMax;
+    }
     return {
       industry: $("#hk_rlv_industry").value.trim(),
       years, sort_by: hkRlvSort.by, order: hkRlvSort.order,

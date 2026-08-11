@@ -370,6 +370,64 @@
   const screenerSaveBtn = $("#screener-save-btn");
   if (screenerSaveBtn) screenerSaveBtn.addEventListener("click", saveScreenerToHub);
 
+  // ---------- 选股筛选前端优化: 条件折叠 / 重置 / 筛选徽章(可点击移除) ----------
+  // 1) 筛选条件区折叠 (点击 .filter-title 切换其下筛选 grid)
+  document.querySelectorAll(".filter-title").forEach((title) => {
+    const grid = title.nextElementSibling;
+    if (!grid || !grid.classList.contains("grid")) return;
+    title.classList.add("ft-toggle");
+    title.style.cursor = "pointer";
+    const arrow = document.createElement("span");
+    arrow.className = "ft-arrow";
+    arrow.textContent = "▾";
+    title.appendChild(arrow);
+    title.addEventListener("click", () => {
+      const collapsed = grid.classList.toggle("hidden");
+      arrow.textContent = collapsed ? "▸" : "▾";
+      title.classList.toggle("collapsed", collapsed);
+    });
+  });
+  // 2) 重置条件按钮: 清空当前表单筛选 grid 的全部输入
+  document.querySelectorAll(".filter-reset").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const form = btn.closest("form");
+      if (!form) return;
+      const title = form.querySelector(".filter-title");
+      const grid = title ? title.nextElementSibling : null;
+      if (grid) grid.querySelectorAll("input").forEach((i) => { i.value = ""; });
+    });
+  });
+  // 3) 筛选徽章: filters 字段 → 输入框映射 (按视图类型)
+  const FILTER_BADGE_MAP = {
+    rlv: { dividend_yield_ttm: { min: "#rlv_f_dy", max: "#rlv_f_dy_max" }, volatility: { max: "#rlv_f_vol" }, roe: { min: "#rlv_f_roe_min", max: "#rlv_f_roe_max" }, debt_to_assets: { max: "#rlv_f_debt" }, payout_ratio: { min: "#rlv_f_payout_min", max: "#rlv_f_payout_max" } },
+    screen: { roe: { min: "#sc_f_roe", max: "#sc_f_roe_max" }, debt_to_assets: { max: "#sc_f_debt" } },
+    hk_rlv: { dividend_yield_ttm: { min: "#hk_rlv_f_dy", max: "#hk_rlv_f_dy_max" }, volatility: { max: "#hk_rlv_f_vol" }, roe: { min: "#hk_rlv_f_roe_min", max: "#hk_rlv_f_roe_max" }, debt_to_assets: { max: "#hk_rlv_f_debt" }, payout_ratio: { min: "#hk_rlv_f_payout_min", max: "#hk_rlv_f_payout_max" } },
+    hk_screen: { roe: { min: "#hk_sc_f_roe", max: "#hk_sc_f_roe_max" }, debt_to_assets: { max: "#hk_sc_f_debt" } },
+  };
+  const FILTER_BADGE_LABELS = { dividend_yield_ttm: "股息率TTM", volatility: "波动率", roe: "ROE", debt_to_assets: "资产负债率", payout_ratio: "分红率" };
+  function filterBadges(filters, view) {
+    const map = FILTER_BADGE_MAP[view] || {};
+    const badges = [];
+    for (const k in (filters || {})) {
+      const f = filters[k];
+      const m = map[k] || {};
+      const lb = FILTER_BADGE_LABELS[k] || k;
+      if (f.min !== undefined && f.min !== null && m.min) badges.push(`<span class="filter-badge" data-input="${m.min}">${lb} ≥ ${f.min} ✕</span>`);
+      if (f.max !== undefined && f.max !== null && m.max) badges.push(`<span class="filter-badge" data-input="${m.max}">${lb} ≤ ${f.max} ✕</span>`);
+    }
+    return badges.length ? `<span class="filter-badges">${badges.join("")}</span>` : "";
+  }
+  // 徽章点击: 清空对应输入并重新触发当前视图筛选
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".filter-badge");
+    if (!b) return;
+    const inp = document.querySelector(b.dataset.input);
+    if (inp) inp.value = "";
+    const view = document.querySelector('#tab-screener [data-view]:not(.hidden)');
+    const form = view ? view.querySelector("form") : null;
+    if (form) form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+  });
+
   // ---------- 基本面选股 (ROE 杜邦拆分) ----------
   const SCREEN_SORT_LABELS = {
     year: "年份", name: "名称", close: "最近价", roe: "ROE", net_margin: "净利润率",
@@ -388,8 +446,13 @@
     const years = [parseInt($("#sc_year").value, 10)];
 
     const filters = {};
-    const roe = parseFloat($("#sc_f_roe").value);
-    if (!isNaN(roe)) filters.roe = { min: roe };
+    const roeMin = parseFloat($("#sc_f_roe").value);
+    const roeMax = parseFloat($("#sc_f_roe_max").value);
+    if (!isNaN(roeMin) || !isNaN(roeMax)) {
+      filters.roe = {};
+      if (!isNaN(roeMin)) filters.roe.min = roeMin;
+      if (!isNaN(roeMax)) filters.roe.max = roeMax;
+    }
     const debt = parseFloat($("#sc_f_debt").value);
     if (!isNaN(debt)) filters.debt_to_assets = { max: debt };
 
@@ -528,8 +591,8 @@
 
     $("#screen-title").textContent =
       `基本面筛选 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"} · ${yearsLabel}`;
-    $("#screen-sub").textContent =
-      `按 ${sortLabel} ${orderLabel}${screenFilterLabel(payload.filters)} · 数据来自 PostgreSQL${synced}`;
+    $("#screen-sub").innerHTML =
+      `按 ${sortLabel} ${orderLabel}${filterBadges(payload.filters, "screen")} · 数据来自 PostgreSQL${synced}`;
 
     const body = items.map((it) => `
       <tr>
@@ -759,8 +822,8 @@
 
     $("#rlv-title").textContent =
       `红利低波排序 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"} · ${yearsLabel}`;
-    $("#rlv-sub").textContent =
-      `按 ${sortLabel} ${orderLabel}${filterLabel(payload.filters)} · 数据来自 PostgreSQL${synced}`;
+    $("#rlv-sub").innerHTML =
+      `按 ${sortLabel} ${orderLabel}${filterBadges(payload.filters, "rlv")} · 数据来自 PostgreSQL${synced}`;
 
     const body = items.map((it) => `
       <tr>
@@ -1013,8 +1076,8 @@
 
     $("#hk-rlv-title").textContent =
       `港股红利低波排序 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"} · ${yearsLabel}`;
-    $("#hk-rlv-sub").textContent =
-      `按 ${sortLabel} ${orderLabel}${hkFilterLabel(payload.filters)} · 数据来自 PostgreSQL${synced}`;
+    $("#hk-rlv-sub").innerHTML =
+      `按 ${sortLabel} ${orderLabel}${filterBadges(payload.filters, "hk_rlv")} · 数据来自 PostgreSQL${synced}`;
 
     const body = items.map((it) => `
       <tr>
@@ -1182,8 +1245,8 @@
 
     $("#hk-screen-title").textContent =
       `港股基本面筛选 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"} · ${yearsLabel}`;
-    $("#hk-screen-sub").textContent =
-      `按 ${sortLabel} ${orderLabel}${hkFilterLabel(payload.filters)} · 数据来自 PostgreSQL${synced}`;
+    $("#hk-screen-sub").innerHTML =
+      `按 ${sortLabel} ${orderLabel}${filterBadges(payload.filters, "hk_screen")} · 数据来自 PostgreSQL${synced}`;
 
     const body = items.map((it) => `
       <tr>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=45" />
+  <link rel="stylesheet" href="/static/css/style.css?v=46" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -244,6 +244,7 @@
               <span class="btn-icon">▶</span> 开始选股
             </button>
             <button type="button" class="btn-ghost" id="rlv-resync-btn">重新同步数据</button>
+            <button type="button" class="btn-ghost btn-sm filter-reset">重置条件</button>
             <span class="range-hint" id="rlv-hint"></span>
           </div>
         </form>
@@ -315,6 +316,10 @@
               <input type="number" id="sc_f_roe" placeholder="如 15" min="0" step="0.5" />
             </div>
             <div class="field">
+              <label for="sc_f_roe_max">ROE ≤ (%)</label>
+              <input type="number" id="sc_f_roe_max" placeholder="如 30" min="0" step="0.5" />
+            </div>
+            <div class="field">
               <label for="sc_f_debt">资产负债率 ≤ (%)</label>
               <input type="number" id="sc_f_debt" placeholder="如 60" min="0" max="100" step="1" />
             </div>
@@ -325,6 +330,7 @@
               <span class="btn-icon">▶</span> 开始筛选
             </button>
             <button type="button" class="btn-ghost" id="screen-resync-btn">重新同步数据</button>
+            <button type="button" class="btn-ghost btn-sm filter-reset">重置条件</button>
             <span class="range-hint" id="screen-hint"></span>
           </div>
         </form>
@@ -432,6 +438,7 @@
               <span class="btn-icon">▶</span> 港股红利低波选股
             </button>
             <button type="button" class="btn-ghost" id="hk-rlv-resync-btn">重新同步数据</button>
+            <button type="button" class="btn-ghost btn-sm filter-reset">重置条件</button>
             <span class="range-hint" id="hk-rlv-hint"></span>
           </div>
         </form>
@@ -521,6 +528,7 @@
               <span class="btn-icon">▶</span> 港股基本面选股
             </button>
             <button type="button" class="btn-ghost" id="hk-screen-resync-btn">重新同步数据</button>
+            <button type="button" class="btn-ghost btn-sm filter-reset">重置条件</button>
             <span class="range-hint" id="hk-screen-hint"></span>
           </div>
         </form>
@@ -932,6 +940,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=58"></script>
+  <script src="/static/js/app.js?v=60"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=48" />
+  <link rel="stylesheet" href="/static/css/style.css?v=47" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -570,18 +570,23 @@
       </div>
     </section>
 
-    <!-- ================= Tab: 策略 Hub (精选策略) ================= -->
+    <!-- ================= Tab: 策略 Hub (精选策略/精选思想 可切换) ================= -->
     <section id="tab-strategies" class="hidden">
-      <div class="hub-cols">
-        <div class="card">
-          <div class="card-title"><h2>精选策略</h2><span class="hint">参考问财经典策略 · 点击卡片查看该策略的选股结果</span></div>
-          <div id="strategy-cards"></div>
+      <div class="screener-nav">
+        <div class="seg-group" id="seg-hub">
+          <button type="button" class="seg-btn active" data-panel="strategies">精选策略</button>
+          <button type="button" class="seg-btn" data-panel="ideas">精选思想</button>
         </div>
+      </div>
 
-        <div class="card">
-          <div class="card-title"><h2>精选思想</h2><span class="hint">投资大师与方法 · 点击「核心理念」展开</span><button type="button" class="btn-ghost btn-sm" id="idea-create-btn" style="margin-left:auto">＋ 新建思想</button></div>
-          <div id="idea-cards"></div>
-        </div>
+      <div class="card hub-panel" data-panel="strategies">
+        <div class="card-title"><h2>精选策略</h2><span class="hint">参考问财经典策略 · 点击卡片查看该策略的选股结果</span></div>
+        <div id="strategy-cards"></div>
+      </div>
+
+      <div class="card hub-panel hidden" data-panel="ideas">
+        <div class="card-title"><h2>精选思想</h2><span class="hint">投资大师与方法 · 点击「核心理念」展开</span><button type="button" class="btn-ghost btn-sm" id="idea-create-btn" style="margin-left:auto">＋ 新建思想</button></div>
+        <div id="idea-cards"></div>
       </div>
 
       <section class="result hidden" id="strategy-result">
@@ -943,6 +948,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=62"></script>
+  <script src="/static/js/app.js?v=63"></script>
 </body>
 </html>

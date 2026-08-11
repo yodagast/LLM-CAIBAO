@@ -2263,6 +2263,24 @@
   const ideaCreateBtn = $("#idea-create-btn");
   if (ideaCreateBtn) ideaCreateBtn.addEventListener("click", createIdea);
 
+  // 策略Hub: 精选策略 / 精选思想 分段切换 (并列展示, 点击切换)
+  const hubResultState = { strategy: false, custom: false };
+  function setHubPanel(panel) {
+    if (panel !== "strategies") {
+      hubResultState.strategy = !$("#strategy-result").classList.contains("hidden");
+      hubResultState.custom = !$("#custom-strategy-result").classList.contains("hidden");
+      $("#strategy-result").classList.add("hidden");
+      $("#custom-strategy-result").classList.add("hidden");
+    } else {
+      if (hubResultState.strategy) $("#strategy-result").classList.remove("hidden");
+      if (hubResultState.custom) $("#custom-strategy-result").classList.remove("hidden");
+    }
+    document.querySelectorAll("#seg-hub .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.panel === panel));
+    document.querySelectorAll("#tab-strategies .hub-panel").forEach((p) => p.classList.toggle("hidden", p.dataset.panel !== panel));
+  }
+  document.querySelectorAll("#seg-hub .seg-btn").forEach((b) => b.addEventListener("click", () => setHubPanel(b.dataset.panel)));
+  setHubPanel("strategies");
+
   loadStrategies();
   loadIdeas();
 

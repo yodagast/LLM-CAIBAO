@@ -475,6 +475,10 @@ body.auth-loading .container { visibility: hidden; }
 .markdown-body thead th { background: #f1f5f9; }
 .markdown-body tbody tr:nth-child(even) { background: #f8fafc; }
 
+/* 策略 Hub: 精选策略 / 精选思想 并列双列 */
+.hub-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 768px) { .hub-cols { grid-template-columns: 1fr; } }
+
 /* ---------- 策略 Hub (精选策略) ---------- */
 .strat-cat { margin-bottom: 24px; }
 .strat-cat-title { font-size: 14px; color: var(--text-soft); margin: 0 0 10px; font-weight: 600; letter-spacing: .5px; }

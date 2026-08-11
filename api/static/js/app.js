@@ -304,7 +304,7 @@
         p.classList.toggle("hidden", p.id !== `tab-${btn.dataset.tab}`);
       });
       // 切到策略Hub 时刷新策略列表 (自定义策略可能变化)
-      if (btn.dataset.tab === "strategies") loadStrategies();
+      if (btn.dataset.tab === "strategies") { loadStrategies(); loadIdeas(); }
       // 切换后重算图表尺寸 (隐藏容器尺寸为 0)
       setTimeout(() => {
         if (chart) chart.resize();
@@ -2175,7 +2175,96 @@
       `<tr><td colspan="${cols.length}" class="empty">暂无符合条件的标的</td></tr>`;
     $("#strategy-result").scrollIntoView({ behavior: "smooth", block: "start" });
   }
+  // ---------- 精选思想 (投资大师/方法 skill, 可增删改查) ----------
+  let ideaList = [];
+  async function loadIdeas() {
+    try {
+      const r = await fetch("/api/ideas/list");
+      const d = await r.json();
+      ideaList = d.items || [];
+      renderIdeas();
+    } catch (e) { /* 忽略 */ }
+  }
+  function renderIdeas() {
+    const schools = [];
+    ideaList.forEach((it) => { const s = it.school || "其他"; if (!schools.includes(s)) schools.push(s); });
+    const html = schools.map((s) =>
+      `<div class="strat-cat"><h3 class="strat-cat-title">${s}</h3><div class="strat-grid">` +
+      ideaList.filter((it) => (it.school || "其他") === s).map(_ideaCardHtml).join("") +
+      `</div></div>`).join("") || `<p class="hint" style="padding:8px">暂无思想, 点击「＋ 新建思想」创建</p>`;
+    $("#idea-cards").innerHTML = html;
+    document.querySelectorAll("#idea-cards .idea-card").forEach((card) => {
+      card.querySelectorAll(".strat-op").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const op = btn.dataset.op;
+          const id = Number(card.dataset.id);
+          if (op === "toggle") card.querySelector(".idea-principles").classList.toggle("hidden");
+          else if (op === "edit") editIdea(id);
+          else if (op === "del") deleteIdea(id);
+        });
+      });
+    });
+  }
+  function _ideaCardHtml(it) {
+    const tags = (it.tags || []).map((t) => `<span>${t}</span>`).join("");
+    const principles = (it.principles || "").split("\n").filter((s) => s.trim()).map((p) => `<li>${p}</li>`).join("");
+    return `<div class="idea-card" data-id="${it.id}">
+      <div class="idea-head"><span class="idea-name">${it.name}</span><span class="idea-school">${it.school || "其他"}</span></div>
+      <div class="strat-tags">${tags}</div>
+      <p class="idea-bio">${it.bio || ""}</p>
+      <ul class="idea-principles hidden">${principles || "<li>暂无核心理念</li>"}</ul>
+      <div class="strat-ops">
+        <button type="button" class="strat-op" data-op="toggle">核心理念</button>
+        <button type="button" class="strat-op" data-op="edit">编辑</button>
+        <button type="button" class="strat-op danger" data-op="del">删除</button>
+      </div></div>`;
+  }
+  async function createIdea() {
+    const name = prompt("人物/方法名:", "");
+    if (!name || !name.trim()) return;
+    const school = prompt("流派 (如 价值投资/趋势投资/量化投资/ETF套利/宏观策略):", "价值投资") || "";
+    const bio = prompt("简介 (可选):", "") || "";
+    const principles = prompt("核心理念 (每行一条, 用换行分隔):", "") || "";
+    try {
+      const r = await fetch("/api/ideas", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), school: school.trim(), bio, principles, tags: [] }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "创建失败");
+      loadIdeas();
+    } catch (e) { alert(e.message || "创建失败"); }
+  }
+  async function editIdea(id) {
+    const it = ideaList.find((x) => x.id === id);
+    if (!it) return;
+    const name = prompt("人物/方法名:", it.name);
+    if (name === null) return;
+    const school = prompt("流派:", it.school || "");
+    if (school === null) return;
+    const bio = prompt("简介:", it.bio || "");
+    if (bio === null) return;
+    const principles = prompt("核心理念 (每行一条):", it.principles || "");
+    if (principles === null) return;
+    try {
+      const r = await fetch("/api/ideas/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), school: school.trim(), bio, principles }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "更新失败");
+      loadIdeas();
+    } catch (e) { alert(e.message || "更新失败"); }
+  }
+  async function deleteIdea(id) {
+    if (!window.confirm("确定删除该思想？")) return;
+    try {
+      const r = await fetch("/api/ideas/" + id, { method: "DELETE" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "删除失败");
+      loadIdeas();
+    } catch (e) { alert(e.message || "删除失败"); }
+  }
+  const ideaCreateBtn = $("#idea-create-btn");
+  if (ideaCreateBtn) ideaCreateBtn.addEventListener("click", createIdea);
+
   loadStrategies();
+  loadIdeas();
 
   // ---------- ETF 筛选 ----------
   const _efmt = (v, d = 2, suffix = "") =>
@@ -2520,7 +2609,7 @@
   // ---------- 用户认证: 未登录跳转独立登录页, 登录后展示 Tab 并加载自选股 ----------
   if (window.CaiBaoAuth) {
     CaiBaoAuth.onAuthChange(() => {
-      if (CaiBaoAuth.isLoggedIn()) { loadMyStocks(); loadStrategies(); }
+      if (CaiBaoAuth.isLoggedIn()) { loadMyStocks(); loadStrategies(); loadIdeas(); }
       else location.replace("/static/login.html");
     });
     CaiBaoAuth.init().then(() => {
@@ -2528,6 +2617,7 @@
         document.body.classList.remove("auth-loading");  // 已登录, 显示 Tab 与内容
         loadMyStocks();
         loadStrategies();
+        loadIdeas();
       } else {
         location.replace("/static/login.html");          // 未登录跳登录页 (不显示 Tab)
       }

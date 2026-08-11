@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from . import auth_service, backtest_engine, band_service, caibao_service, data_service
 from . import daily_recommend_service, etf_service, fundamental_service, hk_data_service
 from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvol_service
-from . import strategy_service
+from . import invest_ideas_service, strategy_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -45,6 +45,7 @@ def _startup() -> None:
         pg_service.init_etf_schema()
         pg_service.init_auth_schema()
         pg_service.init_custom_strategy_schema()
+        pg_service.init_invest_ideas_schema()
     except Exception:
         pass
 
@@ -185,6 +186,24 @@ class StrategyStockAdd(BaseModel):
     ts_code: str = Field(..., description="股票代码, 如 600036.SH 或 00700.HK")
     name: str = Field("", max_length=64, description="公司名称")
     note: str = Field("", max_length=255, description="备注")
+
+
+class IdeaCreate(BaseModel):
+    """精选思想创建。"""
+    name: str = Field(..., min_length=1, max_length=64, description="人物/方法名")
+    school: str = Field("", max_length=32, description="流派")
+    tags: list[str] = Field(default_factory=list, description="标签")
+    bio: str = Field("", max_length=1000, description="简介")
+    principles: str = Field("", max_length=3000, description="核心理念 (每行一条)")
+
+
+class IdeaUpdate(BaseModel):
+    """精选思想更新。"""
+    name: str | None = Field(None, min_length=1, max_length=64)
+    school: str | None = Field(None, max_length=32)
+    tags: list[str] | None = None
+    bio: str | None = Field(None, max_length=1000)
+    principles: str | None = Field(None, max_length=3000)
 
 
 class BandOptimizeRequest(BaseModel):
@@ -1006,3 +1025,56 @@ def custom_strategy_stock_remove(sid: int, ts_code: str, request: Request) -> di
     _get_owned_strategy(sid, user["id"])
     removed = pg_service.remove_strategy_stock(sid, ts_code.strip().upper())
     return {"ok": True, "removed": removed}
+
+
+# ---------------------------------------------------------------------------
+# 精选思想 (投资大师/方法 skill, 按用户隔离, 可增删改查)
+# ---------------------------------------------------------------------------
+def _get_owned_idea(sid: int, user_id: int) -> dict:
+    s = pg_service.get_invest_idea(sid)
+    if not s:
+        raise HTTPException(status_code=404, detail="思想不存在")
+    if s["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="无权操作该思想")
+    return s
+
+
+@app.get("/api/ideas/list")
+def ideas_list(request: Request) -> dict:
+    """当前用户的精选思想列表 (首次自动初始化预置人物, 需登录)。"""
+    user = _require_user(request)
+    return {"items": invest_ideas_service.list_ideas(user["id"])}
+
+
+@app.post("/api/ideas")
+def ideas_create(req: IdeaCreate, request: Request) -> dict:
+    """创建精选思想 (需登录)。"""
+    user = _require_user(request)
+    sid = invest_ideas_service.create_idea(
+        user["id"], req.name.strip(), req.school.strip(), req.tags,
+        req.bio.strip(), req.principles)
+    return {"ok": True, "id": sid}
+
+
+@app.put("/api/ideas/{sid}")
+def ideas_update(sid: int, req: IdeaUpdate, request: Request) -> dict:
+    """更新精选思想 (需登录, 仅限本人)。"""
+    user = _require_user(request)
+    _get_owned_idea(sid, user["id"])
+    n = invest_ideas_service.update_idea(
+        sid, user["id"],
+        name=req.name.strip() if req.name is not None else None,
+        school=req.school.strip() if req.school is not None else None,
+        tags=req.tags,
+        bio=req.bio.strip() if req.bio is not None else None,
+        principles=req.principles)
+    return {"ok": True, "updated": n}
+
+
+@app.delete("/api/ideas/{sid}")
+def ideas_delete(sid: int, request: Request) -> dict:
+    """删除精选思想 (需登录, 仅限本人)。"""
+    user = _require_user(request)
+    _get_owned_idea(sid, user["id"])
+    n = invest_ideas_service.delete_idea(sid, user["id"])
+    return {"ok": True, "deleted": n}

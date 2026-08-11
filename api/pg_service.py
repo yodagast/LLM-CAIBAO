@@ -1514,3 +1514,104 @@ def list_strategy_stocks(sid: int) -> list[dict]:
                 "WHERE strategy_id = %s ORDER BY added_at ASC, id ASC", (sid,))
             rows = cur.fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# 精选思想 (投资大师/方法 skill, 按用户隔离, 可增删改查)
+# ---------------------------------------------------------------------------
+INVEST_IDEAS_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS invest_ideas (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     BIGINT NOT NULL,
+    name        VARCHAR(64) NOT NULL,
+    school      VARCHAR(32) DEFAULT '',
+    tags        TEXT DEFAULT '',       -- JSON 数组字符串
+    bio         TEXT DEFAULT '',       -- 简介
+    principles  TEXT DEFAULT '',       -- 核心理念 (每行一条)
+    created_at  TIMESTAMP DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_invest_ideas_user ON invest_ideas (user_id);
+"""
+
+
+def init_invest_ideas_schema() -> None:
+    """创建精选思想表 (幂等)。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(INVEST_IDEAS_SCHEMA_DDL)
+        conn.commit()
+
+
+def count_invest_ideas(user_id: int) -> int:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM invest_ideas WHERE user_id = %s", (user_id,))
+            return int(cur.fetchone()[0])
+
+
+def create_invest_idea(user_id: int, name: str, school: str = "", tags: str = "",
+                       bio: str = "", principles: str = "") -> int:
+    """创建精选思想 skill, 返回 id。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO invest_ideas (user_id, name, school, tags, bio, principles) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (user_id, name, school, tags, bio, principles))
+            sid = cur.fetchone()[0]
+        conn.commit()
+    return int(sid)
+
+
+def list_invest_ideas(user_id: int) -> list[dict]:
+    """列出指定用户的全部精选思想 (按 id 升序)。"""
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, name, school, tags, bio, principles, created_at "
+                "FROM invest_ideas WHERE user_id = %s ORDER BY id ASC", (user_id,))
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_invest_idea(sid: int) -> dict | None:
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, user_id, name, school, tags, bio, principles, created_at "
+                "FROM invest_ideas WHERE id = %s", (sid,))
+            r = cur.fetchone()
+    return dict(r) if r else None
+
+
+def update_invest_idea(sid: int, user_id: int, name: str | None = None,
+                       school: str | None = None, tags: str | None = None,
+                       bio: str | None = None, principles: str | None = None) -> int:
+    """更新精选思想 (仅限本人), 返回受影响行数。"""
+    sets, params = [], []
+    for col, val in (("name", name), ("school", school), ("tags", tags),
+                     ("bio", bio), ("principles", principles)):
+        if val is not None:
+            sets.append(f"{col} = %s"); params.append(val)
+    if not sets:
+        return 0
+    params += [sid, user_id]
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE invest_ideas SET {', '.join(sets)} WHERE id = %s AND user_id = %s",
+                params)
+            n = cur.rowcount
+        conn.commit()
+    return n
+
+
+def delete_invest_idea(sid: int, user_id: int) -> int:
+    """删除精选思想 (仅限本人), 返回受影响行数。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM invest_ideas WHERE id = %s AND user_id = %s",
+                        (sid, user_id))
+            n = cur.rowcount
+        conn.commit()
+    return n

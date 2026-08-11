@@ -53,10 +53,15 @@ def _init_pro():
 
 @lru_cache(maxsize=1)
 def _stock_basic() -> pd.DataFrame:
-    """获取全部上市股票基本信息 (缓存)。"""
+    """获取全部上市股票基本信息 (TTL 缓存 1h)。"""
+    hit = _cache_get(_STOCK_BASIC_CACHE, "all", _TTL_STOCK_BASIC)
+    if hit is not None:
+        return hit
     pro = _init_pro()
-    return pro.stock_basic(exchange="", list_status="L",
-                           fields="ts_code,symbol,name,industry,market,list_date")
+    df = pro.stock_basic(exchange="", list_status="L",
+                         fields="ts_code,symbol,name,industry,market,list_date")
+    _cache_put(_STOCK_BASIC_CACHE, "all", df)
+    return df
 
 
 @lru_cache(maxsize=1)
@@ -230,6 +235,37 @@ def search_industries(keyword: str = "", limit: int = 20) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 _DAILY_CACHE: dict[str, pd.DataFrame] = {}
+
+# 详情页缓存 (避免每次重复拉取): daily_basic / dividend / stock_basic
+_DAILY_BASIC_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_DIVIDEND_CACHE: dict[str, tuple[float, object]] = {}
+_STOCK_BASIC_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_TTL_DAILY_BASIC = 900     # 15 分钟 (估值/换手率每日更新)
+_TTL_DIVIDEND = 3600       # 1 小时 (分红低频变化)
+_TTL_STOCK_BASIC = 3600    # 1 小时 (全市场列表)
+
+
+def _cache_get(cache: dict, key: str, ttl: float) -> pd.DataFrame | None:
+    hit = cache.get(key)
+    if hit and (time.time() - hit[0]) < ttl:
+        return hit[1]
+    return None
+
+
+def _cache_put(cache: dict, key: str, value) -> None:
+    cache[key] = (time.time(), value)
+
+
+def _get_daily_basic(pro, ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """daily_basic 全历史窗口带缓存 (15 分钟 TTL), 避免详情页每次重复拉取。"""
+    hit = _cache_get(_DAILY_BASIC_CACHE, ts_code, _TTL_DAILY_BASIC)
+    if hit is not None:
+        return hit
+    b = pro.daily_basic(
+        ts_code=ts_code, start_date=start_date, end_date=end_date,
+        fields="trade_date,close,pb,pe,pe_ttm,total_share,float_share,total_mv,circ_mv,dv_ratio,dv_ttm,turnover_rate")
+    _cache_put(_DAILY_BASIC_CACHE, ts_code, b)
+    return b
 
 
 def _adj_close(df: pd.DataFrame) -> pd.Series:
@@ -531,16 +567,12 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     pb = pe = pe_ttm = total_share = float_share = total_mv = circ_mv = dv_ratio = None
     turnover_map = {}
     try:
-        b = pro.daily_basic(
-            ts_code=ts_code, start_date=start, end_date=end_date,
-            fields="trade_date,close,pb,pe,pe_ttm,total_share,float_share,total_mv,circ_mv,dv_ratio,dv_ttm,turnover_rate",
-        )
+        b = _get_daily_basic(pro, ts_code, start, end_date)
         if b is not None and not b.empty:
             b = b.sort_values("trade_date").reset_index(drop=True)
-            turnover_map = {
-                str(r["trade_date"]): _to_float(r.get("turnover_rate"))
-                for _, r in b.iterrows()
-            }
+            turnover_map = dict(
+                zip(b["trade_date"].astype(str), b["turnover_rate"].map(_to_float))
+            )
             latest = b.iloc[-1]
             pb = _to_float(latest.get("pb"))
             pe = _to_float(latest.get("pe"))
@@ -567,8 +599,10 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
         dividend_yield = div_per_share / last_close * 100.0
 
     # K 线 bars (全部历史, 供前端缩放查看最多 20 年; 含快照字段供日期切换本地取用)
+    # 用 to_dict("records") 向量化构建 (iterrows 对数千行逐行建 Series 开销大, 是冷加载瓶颈之一)
+    records = df.to_dict("records")
     bars = []
-    for _, row in df.iterrows():
+    for row in records:
         td = str(row["trade_date"])
         pre = _to_float(row.get("pre_close"))
         hi = float(row["high"])
@@ -883,7 +917,17 @@ def _annual_div_per_share(pro, ts_code: str, year: int) -> float | None:
 
 
 def _dividend_latest(pro, ts_code: str) -> dict | None:
-    """获取单只股票最近一个分红年度全部已实施每股现金红利之和 (元)。
+    """获取单只股票最近分红年度每股现金红利之和 (带 1h TTL 缓存)。"""
+    hit = _DIVIDEND_CACHE.get(ts_code)
+    if hit and (time.time() - hit[0]) < _TTL_DIVIDEND:
+        return hit[1]
+    result = _dividend_latest_uncached(pro, ts_code)
+    _DIVIDEND_CACHE[ts_code] = (time.time(), result)
+    return result
+
+
+def _dividend_latest_uncached(pro, ts_code: str) -> dict | None:
+    """(无缓存) 获取单只股票最近一个分红年度全部已实施每股现金红利之和 (元)。
 
     按 end_date 年份聚合'实施'记录求和 (解决一年多次分红低估), 取最近有实施记录
     的年份; 若无实施记录则退回全部记录中 cash_div 最大那条。

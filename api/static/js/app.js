@@ -370,6 +370,43 @@
   const screenerSaveBtn = $("#screener-save-btn");
   if (screenerSaveBtn) screenerSaveBtn.addEventListener("click", saveScreenerToHub);
 
+  // ETF 筛选结果保存到策略Hub (ETF 表: 第1列代码, 第2列名称)
+  function _currentEtfStocks() {
+    const tbody = document.querySelector("#etf-table tbody");
+    if (!tbody) return [];
+    const out = [];
+    tbody.querySelectorAll("tr").forEach((tr) => {
+      const cells = tr.children;
+      if (cells.length < 2) return;
+      const nameEl = cells[1].querySelector("a.stock-link");
+      const name = nameEl ? nameEl.textContent.trim() : cells[1].textContent.trim();
+      const code = cells[0].textContent.trim();
+      if (code && code !== "暂无") out.push({ ts_code: code, name });
+    });
+    return out;
+  }
+  async function saveEtfToHub() {
+    const stocks = _currentEtfStocks();
+    if (!stocks.length) { alert("当前 ETF 筛选结果为空, 无法保存 (请先执行 ETF 筛选)"); return; }
+    const name = prompt("保存为策略Hub策略, 请输入策略名称:", "");
+    if (!name || !name.trim()) return;
+    const desc = prompt("策略描述 (可选):", "") || "";
+    try {
+      const r = await fetch("/api/custom/strategy", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), desc, source: "screener", stocks }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "保存失败");
+      alert(`已保存策略「${name.trim()}」, 收录 ${d.added_stocks} 只 ETF/公司 (可在策略Hub「我的策略」中查看)`);
+      loadStrategies();
+    } catch (e) {
+      alert(e.message || "保存失败");
+    }
+  }
+  const etfSaveBtn = $("#etf-save-btn");
+  if (etfSaveBtn) etfSaveBtn.addEventListener("click", saveEtfToHub);
+
   // ---------- 选股筛选前端优化: 条件折叠 / 重置 / 筛选徽章(可点击移除) ----------
   // 1) 筛选条件区折叠 (点击 .filter-title 切换其下筛选 grid)
   document.querySelectorAll(".filter-title").forEach((title) => {

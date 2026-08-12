@@ -25,7 +25,7 @@ from api import daily_recommend_service as drs  # noqa: E402
 from scripts.download_annual_reports import _load_env  # noqa: E402
 
 
-def main() -> None:
+async def main() -> None:
     _load_env()
     parser = argparse.ArgumentParser(description="每日公司推荐扫描 (区间交易参数估算)")
     parser.add_argument("--codes", default="", help="指定代码(逗号分隔); 空=按行业或全市场")
@@ -43,10 +43,10 @@ def main() -> None:
     print(f"每日推荐扫描: 目标={args.objective} 夏普≥{args.min_sharpe} "
           f"交易≤{max_trades if max_trades else '不限'} 区间 {args.start}~{args.end or '最新'}")
     t0 = time.time()
-    r = drs.scan_all(codes=args.codes, industry=args.industry, limit=args.limit,
-                     objective=args.objective, min_sharpe=args.min_sharpe,
-                     max_trades=max_trades, sleep=args.sleep,
-                     start_date=args.start, end_date=args.end)
+    r = await drs.scan_all(codes=args.codes, industry=args.industry, limit=args.limit,
+                           objective=args.objective, min_sharpe=args.min_sharpe,
+                           max_trades=max_trades, sleep=args.sleep,
+                           start_date=args.start, end_date=args.end)
     print(f"\n完成: 扫描 {r['scanned']} 只 (成功 {r['ok']}, 失败 {r['fail']}), "
           f"入库 {r['stored']} 行, 推荐(买入价≥收盘价) {r['recommend_count']} 只, "
           f"计算日 {r['calc_date']}, 耗时 {(time.time() - t0) / 60:.1f} 分钟")
@@ -58,4 +58,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,20 +33,20 @@ app = FastAPI(
 
 
 @app.on_event("startup")
-def _startup() -> None:
+async def _startup() -> None:
     """启动时确保 PG 表结构存在 (失败不阻塞服务启动)。"""
     try:
-        pg_service.init_schema()
-        pg_service.init_fundamental_schema()
-        pg_service.init_financial_schema()
-        pg_service.init_daily_rec_schema()
-        pg_service.init_my_stocks_schema()
-        pg_service.init_hk_rlv_schema()
-        pg_service.init_hk_fundamental_schema()
-        pg_service.init_etf_schema()
-        pg_service.init_auth_schema()
-        pg_service.init_custom_strategy_schema()
-        pg_service.init_invest_ideas_schema()
+        await pg_service.init_schema()
+        await pg_service.init_fundamental_schema()
+        await pg_service.init_financial_schema()
+        await pg_service.init_daily_rec_schema()
+        await pg_service.init_my_stocks_schema()
+        await pg_service.init_hk_rlv_schema()
+        await pg_service.init_hk_fundamental_schema()
+        await pg_service.init_etf_schema()
+        await pg_service.init_auth_schema()
+        await pg_service.init_custom_strategy_schema()
+        await pg_service.init_invest_ideas_schema()
     except Exception:
         pass
 
@@ -57,17 +58,17 @@ def _startup() -> None:
 SESSION_COOKIE = auth_service.SESSION_COOKIE
 
 
-def _current_user(request: Request) -> dict | None:
+async def _current_user(request: Request) -> dict | None:
     """从 cookie 解析当前登录用户 (未登录返回 None)。"""
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
-    return pg_service.get_session_user(token)
+    return await pg_service.get_session_user(token)
 
 
-def _require_user(request: Request) -> dict:
+async def _require_user(request: Request) -> dict:
     """要求已登录, 否则抛 401。"""
-    user = _current_user(request)
+    user = await _current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="未登录或登录已过期, 请先登录")
     return user
@@ -284,7 +285,7 @@ class EtfScreenRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
+async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
@@ -293,37 +294,37 @@ def index() -> FileResponse:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/health")
-def health() -> dict:
+async def health() -> dict:
     return {"status": "ok"}
 
 
 @app.get("/api/stock/search")
-def stock_search(keyword: str = Query("", description="代码或名称关键字"),
-                 limit: int = Query(20, ge=1, le=50)) -> dict:
+async def stock_search(keyword: str = Query("", description="代码或名称关键字"),
+                       limit: int = Query(20, ge=1, le=50)) -> dict:
     """股票关键字搜索 (前端联想)。"""
     try:
-        items = data_service.search_stock(keyword, limit)
+        items = await data_service.search_stock(keyword, limit)
     except Exception as e:  # token 未配置等
         raise HTTPException(status_code=500, detail=str(e))
     return {"items": items}
 
 
 @app.get("/api/industry/search")
-def industry_search(keyword: str = Query("", description="行业关键字, 空=热门行业"),
-                    limit: int = Query(20, ge=1, le=50)) -> dict:
+async def industry_search(keyword: str = Query("", description="行业关键字, 空=热门行业"),
+                          limit: int = Query(20, ge=1, le=50)) -> dict:
     """行业模糊搜索: 返回匹配行业及股票数量 (前端候选推荐)。"""
     try:
-        items = data_service.search_industries(keyword, limit)
+        items = await data_service.search_industries(keyword, limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"items": items}
 
 
 @app.get("/api/stock/{code}")
-def stock_info(code: str) -> dict:
+async def stock_info(code: str) -> dict:
     """解析股票代码, 返回基本信息。"""
     try:
-        return data_service.resolve_code(code)
+        return await data_service.resolve_code(code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -331,17 +332,17 @@ def stock_info(code: str) -> dict:
 
 
 @app.get("/api/quote/{code}")
-def quote(code: str, days: int = Query(120, ge=10, le=500)) -> dict:
+async def quote(code: str, days: int = Query(120, ge=10, le=500)) -> dict:
     """获取股票/ETF 最近 N 个交易日行情 (K线), 供前端绘制行情曲线。"""
     try:
-        info = data_service.resolve_code(code)
+        info = await data_service.resolve_code(code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     try:
-        df = data_service.get_quote(info["ts_code"], kind=info["kind"], days=days)
+        df = await data_service.get_quote(info["ts_code"], kind=info["kind"], days=days)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取行情数据失败: {e}")
 
@@ -367,17 +368,17 @@ def quote(code: str, days: int = Query(120, ge=10, le=500)) -> dict:
 
 
 @app.get("/api/stock/detail/{code}")
-def stock_detail(code: str, date: str = Query("", description="交易日 YYYYMMDD, 空=最新")) -> dict:
+async def stock_detail(code: str, date: str = Query("", description="交易日 YYYYMMDD, 空=最新")) -> dict:
     """股票详情: K线 + 行情快照(可指定日期) + 52周高低 + PB/PE/股本/市值 + 分红/股息率。"""
     try:
-        info = data_service.resolve_code(code)
+        info = await data_service.resolve_code(code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
 
     try:
-        detail = data_service.get_stock_detail(info["ts_code"], kind=info["kind"], date=date.strip())
+        detail = await data_service.get_stock_detail(info["ts_code"], kind=info["kind"], date=date.strip())
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -385,7 +386,7 @@ def stock_detail(code: str, date: str = Query("", description="交易日 YYYYMMD
 
     # 补充行业 (resolve_code 不返回行业)
     try:
-        stocks = data_service._stock_basic()
+        stocks = await data_service._stock_basic()
         hit = stocks[stocks["ts_code"] == info["ts_code"]]
         if not hit.empty:
             info["industry"] = str(hit.iloc[0].get("industry") or "")
@@ -396,21 +397,21 @@ def stock_detail(code: str, date: str = Query("", description="交易日 YYYYMMD
 
 
 @app.get("/api/stock/kline/{code}")
-def stock_kline(code: str, freq: str = Query("D", description="周期: D日线/W周线/M月线"),
-                adj: str = Query("", description="复权: qfq前复权/hfq后复权/空不复权"),
-                start: str = Query("", description="起始日期 YYYYMMDD, 空=20年前"),
-                end: str = Query("", description="结束日期 YYYYMMDD, 空=最新")) -> dict:
+async def stock_kline(code: str, freq: str = Query("D", description="周期: D日线/W周线/M月线"),
+                      adj: str = Query("", description="复权: qfq前复权/hfq后复权/空不复权"),
+                      start: str = Query("", description="起始日期 YYYYMMDD, 空=20年前"),
+                      end: str = Query("", description="结束日期 YYYYMMDD, 空=最新")) -> dict:
     """按周期+复权获取 K 线 (供详情页切换日/周/月与复权方式)。"""
     try:
-        info = data_service.resolve_code(code)
+        info = await data_service.resolve_code(code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
 
     try:
-        bars = data_service.get_kline(info["ts_code"], kind=info["kind"],
-                                      freq=freq, adj=adj, start_date=start, end_date=end)
+        bars = await data_service.get_kline(info["ts_code"], kind=info["kind"],
+                                            freq=freq, adj=adj, start_date=start, end_date=end)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -420,19 +421,19 @@ def stock_kline(code: str, freq: str = Query("D", description="周期: D日线/W
 
 
 @app.post("/api/backtest")
-def backtest(req: BacktestRequest) -> dict:
+async def backtest(req: BacktestRequest) -> dict:
     """运行单只股票四策略回测。"""
     try:
-        info = data_service.resolve_code(req.ts_code)
+        info = await data_service.resolve_code(req.ts_code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
 
     try:
-        df = data_service.get_daily(info["ts_code"], kind=info["kind"],
-                                    start_date=req.start_date, end_date=req.end_date,
-                                    adj="qfq")
+        df = await data_service.get_daily(info["ts_code"], kind=info["kind"],
+                                          start_date=req.start_date, end_date=req.end_date,
+                                          adj="qfq")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取日线数据失败: {e}")
 
@@ -441,7 +442,8 @@ def backtest(req: BacktestRequest) -> dict:
     last_close = float(df["close"].iloc[-1])
 
     try:
-        strategies = backtest_engine.run_backtest(
+        strategies = await asyncio.to_thread(
+            backtest_engine.run_backtest,
             df,
             capital=req.initial_capital,
             buy_price=req.buy_price,
@@ -476,13 +478,13 @@ def backtest(req: BacktestRequest) -> dict:
 
 
 @app.post("/api/fundamental/screen")
-def screen_fundamental(req: ScreenRequest) -> dict:
+async def screen_fundamental(req: ScreenRequest) -> dict:
     """基本面选股 (ROE 杜邦拆分): 确保数据入库后, 按行业+多年份查询, 支持筛选与排序。"""
     industry = req.industry.strip()
     try:
-        sync_info = fundamental_service.ensure_data(industry, req.years, req.max_stocks)
-        items = fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
-                                           order=req.order, filters=req.filters, limit=req.limit)
+        sync_info = await fundamental_service.ensure_data(industry, req.years, req.max_stocks)
+        items = await fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
+                                                 order=req.order, filters=req.filters, limit=req.limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"基本面选股失败: {e}")
     return {
@@ -495,10 +497,10 @@ def screen_fundamental(req: ScreenRequest) -> dict:
 
 
 @app.post("/api/fundamental/init")
-def fundamental_init(req: ScreenRequest) -> dict:
+async def fundamental_init(req: ScreenRequest) -> dict:
     """初始化基本面数据: 按行业(空=全市场)+多个年份计算全部指标并入库 (幂等 upsert)。"""
     try:
-        result = fundamental_service.sync_industry_years(
+        result = await fundamental_service.sync_industry_years(
             req.industry.strip(), req.years, max_stocks=req.max_stocks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"基本面数据初始化失败: {e}")
@@ -506,37 +508,38 @@ def fundamental_init(req: ScreenRequest) -> dict:
 
 
 @app.post("/api/fundamental/verify")
-def fundamental_verify(req: ScreenRequest) -> dict:
+async def fundamental_verify(req: ScreenRequest) -> dict:
     """校验 ROE 杜邦拆分正确性: roe ≈ 净利润率 × 总资产周转率 × 权益乘数。"""
     industry = req.industry.strip()
     try:
-        items = fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
-                                           order=req.order, filters=req.filters, limit=req.limit)
-        result = fundamental_service.verify_roe(items)
+        items = await fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
+                                                 order=req.order, filters=req.filters, limit=req.limit)
+        result = await asyncio.to_thread(fundamental_service.verify_roe, items)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"校验失败: {e}")
     return result
 
 
 @app.post("/api/band/optimize")
-def band_optimize(req: BandOptimizeRequest) -> dict:
+async def band_optimize(req: BandOptimizeRequest) -> dict:
     """区间交易参数自动估算: 搜索最优买入/卖出/止损价, 收益最大化且夏普≥目标。"""
     try:
-        info = data_service.resolve_code(req.ts_code)
+        info = await data_service.resolve_code(req.ts_code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
 
     try:
-        df = data_service.get_daily(info["ts_code"], kind=info["kind"],
-                                    start_date=req.start_date, end_date=req.end_date,
-                                    adj="qfq")
+        df = await data_service.get_daily(info["ts_code"], kind=info["kind"],
+                                          start_date=req.start_date, end_date=req.end_date,
+                                          adj="qfq")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取日线数据失败: {e}")
 
     try:
-        result = band_service.optimize_band(
+        result = await asyncio.to_thread(
+            band_service.optimize_band,
             df, capital=req.initial_capital,
             min_sharpe=req.min_sharpe, objective=req.objective,
             max_trades=req.max_trades)
@@ -549,10 +552,10 @@ def band_optimize(req: BandOptimizeRequest) -> dict:
 
 
 @app.post("/api/caibao/analyze")
-def caibao_analyze(req: CaibaoRequest) -> dict:
+async def caibao_analyze(req: CaibaoRequest) -> dict:
     """财报分析: 下载年报 PDF + 提取 + 指标计算 + 生成分析报告 (LLM/规则化)。"""
     try:
-        result = caibao_service.analyze(
+        result = await caibao_service.analyze(
             req.ts_code, req.start_year, req.end_year, use_llm=req.use_llm)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -565,16 +568,16 @@ def caibao_analyze(req: CaibaoRequest) -> dict:
 # 精选策略 Hub
 # ---------------------------------------------------------------------------
 @app.get("/api/strategy/list")
-def strategy_list() -> dict:
+async def strategy_list() -> dict:
     """返回全部精选策略 (附缓存回测指标)。"""
-    return {"items": strategy_service.list_strategies()}
+    return {"items": await asyncio.to_thread(strategy_service.list_strategies)}
 
 
 @app.post("/api/strategy/run")
-def strategy_run(req: StrategyRequest) -> dict:
+async def strategy_run(req: StrategyRequest) -> dict:
     """执行精选策略选股。"""
     try:
-        return strategy_service.run_strategy(req.key, req.limit)
+        return await strategy_service.run_strategy(req.key, req.limit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -582,10 +585,10 @@ def strategy_run(req: StrategyRequest) -> dict:
 
 
 @app.get("/api/strategy/backtest/{key}")
-def strategy_backtest(key: str) -> dict:
+async def strategy_backtest(key: str) -> dict:
     """计算/获取策略回测参考指标 (缓存 24h)。"""
     try:
-        return strategy_service.backtest_strategy(key)
+        return await strategy_service.backtest_strategy(key)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -593,16 +596,16 @@ def strategy_backtest(key: str) -> dict:
 
 
 @app.post("/api/dailyrecommend/scan")
-def dailyrecommend_scan(req: DailyRecRequest) -> dict:
+async def dailyrecommend_scan(req: DailyRecRequest) -> dict:
     """每日推荐扫描: 方法1=区间交易(买入价>=收盘价); 方法2=红利低波(动态股息率>=N, 可加分红率/ROE范围)。"""
     try:
         if req.method == "dividend":
-            return daily_recommend_service.recommend_dividend(
+            return await daily_recommend_service.recommend_dividend(
                 min_dy_ttm=req.min_dy_ttm, industry=req.industry,
                 year_min=req.year_min, year_max=req.year_max,
                 limit=(req.limit or 500), payout_min=req.payout_min, payout_max=req.payout_max,
                 roe_min=req.roe_min, roe_max=req.roe_max)
-        result = daily_recommend_service.scan_all(
+        result = await daily_recommend_service.scan_all(
             codes=req.ts_codes, industry=req.industry, limit=req.limit,
             objective=req.objective, min_sharpe=req.min_sharpe, max_trades=req.max_trades,
             start_date=req.start_date, end_date=req.end_date, use_cache=req.use_cache)
@@ -613,35 +616,35 @@ def dailyrecommend_scan(req: DailyRecRequest) -> dict:
 
 
 @app.get("/api/dailyrecommend/list")
-def dailyrecommend_list(calc_date: str = Query("", description="计算日 YYYYMMDD, 空=最近一天"),
-                        industry: str = Query("", description="行业名称(东财分类), 空=全部"),
-                        limit: int = Query(500, ge=1, le=2000),
-                        method: str = Query("band", description="推荐方法: band/dividend"),
-                        min_dy_ttm: float = Query(3.0, ge=0, le=100),
-                        year_min: int | None = Query(None, ge=2000, le=2100),
-                        year_max: int | None = Query(None, ge=2000, le=2100),
-                        payout_min: float | None = Query(None, ge=0, le=1000),
-                        payout_max: float | None = Query(None, ge=0, le=1000),
-                        roe_min: float | None = Query(None, ge=-100, le=1000),
-                        roe_max: float | None = Query(None, ge=-100, le=1000)) -> dict:
+async def dailyrecommend_list(calc_date: str = Query("", description="计算日 YYYYMMDD, 空=最近一天"),
+                              industry: str = Query("", description="行业名称(东财分类), 空=全部"),
+                              limit: int = Query(500, ge=1, le=2000),
+                              method: str = Query("band", description="推荐方法: band/dividend"),
+                              min_dy_ttm: float = Query(3.0, ge=0, le=100),
+                              year_min: int | None = Query(None, ge=2000, le=2100),
+                              year_max: int | None = Query(None, ge=2000, le=2100),
+                              payout_min: float | None = Query(None, ge=0, le=1000),
+                              payout_max: float | None = Query(None, ge=0, le=1000),
+                              roe_min: float | None = Query(None, ge=-100, le=1000),
+                              roe_max: float | None = Query(None, ge=-100, le=1000)) -> dict:
     """查询最近推荐 (方法1: buy_price>=close; 方法2: 动态股息率>=N + 分红率/ROE范围 + 年份区间), 可按行业过滤。"""
     try:
         if method == "dividend":
-            return daily_recommend_service.recommend_dividend(
+            return await daily_recommend_service.recommend_dividend(
                 min_dy_ttm=min_dy_ttm, industry=industry,
                 year_min=year_min, year_max=year_max, limit=limit,
                 payout_min=payout_min, payout_max=payout_max,
                 roe_min=roe_min, roe_max=roe_max)
-        return daily_recommend_service.get_recommendations(calc_date, limit, industry)
+        return await daily_recommend_service.get_recommendations(calc_date, limit, industry)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取每日推荐失败: {e}")
 
 
 @app.post("/api/etf/screen")
-def etf_screen(req: EtfScreenRequest) -> dict:
+async def etf_screen(req: EtfScreenRequest) -> dict:
     """ETF 筛选: 计算 费用/规模/流动性/折溢价/跟踪偏离/52周 等关键指标并按条件过滤排序。"""
     try:
-        return etf_service.screen_etfs(
+        return await etf_service.screen_etfs(
             keyword=req.keyword.strip(), fund_type=req.fund_type.strip(),
             min_scale=req.min_scale, max_m_fee=req.max_m_fee, max_c_fee=req.max_c_fee,
             min_amount_20=req.min_amount_20, max_premium=req.max_premium,
@@ -652,10 +655,10 @@ def etf_screen(req: EtfScreenRequest) -> dict:
 
 
 @app.post("/api/redlowvol/sync")
-def redlowvol_sync(req: RedLowVolRequest) -> dict:
+async def redlowvol_sync(req: RedLowVolRequest) -> dict:
     """按行业+多个年份计算红利低波指标并写入 PostgreSQL (幂等 upsert)。"""
     try:
-        result = redlowvol_service.sync_industry_years(
+        result = await redlowvol_service.sync_industry_years(
             req.industry.strip(), req.years, max_stocks=req.max_stocks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"红利低波数据同步失败: {e}")
@@ -663,13 +666,13 @@ def redlowvol_sync(req: RedLowVolRequest) -> dict:
 
 
 @app.post("/api/redlowvol/screen")
-def redlowvol_screen(req: RedLowVolRequest) -> dict:
+async def redlowvol_screen(req: RedLowVolRequest) -> dict:
     """红利低波选股: 确保数据已入库后, 按行业+多年份查询, 支持阈值筛选与排序。"""
     industry = req.industry.strip()
     try:
-        sync_info = redlowvol_service.ensure_data(industry, req.years, max_stocks=req.max_stocks)
-        items = redlowvol_service.screen(industry, req.years, sort_by=req.sort_by,
-                                         order=req.order, filters=req.filters, limit=req.limit)
+        sync_info = await redlowvol_service.ensure_data(industry, req.years, req.max_stocks)
+        items = await redlowvol_service.screen(industry, req.years, sort_by=req.sort_by,
+                                               order=req.order, filters=req.filters, limit=req.limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"红利低波选股失败: {e}")
     return {
@@ -686,11 +689,11 @@ def redlowvol_screen(req: RedLowVolRequest) -> dict:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/hk/industry/search")
-def hk_industry_search(keyword: str = Query("", description="行业关键字, 空=热门行业"),
-                       limit: int = Query(20, ge=1, le=50)) -> dict:
+async def hk_industry_search(keyword: str = Query("", description="行业关键字, 空=热门行业"),
+                             limit: int = Query(20, ge=1, le=50)) -> dict:
     """港股行业模糊搜索: 返回匹配行业及股票数量 (前端候选推荐)。"""
     try:
-        ind_map = hk_data_service.industry_map()
+        ind_map = await hk_data_service.industry_map()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     counts: dict[str, int] = {}
@@ -704,12 +707,12 @@ def hk_industry_search(keyword: str = Query("", description="行业关键字, �
 
 
 @app.get("/api/hk/stocks")
-def hk_stocks(keyword: str = Query("", description="代码或名称关键字, 空=全部(前limit只)"),
-              limit: int = Query(50, ge=1, le=300)) -> dict:
+async def hk_stocks(keyword: str = Query("", description="代码或名称关键字, 空=全部(前limit只)"),
+                    limit: int = Query(50, ge=1, le=300)) -> dict:
     """港股股票列表 (代码/名称/行业/市场), 供前端联想。"""
     try:
-        stocks = hk_data_service.hk_stock_list()
-        ind_map = hk_data_service.industry_map()
+        stocks = await hk_data_service.hk_stock_list()
+        ind_map = await hk_data_service.industry_map()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     items = []
@@ -727,13 +730,13 @@ def hk_stocks(keyword: str = Query("", description="代码或名称关键字, �
 
 
 @app.post("/api/hk/fundamental/screen")
-def hk_screen_fundamental(req: HkScreenRequest) -> dict:
+async def hk_screen_fundamental(req: HkScreenRequest) -> dict:
     """港股基本面选股 (ROE 杜邦拆分): 确保数据入库后, 按行业+多年份查询。"""
     industry = req.industry.strip()
     try:
-        sync_info = hk_fundamental_service.ensure_data(industry, req.years, req.max_stocks)
-        items = hk_fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
-                                              order=req.order, filters=req.filters, limit=req.limit)
+        sync_info = await hk_fundamental_service.ensure_data(industry, req.years, req.max_stocks)
+        items = await hk_fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
+                                                    order=req.order, filters=req.filters, limit=req.limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"港股基本面选股失败: {e}")
     return {
@@ -746,10 +749,10 @@ def hk_screen_fundamental(req: HkScreenRequest) -> dict:
 
 
 @app.post("/api/hk/fundamental/init")
-def hk_fundamental_init(req: HkScreenRequest) -> dict:
+async def hk_fundamental_init(req: HkScreenRequest) -> dict:
     """初始化港股基本面数据: 按行业(空=全市场)+多个年份计算全部指标并入库 (幂等 upsert)。"""
     try:
-        result = hk_fundamental_service.sync_industry_years(
+        result = await hk_fundamental_service.sync_industry_years(
             req.industry.strip(), req.years, max_stocks=req.max_stocks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"港股基本面数据初始化失败: {e}")
@@ -757,23 +760,23 @@ def hk_fundamental_init(req: HkScreenRequest) -> dict:
 
 
 @app.post("/api/hk/fundamental/verify")
-def hk_fundamental_verify(req: HkScreenRequest) -> dict:
+async def hk_fundamental_verify(req: HkScreenRequest) -> dict:
     """校验港股 ROE 杜邦拆分正确性: roe ≈ 净利润率 × 总资产周转率 × 权益乘数。"""
     industry = req.industry.strip()
     try:
-        items = hk_fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
-                                              order=req.order, filters=req.filters, limit=req.limit)
-        result = hk_fundamental_service.verify_roe(items)
+        items = await hk_fundamental_service.screen(industry, req.years, sort_by=req.sort_by,
+                                                    order=req.order, filters=req.filters, limit=req.limit)
+        result = await asyncio.to_thread(hk_fundamental_service.verify_roe, items)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"校验失败: {e}")
     return result
 
 
 @app.post("/api/hk/redlowvol/sync")
-def hk_redlowvol_sync(req: HkRedLowVolRequest) -> dict:
+async def hk_redlowvol_sync(req: HkRedLowVolRequest) -> dict:
     """港股红利低波: 按行业+多个年份计算指标并写入 PostgreSQL (幂等 upsert)。"""
     try:
-        result = hk_redlowvol_service.sync_industry_years(
+        result = await hk_redlowvol_service.sync_industry_years(
             req.industry.strip(), req.years, max_stocks=req.max_stocks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"港股红利低波数据同步失败: {e}")
@@ -781,13 +784,13 @@ def hk_redlowvol_sync(req: HkRedLowVolRequest) -> dict:
 
 
 @app.post("/api/hk/redlowvol/screen")
-def hk_redlowvol_screen(req: HkRedLowVolRequest) -> dict:
+async def hk_redlowvol_screen(req: HkRedLowVolRequest) -> dict:
     """港股红利低波选股: 确保数据已入库后, 按行业+多年份查询, 支持阈值筛选与排序。"""
     industry = req.industry.strip()
     try:
-        sync_info = hk_redlowvol_service.ensure_data(industry, req.years, max_stocks=req.max_stocks)
-        items = hk_redlowvol_service.screen(industry, req.years, sort_by=req.sort_by,
-                                            order=req.order, filters=req.filters, limit=req.limit)
+        sync_info = await hk_redlowvol_service.ensure_data(industry, req.years, req.max_stocks)
+        items = await hk_redlowvol_service.screen(industry, req.years, sort_by=req.sort_by,
+                                                  order=req.order, filters=req.filters, limit=req.limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"港股红利低波选股失败: {e}")
     return {
@@ -804,64 +807,64 @@ def hk_redlowvol_screen(req: HkRedLowVolRequest) -> dict:
 # ---------------------------------------------------------------------------
 
 @app.post("/api/auth/register")
-def auth_register(req: AuthRequest, response: Response) -> dict:
+async def auth_register(req: AuthRequest, response: Response) -> dict:
     """注册新账号并自动登录。"""
     username = req.username.strip()
     if not (2 <= len(username) <= 32):
         raise HTTPException(status_code=400, detail="用户名长度需在 2~32 之间")
-    hashed = auth_service.hash_password(req.password)
-    user_id, created = pg_service.create_user(username, hashed)
-    if not created:
+    hashed = await asyncio.to_thread(auth_service.hash_password, req.password)
+    user_id, created = await pg_service.create_user(username, hashed)
+    if not created or user_id is None:
         raise HTTPException(status_code=409, detail="用户名已被注册")
     token = auth_service.new_token()
     expires = datetime.now(timezone.utc) + timedelta(days=auth_service.SESSION_DAYS)
-    pg_service.create_session(token, user_id, expires)
+    await pg_service.create_session(token, user_id, expires)
     _set_session_cookie(response, token)
     return {"ok": True, "user": {"id": user_id, "username": username}}
 
 
 @app.post("/api/auth/login")
-def auth_login(req: AuthRequest, response: Response) -> dict:
+async def auth_login(req: AuthRequest, response: Response) -> dict:
     """账号密码登录。"""
     username = req.username.strip()
-    user = pg_service.get_user_by_username(username)
+    user = await pg_service.get_user_by_username(username)
     if not user or not auth_service.verify_password(req.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     token = auth_service.new_token()
     expires = datetime.now(timezone.utc) + timedelta(days=auth_service.SESSION_DAYS)
-    pg_service.create_session(token, user["id"], expires)
+    await pg_service.create_session(token, user["id"], expires)
     _set_session_cookie(response, token)
     return {"ok": True, "user": {"id": user["id"], "username": user["username"]}}
 
 
 @app.post("/api/auth/logout")
-def auth_logout(request: Request, response: Response) -> dict:
+async def auth_logout(request: Request, response: Response) -> dict:
     """退出登录: 删除会话并清除 cookie。"""
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        pg_service.delete_session(token)
+        await pg_service.delete_session(token)
     _clear_session_cookie(response)
     return {"ok": True}
 
 
 @app.post("/api/auth/delete_account")
-def auth_delete_account(request: Request, response: Response) -> dict:
+async def auth_delete_account(request: Request, response: Response) -> dict:
     """注销账号: 删除当前用户及其全部数据 (个人中心页按钮)。"""
-    user = _require_user(request)
+    user = await _require_user(request)
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        pg_service.delete_session(token)
-    pg_service.delete_user(user["id"])
+        await pg_service.delete_session(token)
+    await pg_service.delete_user(user["id"])
     _clear_session_cookie(response)
     return {"ok": True}
 
 
 @app.get("/api/auth/me")
-def auth_me(request: Request) -> dict:
+async def auth_me(request: Request) -> dict:
     """当前登录用户 (未登录 user=null, 登录返回 id/username/created_at)。"""
-    u = _current_user(request)
+    u = await _current_user(request)
     if u:
-        full = pg_service.get_user_by_id(u["id"]) or {}
+        full = await pg_service.get_user_by_id(u["id"]) or {}
         u = {"id": u["id"], "username": u["username"],
              "created_at": str(full.get("created_at") or "")}
     return {"user": u}
@@ -872,74 +875,81 @@ def auth_me(request: Request) -> dict:
 # ---------------------------------------------------------------------------
 
 @app.post("/api/my_stocks/add")
-def my_stocks_add(req: MyStockRequest, request: Request) -> dict:
+async def my_stocks_add(req: MyStockRequest, request: Request) -> dict:
     """添加自选股 (从股票详情页), 返回是否新增 (需登录)。"""
-    user = _require_user(request)
+    user = await _require_user(request)
     try:
-        info = data_service.resolve_code(req.ts_code)
+        info = await data_service.resolve_code(req.ts_code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
-    inserted = pg_service.add_my_stock(user["id"], info["ts_code"], info["name"])
+    inserted = await pg_service.add_my_stock(user["id"], info["ts_code"], info["name"])
     return {"ok": True, "ts_code": info["ts_code"], "name": info["name"],
             "added": inserted, "already": not inserted}
 
 
 @app.post("/api/my_stocks/remove")
-def my_stocks_remove(req: MyStockRequest, request: Request) -> dict:
+async def my_stocks_remove(req: MyStockRequest, request: Request) -> dict:
     """移除自选股 (需登录)。"""
-    user = _require_user(request)
-    removed = pg_service.remove_my_stock(user["id"], req.ts_code.strip().upper())
+    user = await _require_user(request)
+    removed = await pg_service.remove_my_stock(user["id"], req.ts_code.strip().upper())
     return {"ok": True, "removed": removed}
 
 
 @app.get("/api/my_stocks")
-def my_stocks_list(request: Request) -> dict:
-    """我的股票列表: 最新收盘/涨跌幅/PE/总市值/股息率/每股分红/52周高低 快照 (需登录)。"""
-    user = _require_user(request)
-    stocks = pg_service.list_my_stocks(user["id"])
-    items = []
-    for s in stocks:
+async def my_stocks_list(request: Request) -> dict:
+    """我的股票列表: 最新收盘/涨跌幅/PE/总市值/股息率/每股分红/52周高低 快照 (需登录)。
+
+    并发加载全部自选股快照 (asyncio.gather), 避免逐只串行打 tushare 导致 N 只耗时叠加。
+    """
+    user = await _require_user(request)
+    stocks = await pg_service.list_my_stocks(user["id"])
+    try:
+        basic_df = await data_service._stock_basic()  # 取一次供全部股票补行业
+    except Exception:
+        basic_df = None
+
+    async def load_one(s: dict):
         try:
-            info = data_service.resolve_code(s["ts_code"])
-            snap = data_service.get_stock_snapshot(info["ts_code"], kind=info["kind"])
+            info = await data_service.resolve_code(s["ts_code"])
+            snap = await data_service.get_stock_snapshot(info["ts_code"], kind=info["kind"])
             snap["name"] = info["name"]
             snap["kind"] = info["kind"]
             snap["added_at"] = s["added_at"]
             snap["industry"] = ""
-            try:
-                hit = data_service._stock_basic()
-                hit = hit[hit["ts_code"] == info["ts_code"]]
+            if basic_df is not None:
+                hit = basic_df[basic_df["ts_code"] == info["ts_code"]]
                 if not hit.empty:
                     snap["industry"] = str(hit.iloc[0].get("industry") or "")
-            except Exception:
-                pass
-            items.append(snap)
+            return snap
         except Exception:
-            continue
+            return None
+
+    results = await asyncio.gather(*(load_one(s) for s in stocks))
+    items = [r for r in results if r is not None]
     return {"count": len(items), "items": items}
 
 
 @app.get("/api/my_stocks/contains/{code}")
-def my_stocks_contains(code: str, request: Request) -> dict:
+async def my_stocks_contains(code: str, request: Request) -> dict:
     """查询某股票是否已在当前用户自选股中 (股票详情页按钮初始状态用, 需登录)。"""
-    user = _require_user(request)
+    user = await _require_user(request)
     try:
-        info = data_service.resolve_code(code)
+        info = await data_service.resolve_code(code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
-    return {"ts_code": info["ts_code"], "in_list": pg_service.has_my_stock(user["id"], info["ts_code"])}
+    return {"ts_code": info["ts_code"], "in_list": await pg_service.has_my_stock(user["id"], info["ts_code"])}
 
 
 # ---------------------------------------------------------------------------
 # 自定义策略 (策略 Hub CRUD, 按用户隔离)
 # ---------------------------------------------------------------------------
-def _get_owned_strategy(sid: int, user_id: int) -> dict:
+async def _get_owned_strategy(sid: int, user_id: int) -> dict:
     """取策略并校验归属当前用户。"""
-    s = pg_service.get_custom_strategy(sid)
+    s = await pg_service.get_custom_strategy(sid)
     if not s:
         raise HTTPException(status_code=404, detail="策略不存在")
     if s["user_id"] != user_id:
@@ -948,17 +958,17 @@ def _get_owned_strategy(sid: int, user_id: int) -> dict:
 
 
 @app.post("/api/custom/strategy")
-def custom_strategy_create(req: CustomStrategyCreate, request: Request) -> dict:
+async def custom_strategy_create(req: CustomStrategyCreate, request: Request) -> dict:
     """创建自定义策略, 可选批量保存公司 (需登录)。"""
-    user = _require_user(request)
-    sid = pg_service.create_custom_strategy(
+    user = await _require_user(request)
+    sid = await pg_service.create_custom_strategy(
         user["id"], req.name.strip(), req.desc.strip(),
         req.category.strip() or "我的策略", req.source, req.filter_info)
     added = 0
     for s in req.stocks:
         try:
-            info = data_service.resolve_code(s["ts_code"])
-            if pg_service.add_strategy_stock(sid, info["ts_code"], info["name"], s.get("note", "")):
+            info = await data_service.resolve_code(s["ts_code"])
+            if await pg_service.add_strategy_stock(sid, info["ts_code"], info["name"], s.get("note", "")):
                 added += 1
         except Exception:
             continue
@@ -966,18 +976,18 @@ def custom_strategy_create(req: CustomStrategyCreate, request: Request) -> dict:
 
 
 @app.get("/api/custom/strategy/list")
-def custom_strategy_list(request: Request) -> dict:
+async def custom_strategy_list(request: Request) -> dict:
     """当前用户的自定义策略列表 (需登录)。"""
-    user = _require_user(request)
-    return {"items": pg_service.list_custom_strategies(user["id"])}
+    user = await _require_user(request)
+    return {"items": await pg_service.list_custom_strategies(user["id"])}
 
 
 @app.put("/api/custom/strategy/{sid}")
-def custom_strategy_update(sid: int, req: CustomStrategyUpdate, request: Request) -> dict:
+async def custom_strategy_update(sid: int, req: CustomStrategyUpdate, request: Request) -> dict:
     """更新自定义策略 (需登录, 仅限本人)。"""
-    user = _require_user(request)
-    _get_owned_strategy(sid, user["id"])
-    n = pg_service.update_custom_strategy(
+    user = await _require_user(request)
+    await _get_owned_strategy(sid, user["id"])
+    n = await pg_service.update_custom_strategy(
         sid, user["id"],
         name=req.name.strip() if req.name is not None else None,
         desc_text=req.desc.strip() if req.desc is not None else None,
@@ -986,52 +996,52 @@ def custom_strategy_update(sid: int, req: CustomStrategyUpdate, request: Request
 
 
 @app.delete("/api/custom/strategy/{sid}")
-def custom_strategy_delete(sid: int, request: Request) -> dict:
+async def custom_strategy_delete(sid: int, request: Request) -> dict:
     """删除自定义策略 (需登录, 仅限本人)。"""
-    user = _require_user(request)
-    _get_owned_strategy(sid, user["id"])
-    n = pg_service.delete_custom_strategy(sid, user["id"])
+    user = await _require_user(request)
+    await _get_owned_strategy(sid, user["id"])
+    n = await pg_service.delete_custom_strategy(sid, user["id"])
     return {"ok": True, "deleted": n}
 
 
 @app.get("/api/custom/strategy/{sid}/stocks")
-def custom_strategy_stocks_list(sid: int, request: Request) -> dict:
+async def custom_strategy_stocks_list(sid: int, request: Request) -> dict:
     """策略内公司列表 (需登录, 仅限本人)。"""
-    user = _require_user(request)
-    _get_owned_strategy(sid, user["id"])
-    return {"strategy_id": sid, "items": pg_service.list_strategy_stocks(sid)}
+    user = await _require_user(request)
+    await _get_owned_strategy(sid, user["id"])
+    return {"strategy_id": sid, "items": await pg_service.list_strategy_stocks(sid)}
 
 
 @app.post("/api/custom/strategy/{sid}/stocks")
-def custom_strategy_stock_add(sid: int, req: StrategyStockAdd, request: Request) -> dict:
+async def custom_strategy_stock_add(sid: int, req: StrategyStockAdd, request: Request) -> dict:
     """向策略添加公司 (需登录, 仅限本人)。"""
-    user = _require_user(request)
-    _get_owned_strategy(sid, user["id"])
+    user = await _require_user(request)
+    await _get_owned_strategy(sid, user["id"])
     try:
-        info = data_service.resolve_code(req.ts_code)
+        info = await data_service.resolve_code(req.ts_code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
-    inserted = pg_service.add_strategy_stock(sid, info["ts_code"], info["name"], req.note)
+    inserted = await pg_service.add_strategy_stock(sid, info["ts_code"], info["name"], req.note)
     return {"ok": True, "ts_code": info["ts_code"], "name": info["name"],
             "added": inserted, "already": not inserted}
 
 
 @app.delete("/api/custom/strategy/{sid}/stocks/{ts_code}")
-def custom_strategy_stock_remove(sid: int, ts_code: str, request: Request) -> dict:
+async def custom_strategy_stock_remove(sid: int, ts_code: str, request: Request) -> dict:
     """从策略移除公司 (需登录, 仅限本人)。"""
-    user = _require_user(request)
-    _get_owned_strategy(sid, user["id"])
-    removed = pg_service.remove_strategy_stock(sid, ts_code.strip().upper())
+    user = await _require_user(request)
+    await _get_owned_strategy(sid, user["id"])
+    removed = await pg_service.remove_strategy_stock(sid, ts_code.strip().upper())
     return {"ok": True, "removed": removed}
 
 
 # ---------------------------------------------------------------------------
 # 精选思想 (投资大师/方法 skill, 按用户隔离, 可增删改查)
 # ---------------------------------------------------------------------------
-def _get_owned_idea(sid: int, user_id: int) -> dict:
-    s = pg_service.get_invest_idea(sid)
+async def _get_owned_idea(sid: int, user_id: int) -> dict:
+    s = await pg_service.get_invest_idea(sid)
     if not s:
         raise HTTPException(status_code=404, detail="思想不存在")
     if s["user_id"] != user_id:
@@ -1040,28 +1050,28 @@ def _get_owned_idea(sid: int, user_id: int) -> dict:
 
 
 @app.get("/api/ideas/list")
-def ideas_list(request: Request) -> dict:
+async def ideas_list(request: Request) -> dict:
     """当前用户的精选思想列表 (首次自动初始化预置人物, 需登录)。"""
-    user = _require_user(request)
-    return {"items": invest_ideas_service.list_ideas(user["id"])}
+    user = await _require_user(request)
+    return {"items": await invest_ideas_service.list_ideas(user["id"])}
 
 
 @app.post("/api/ideas")
-def ideas_create(req: IdeaCreate, request: Request) -> dict:
+async def ideas_create(req: IdeaCreate, request: Request) -> dict:
     """创建精选思想 (需登录)。"""
-    user = _require_user(request)
-    sid = invest_ideas_service.create_idea(
+    user = await _require_user(request)
+    sid = await invest_ideas_service.create_idea(
         user["id"], req.name.strip(), req.school.strip(), req.tags,
         req.bio.strip(), req.principles)
     return {"ok": True, "id": sid}
 
 
 @app.put("/api/ideas/{sid}")
-def ideas_update(sid: int, req: IdeaUpdate, request: Request) -> dict:
+async def ideas_update(sid: int, req: IdeaUpdate, request: Request) -> dict:
     """更新精选思想 (需登录, 仅限本人)。"""
-    user = _require_user(request)
-    _get_owned_idea(sid, user["id"])
-    n = invest_ideas_service.update_idea(
+    user = await _require_user(request)
+    await _get_owned_idea(sid, user["id"])
+    n = await invest_ideas_service.update_idea(
         sid, user["id"],
         name=req.name.strip() if req.name is not None else None,
         school=req.school.strip() if req.school is not None else None,
@@ -1072,9 +1082,9 @@ def ideas_update(sid: int, req: IdeaUpdate, request: Request) -> dict:
 
 
 @app.delete("/api/ideas/{sid}")
-def ideas_delete(sid: int, request: Request) -> dict:
+async def ideas_delete(sid: int, request: Request) -> dict:
     """删除精选思想 (需登录, 仅限本人)。"""
-    user = _require_user(request)
-    _get_owned_idea(sid, user["id"])
-    n = invest_ideas_service.delete_idea(sid, user["id"])
+    user = await _require_user(request)
+    await _get_owned_idea(sid, user["id"])
+    n = await invest_ideas_service.delete_idea(sid, user["id"])
     return {"ok": True, "deleted": n}

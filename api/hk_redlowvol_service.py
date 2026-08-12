@@ -20,7 +20,7 @@
 
 from __future__ import annotations
 
-import time
+import asyncio
 
 from . import hk_data_service as hkd
 from . import pg_service
@@ -38,7 +38,7 @@ def _dividend_growth_3y(dividends: dict[int, float], year: int) -> float | None:
         return None
 
 
-def compute_stock_row(m: dict, year: int, last_close: float | None = None) -> dict | None:
+async def compute_stock_row(m: dict, year: int, last_close: float | None = None) -> dict | None:
     """计算单只港股单年的红利低波指标, 返回入库行 (缺数据字段为 None)。
 
     m: hk_data_service.stock_metrics() 返回的原始数据字典。
@@ -50,7 +50,7 @@ def compute_stock_row(m: dict, year: int, last_close: float | None = None) -> di
     dividends = m.get("dividends") or {}
     balance = m.get("balance") or {}
 
-    year_end_close, volatility = hkd.year_volatility(m["ts_code"], year)
+    year_end_close, volatility = await hkd.year_volatility(m["ts_code"], year)
     if year_end_close is None and fina.get("end_date"):
         # K 线缺失时退回东财总市值/股本推算? 直接置空即可
         pass
@@ -107,7 +107,7 @@ def compute_stock_row(m: dict, year: int, last_close: float | None = None) -> di
         "roe": fina.get("roe"),
         "debt_to_assets": fina.get("debt_to_assets"),
         "avg_daily_mv": avg_daily_mv,
-        "avg_daily_amt": hkd.avg_daily_amt_wan(m["ts_code"], year),
+        "avg_daily_amt": await hkd.avg_daily_amt_wan(m["ts_code"], year),
         "end_date": fina.get("end_date") or "",
     }
 
@@ -116,14 +116,14 @@ def compute_stock_row(m: dict, year: int, last_close: float | None = None) -> di
 # 同步 & 查询
 # ---------------------------------------------------------------------------
 
-def _candidates(industry: str, max_stocks: int) -> list[str]:
+async def _candidates(industry: str, max_stocks: int) -> list[str]:
     """候选港股 ts_code 列表 (按行业子串过滤, 可选 max_stocks 截断)。
 
     剔除 RMB 柜台股 (名称以 -R 结尾, 如 中国移动-R 80941.HK, 与主柜同公司重复,
     且无独立东财财务数据)。
     """
-    stocks = hkd.hk_stock_list()
-    ind_map = hkd.industry_map()
+    stocks = await hkd.hk_stock_list()
+    ind_map = await hkd.industry_map()
     codes: list[str] = []
     for _, row in stocks.iterrows():
         ts_code = str(row["ts_code"])
@@ -136,17 +136,17 @@ def _candidates(industry: str, max_stocks: int) -> list[str]:
     return codes[:max_stocks]
 
 
-def sync_industry_year(industry: str, year: int, max_stocks: int = 3000,
-                       sleep: float = 0.1) -> dict:
+async def sync_industry_year(industry: str, year: int, max_stocks: int = 3000,
+                             sleep: float = 0.1) -> dict:
     """对指定行业+年份计算并写入 PG (幂等 upsert)。"""
-    codes = _candidates(industry, max_stocks)
-    ind_map = hkd.industry_map()
+    codes = await _candidates(industry, max_stocks)
+    ind_map = await hkd.industry_map()
     rows = []
     failed = 0
     for ts_code in codes:
         try:
-            m = hkd.stock_metrics(ts_code, ind_map)
-            r = compute_stock_row(m, year)
+            m = await hkd.stock_metrics(ts_code, ind_map)
+            r = await compute_stock_row(m, year)
             if r is None:
                 failed += 1
                 continue
@@ -154,42 +154,42 @@ def sync_industry_year(industry: str, year: int, max_stocks: int = 3000,
         except Exception:
             failed += 1
         if sleep > 0:
-            time.sleep(sleep)
-    stored = pg_service.upsert_hk_rlv_rows(rows)
+            await asyncio.sleep(sleep)
+    stored = await pg_service.upsert_hk_rlv_rows(rows)
     return {"industry": industry, "year": year, "scanned": int(len(codes)),
             "stored": stored, "failed": failed}
 
 
-def sync_industry_years(industry: str, years: list[int], max_stocks: int = 3000,
-                        sleep: float = 0.1) -> dict:
+async def sync_industry_years(industry: str, years: list[int], max_stocks: int = 3000,
+                              sleep: float = 0.1) -> dict:
     """对指定行业+多个年份逐期同步 (幂等 upsert), 返回各年份统计。"""
     total = {"industry": industry, "years": years,
              "stored_total": 0, "scanned_total": 0, "per_year": {}}
     for y in years:
-        r = sync_industry_year(industry, y, max_stocks=max_stocks, sleep=sleep)
+        r = await sync_industry_year(industry, y, max_stocks=max_stocks, sleep=sleep)
         total["stored_total"] += r["stored"]
         total["scanned_total"] += r["scanned"]
         total["per_year"][str(y)] = r
     return total
 
 
-def ensure_data(industry: str, years: list[int], max_stocks: int = 3000) -> dict:
+async def ensure_data(industry: str, years: list[int], max_stocks: int = 3000) -> dict:
     """确保行业+各年份数据已入库; 缺失或记录数远少于行业股票数时自动同步补齐。
 
     部分港股无东财财务数据 (新上市/柜台股等), 故用 0.8×行业股票数 作为补数阈值,
     避免个别无数据股票导致每次选股都触发全量重同步。
     """
-    expected = _industry_stock_count(industry)
+    expected = await _industry_stock_count(industry)
     missing: list[int] = []
     for y in years:
-        count = pg_service.count_hk_rlv_by_industry_year(industry, y)
+        count = await pg_service.count_hk_rlv_by_industry_year(industry, y)
         if count == 0 or (expected is not None and count < max(1, int(expected * 0.8))):
             missing.append(y)
 
     stored_total = 0
     per_year = {}
     for y in missing:
-        r = sync_industry_year(industry, y, max_stocks=max_stocks)
+        r = await sync_industry_year(industry, y, max_stocks=max_stocks)
         stored_total += r["stored"]
         per_year[str(y)] = r
 
@@ -197,20 +197,20 @@ def ensure_data(industry: str, years: list[int], max_stocks: int = 3000) -> dict
             "stored": stored_total, "per_year": per_year}
 
 
-def _industry_stock_count(industry: str) -> int | None:
+async def _industry_stock_count(industry: str) -> int | None:
     """行业股票总数 (空行业=None, 无法预判)。"""
     if not industry:
         return None
     try:
-        ind_map = hkd.industry_map()
+        ind_map = await hkd.industry_map()
         return sum(1 for v in ind_map.values() if industry in v)
     except Exception:
         return None
 
 
-def screen(industry: str, years: list[int], sort_by: str = "dividend_yield",
-           order: str = "desc", filters: dict | None = None,
-           limit: int = 500) -> list[dict]:
+async def screen(industry: str, years: list[int], sort_by: str = "dividend_yield",
+                 order: str = "desc", filters: dict | None = None,
+                 limit: int = 500) -> list[dict]:
     """从 PG 查询该行业+多个年份全部港股, 支持字段阈值筛选, 按指定指标排序。"""
-    return pg_service.query_hk_rlv(industry, years, sort_by=sort_by,
-                                   order=order, limit=limit, filters=filters)
+    return await pg_service.query_hk_rlv(industry, years, sort_by=sort_by,
+                                         order=order, limit=limit, filters=filters)

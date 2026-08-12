@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
-import time
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -31,10 +31,10 @@ ANNUALIZATION = math.sqrt(252)
 # 指标计算 (单只股票 / 单年)
 # ---------------------------------------------------------------------------
 
-def _year_daily(pro, ts_code: str, year: int) -> pd.DataFrame | None:
+async def _year_daily(pro, ts_code: str, year: int) -> pd.DataFrame | None:
     """获取某年日线 (升序), 供波动率 / 年末收盘价计算。"""
     try:
-        df = pro.daily(ts_code=ts_code, start_date=f"{year}0101", end_date=f"{year}1231")
+        df = await pro.daily(ts_code=ts_code, start_date=f"{year}0101", end_date=f"{year}1231")
     except Exception:
         return None
     if df is None or df.empty:
@@ -42,10 +42,10 @@ def _year_daily(pro, ts_code: str, year: int) -> pd.DataFrame | None:
     return df.sort_values("trade_date").reset_index(drop=True)
 
 
-def _year_daily_basic(pro, ts_code: str, year: int) -> pd.DataFrame | None:
+async def _year_daily_basic(pro, ts_code: str, year: int) -> pd.DataFrame | None:
     """获取某年每日指标 (总市值/成交额/股息率等), 显式指定所需字段。"""
     try:
-        df = pro.daily_basic(
+        df = await pro.daily_basic(
             ts_code=ts_code, start_date=f"{year}0101", end_date=f"{year}1231",
             fields="ts_code,trade_date,close,total_mv,circ_mv,amount,dv_ratio,dv_ttm",
         )
@@ -96,12 +96,12 @@ def _avg_mv_amt(basic: pd.DataFrame | None, daily: pd.DataFrame | None) -> tuple
     return avg_mv, avg_amt
 
 
-def _latest_close(pro, ts_code: str) -> float | None:
+async def _latest_close(pro, ts_code: str) -> float | None:
     """最近一个交易日 (上个交易日) 的收盘价, 用作股息率-TTM 分母。"""
     try:
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
-        df = pro.daily(ts_code=ts_code, start_date=start, end_date=end)
+        df = await pro.daily(ts_code=ts_code, start_date=start, end_date=end)
         if df is None or df.empty:
             return None
         df = df.sort_values("trade_date")
@@ -110,20 +110,20 @@ def _latest_close(pro, ts_code: str) -> float | None:
         return None
 
 
-def _div_per_share(pro, ts_code: str, year: int) -> float | None:
+async def _div_per_share(pro, ts_code: str, year: int) -> float | None:
     """该分红年度 (end_date 年份==year) 每股现金红利之和 (元)。
 
     同一分红年度存在 中期(0630)/三季(0930)/年度(1231) 多期分红, 每期又有
     预案/股东大会/实施 多条流程记录。按 end_date 年份聚合所有'实施'记录求和
     (一年多次分红), 无实施记录时退回该年 cash_div 最大值。
     """
-    return ds._annual_div_per_share(pro, ts_code, year)
+    return await ds._annual_div_per_share(pro, ts_code, year)
 
 
-def _dividend_growth_3y(pro, ts_code: str, year: int) -> float | None:
+async def _dividend_growth_3y(pro, ts_code: str, year: int) -> float | None:
     """3 年每股股利复合增长率 % = (当年分红 / 三年前分红)^(1/3) - 1。"""
     try:
-        dv = pro.dividend(ts_code=ts_code)
+        dv = await pro.dividend(ts_code=ts_code)
     except Exception:
         return None
     if dv is None or dv.empty:
@@ -155,19 +155,19 @@ def _dividend_growth_3y(pro, ts_code: str, year: int) -> float | None:
         return None
 
 
-def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
-                      industry: str, year: int, last_close: float | None = None) -> dict | None:
+async def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
+                            industry: str, year: int, last_close: float | None = None) -> dict | None:
     """计算单只股票单年的红利低波指标, 返回入库行 (缺数据字段为 None)。
 
     last_close: 上个交易日收盘价 (股息率-TTM 分母); 不传则自动拉取。
     """
-    daily = _year_daily(pro, ts_code, year)
+    daily = await _year_daily(pro, ts_code, year)
     year_end_close, volatility = _compute_volatility(daily)
 
-    basic = _year_daily_basic(pro, ts_code, year)
+    basic = await _year_daily_basic(pro, ts_code, year)
     avg_mv, avg_amt = _avg_mv_amt(basic, daily)
 
-    fina = ds._fina_latest(pro, ts_code, period=f"{year}1231")
+    fina = await ds._fina_latest(pro, ts_code, period=f"{year}1231")
     eps = fina["dt_eps"] if fina else None
     roe = fina["roe"] if fina else None
     debt = fina["debt_to_assets"] if fina else None
@@ -176,8 +176,8 @@ def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
     free_cashflow = fcff / 10000.0 if fcff is not None else None
     end_date = fina["end_date"] if fina else ""
 
-    div_per_share = _div_per_share(pro, ts_code, year)
-    div_growth = _dividend_growth_3y(pro, ts_code, year)
+    div_per_share = await _div_per_share(pro, ts_code, year)
+    div_growth = await _dividend_growth_3y(pro, ts_code, year)
 
     # 静态股息率 = 全年每股分红 / 年末收盘价 × 100
     dividend_yield = None
@@ -186,7 +186,7 @@ def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
 
     # 股息率-TTM = 全年每股分红 / 上个交易日收盘价 × 100
     if last_close is None:
-        last_close = _latest_close(pro, ts_code)
+        last_close = await _latest_close(pro, ts_code)
     dividend_yield_ttm = None
     if div_per_share is not None and last_close:
         dividend_yield_ttm = div_per_share / last_close * 100.0
@@ -222,14 +222,14 @@ def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
 # 同步 & 查询
 # ---------------------------------------------------------------------------
 
-def sync_industry_year(industry: str, year: int, max_stocks: int = 500,
-                       sleep: float = 0.1) -> dict:
+async def sync_industry_year(industry: str, year: int, max_stocks: int = 500,
+                             sleep: float = 0.1) -> dict:
     """对指定行业+年份的全部公司计算指标并写入 PG (幂等 upsert)。
 
     行业为空时同步全市场前 max_stocks 只 (较慢)。
     """
     pro = ds._init_pro()
-    stocks = ds._stock_basic()
+    stocks = await ds._stock_basic()
     if industry:
         cand = stocks[stocks["industry"].str.contains(industry, na=False)]
     else:
@@ -239,17 +239,17 @@ def sync_industry_year(industry: str, year: int, max_stocks: int = 500,
     rows = []
     failed = 0
     for _, row in cand.iterrows():
-        last_close = _latest_close(pro, row["ts_code"])
-        r = compute_stock_row(pro, row["ts_code"], row["symbol"], row["name"],
-                              row.get("industry", ""), year, last_close=last_close)
+        last_close = await _latest_close(pro, row["ts_code"])
+        r = await compute_stock_row(pro, row["ts_code"], row["symbol"], row["name"],
+                                    row.get("industry", ""), year, last_close=last_close)
         if r is None:
             failed += 1
             continue
         rows.append(r)
         if sleep > 0:
-            time.sleep(sleep)
+            await asyncio.sleep(sleep)
 
-    stored = pg_service.upsert_rows(rows)
+    stored = await pg_service.upsert_rows(rows)
     return {
         "industry": industry,
         "year": year,
@@ -259,32 +259,32 @@ def sync_industry_year(industry: str, year: int, max_stocks: int = 500,
     }
 
 
-def sync_industry_years(industry: str, years: list[int], max_stocks: int = 500,
-                        sleep: float = 0.1) -> dict:
+async def sync_industry_years(industry: str, years: list[int], max_stocks: int = 500,
+                              sleep: float = 0.1) -> dict:
     """对指定行业+多个年份逐期同步 (幂等 upsert), 返回各年份统计。"""
     total = {"industry": industry, "years": years,
              "stored_total": 0, "scanned_total": 0, "per_year": {}}
     for y in years:
-        r = sync_industry_year(industry, y, max_stocks=max_stocks, sleep=sleep)
+        r = await sync_industry_year(industry, y, max_stocks=max_stocks, sleep=sleep)
         total["stored_total"] += r["stored"]
         total["scanned_total"] += r["scanned"]
         total["per_year"][str(y)] = r
     return total
 
 
-def ensure_data(industry: str, years: list[int], max_stocks: int = 500) -> dict:
+async def ensure_data(industry: str, years: list[int], max_stocks: int = 500) -> dict:
     """确保行业+各年份数据已入库; 缺失或记录数少于行业股票数时自动同步补齐。"""
-    expected = _industry_stock_count(industry)
+    expected = await _industry_stock_count(industry)
     missing: list[int] = []
     for y in years:
-        count = pg_service.count_by_industry_year(industry, y)
+        count = await pg_service.count_by_industry_year(industry, y)
         if count == 0 or (expected is not None and count < expected):
             missing.append(y)
 
     stored_total = 0
     per_year = {}
     for y in missing:
-        r = sync_industry_year(industry, y, max_stocks=max_stocks)
+        r = await sync_industry_year(industry, y, max_stocks=max_stocks)
         stored_total += r["stored"]
         per_year[str(y)] = r
 
@@ -292,20 +292,20 @@ def ensure_data(industry: str, years: list[int], max_stocks: int = 500) -> dict:
             "stored": stored_total, "per_year": per_year}
 
 
-def _industry_stock_count(industry: str) -> int | None:
+async def _industry_stock_count(industry: str) -> int | None:
     """行业股票总数 (全市场为 None, 表示无法预判)。"""
     if not industry:
         return None
     try:
-        stocks = ds._stock_basic()
+        stocks = await ds._stock_basic()
         return int(stocks["industry"].str.contains(industry, na=False).sum())
     except Exception:
         return None
 
 
-def screen(industry: str, years: list[int], sort_by: str = "dividend_yield",
-           order: str = "desc", filters: dict | None = None,
-           limit: int = 500) -> list[dict]:
+async def screen(industry: str, years: list[int], sort_by: str = "dividend_yield",
+                 order: str = "desc", filters: dict | None = None,
+                 limit: int = 500) -> list[dict]:
     """从 PG 查询该行业+多个年份全部公司, 支持字段阈值筛选, 按指定指标排序。"""
-    return pg_service.query_screen(industry, years, sort_by=sort_by,
-                                   order=order, limit=limit, filters=filters)
+    return await pg_service.query_screen(industry, years, sort_by=sort_by,
+                                         order=order, limit=limit, filters=filters)

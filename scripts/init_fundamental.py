@@ -21,7 +21,7 @@ from api import fundamental_service as fs  # noqa: E402
 from api import pg_service  # noqa: E402
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="基本面数据初始化 (ROE 杜邦拆分)")
     parser.add_argument("--industry", default="", help="行业名称(东财分类), 空=全市场")
     parser.add_argument("--start", type=int, default=2024, help="起始年份")
@@ -29,12 +29,12 @@ def main() -> None:
     parser.add_argument("--max-stocks", type=int, default=6000, help="最多扫描股票数(默认6000覆盖全市场5536只)")
     args = parser.parse_args()
 
-    pg_service.init_fundamental_schema()
+    await pg_service.init_fundamental_schema()
     years = list(range(args.start, args.end + 1))
     print(f"初始化: 行业={args.industry or '全市场'} 年份={years} max_stocks={args.max_stocks}")
 
     t0 = time.time()
-    result = fs.sync_industry_years(args.industry, years, max_stocks=args.max_stocks)
+    result = await fs.sync_industry_years(args.industry, years, max_stocks=args.max_stocks)
     print(f"\n完成: 扫描 {result['scanned_total']} 条记录, 入库 {result['stored_total']} 条, "
           f"耗时 {time.time() - t0:.0f} 秒")
     for y, v in result["per_year"].items():
@@ -42,4 +42,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

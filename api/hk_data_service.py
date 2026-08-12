@@ -19,16 +19,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
 import time
-from datetime import datetime, timedelta
-from functools import lru_cache
+from datetime import datetime
 from pathlib import Path
 
+import httpx
 import pandas as pd
-import requests
 
 from . import data_service
 
@@ -51,9 +51,15 @@ _UA = {
     "Referer": "https://quote.eastmoney.com",
 }
 
-# 复用连接 (HTTP keep-alive), 显著降低同一 host 的请求延迟
-_SESSION = requests.Session()
-_SESSION.headers.update(_UA)
+# 复用连接 (HTTP keep-alive, 异步 httpx), 显著降低同一 host 的请求延迟
+_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+
+async def _get_http_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None:
+        _HTTP_CLIENT = httpx.AsyncClient(headers=_UA, timeout=30.0)
+    return _HTTP_CLIENT
 
 # USD→HKD 兜底汇率 (仅当分红方案只给美元、无港元折算时使用)
 USD_HKD_FALLBACK = 7.8
@@ -68,7 +74,7 @@ def _init_pro():
     return data_service._init_pro()
 
 
-def hk_stock_list(use_cache: bool = True) -> pd.DataFrame:
+async def hk_stock_list(use_cache: bool = True) -> pd.DataFrame:
     """港股股票列表 (tushare hk_basic), 默认带本地缓存 (避免频繁调用限频接口)。
 
     返回列: ts_code, symbol, name, market, list_status, list_date, trade_unit, curr_type。
@@ -80,7 +86,7 @@ def hk_stock_list(use_cache: bool = True) -> pd.DataFrame:
         if not df.empty:
             return df
     pro = _init_pro()
-    df = pro.hk_basic(fields="ts_code,name,market,list_status,list_date,trade_unit,curr_type")
+    df = await pro.hk_basic(fields="ts_code,name,market,list_status,list_date,trade_unit,curr_type")
     if df is None or df.empty:
         raise RuntimeError("tushare hk_basic 返回空 (可能限频或无权限)。")
     df = df.reset_index(drop=True)
@@ -103,10 +109,10 @@ def _symbol_to_ts_code(symbol: str) -> str:
 # 基础: 东方财富 datacenter
 # ---------------------------------------------------------------------------
 
-def _em_request(report_name: str, columns: str = "ALL", filter_: str = "",
-                page: int = 1, page_size: int = 50, sort_columns: str = "",
-                sort_types: str = "", retries: int = 3) -> dict:
-    """调用东财 datacenter 数据接口, 带重试。"""
+async def _em_request(report_name: str, columns: str = "ALL", filter_: str = "",
+                      page: int = 1, page_size: int = 50, sort_columns: str = "",
+                      sort_types: str = "", retries: int = 3) -> dict:
+    """调用东财 datacenter 数据接口 (异步 httpx), 带重试。"""
     params = {
         "reportName": report_name,
         "columns": columns,
@@ -122,21 +128,22 @@ def _em_request(report_name: str, columns: str = "ALL", filter_: str = "",
     }
     for attempt in range(retries):
         try:
-            r = _SESSION.get(EM_DATACENTER_URL, params=params, timeout=20)
+            client = await _get_http_client()
+            r = await client.get(EM_DATACENTER_URL, params=params)
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}")
             return r.json()
         except Exception:
             if attempt < retries - 1:
-                time.sleep(1.0 * (attempt + 1))
+                await asyncio.sleep(1.0 * (attempt + 1))
     return {}
 
 
-def _em_data(report_name: str, columns: str = "ALL", filter_: str = "",
-             page: int = 1, page_size: int = 50, sort_columns: str = "",
-             sort_types: str = "") -> list[dict]:
+async def _em_data(report_name: str, columns: str = "ALL", filter_: str = "",
+                   page: int = 1, page_size: int = 50, sort_columns: str = "",
+                   sort_types: str = "") -> list[dict]:
     """东财 datacenter 数据列表 (自动从 result.data 提取, 空返回 [])。"""
-    j = _em_request(report_name, columns, filter_, page, page_size, sort_columns, sort_types)
+    j = await _em_request(report_name, columns, filter_, page, page_size, sort_columns, sort_types)
     res = j.get("result") or {}
     return res.get("data") or []
 
@@ -173,13 +180,13 @@ _MAIN_INDICATOR_COLS = (
 )
 
 
-def _fina_indicator_map(ts_code: str) -> dict[int, dict]:
+async def _fina_indicator_map(ts_code: str) -> dict[int, dict]:
     """某港股各财政年度主要财务指标 {year: {字段: 值}} (仅年报 DATE_TYPE_CODE=001)。
 
     金额字段 (OPERATE_INCOME/TOTAL_ASSETS/现金流/市值) 统一转 万港元。
     """
     code = ts_code.split(".")[0]
-    rows = _em_data(
+    rows = await _em_data(
         "RPT_HKF10_FN_MAININDICATOR", columns=_MAIN_INDICATOR_COLS,
         filter_=f'(SECUCODE="{ts_code}")(DATE_TYPE_CODE="001")',
         page_size=100, sort_columns="STD_REPORT_DATE", sort_types="-1",
@@ -293,7 +300,7 @@ def parse_dps(plan_explain: str) -> float | None:
     return None
 
 
-def _dividend_map(ts_code: str) -> dict[int, float]:
+async def _dividend_map(ts_code: str) -> dict[int, float]:
     """某港股按财政年度聚合的每股现金分红 {year: dps_hkd}。
 
     RPT_HKF10_MAIN_DIVBASIC 的 YEAR 字段 = 分红所属财政年度 (港股跨年多次派息,
@@ -304,7 +311,7 @@ def _dividend_map(ts_code: str) -> dict[int, float]:
     all_rows: list[dict] = []
     page = 1
     while True:
-        rows = _em_data(
+        rows = await _em_data(
             "RPT_HKF10_MAIN_DIVBASIC",
             columns=("SECURITY_CODE,UPDATE_DATE,REPORT_TYPE,EX_DIVIDEND_DATE,"
                      "DIVIDEND_DATE,TRANSFER_END_DATE,YEAR,PLAN_EXPLAIN,IS_BFP"),
@@ -317,7 +324,7 @@ def _dividend_map(ts_code: str) -> dict[int, float]:
         if len(rows) < 200:
             break
         page += 1
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
     out: dict[int, float] = {}
     for r in all_rows:
         try:
@@ -347,7 +354,7 @@ _BAL_ITEMS = {
 }
 
 
-def _balance_map(ts_code: str) -> dict[int, dict]:
+async def _balance_map(ts_code: str) -> dict[int, dict]:
     """某港股各财政年度资产负债表关键科目 {year: {total_cur_assets_wan, money_cap_wan, inventory_wan}}。
 
     仅取年报 (DATE_TYPE_CODE=001), 自动分页 (page_size=2000, 通常一次取回全部年度)。
@@ -355,7 +362,7 @@ def _balance_map(ts_code: str) -> dict[int, dict]:
     all_rows: list[dict] = []
     page = 1
     while True:
-        rows = _em_data(
+        rows = await _em_data(
             "RPT_HKF10_FN_BALANCE_PC",
             columns=("SECUCODE,SECURITY_CODE,REPORT_DATE,STD_ITEM_CODE,STD_ITEM_NAME,"
                      "AMOUNT,DATE_TYPE_CODE"),
@@ -368,7 +375,7 @@ def _balance_map(ts_code: str) -> dict[int, dict]:
         if len(rows) < 2000:
             break
         page += 1
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
     out: dict[int, dict] = {}
     for r in all_rows:
         end = str(r.get("REPORT_DATE") or "")[:10]
@@ -392,7 +399,7 @@ def _balance_map(ts_code: str) -> dict[int, dict]:
 # 行业 (RPT_HKF10_INFO_ORGPROFILE) — 批量获取, 带缓存
 # ---------------------------------------------------------------------------
 
-def industry_map(use_cache: bool = True) -> dict[str, str]:
+async def industry_map(use_cache: bool = True) -> dict[str, str]:
     """全部港股 代码→行业 映射 {ts_code: industry}, 带本地缓存。
 
     一次批量请求 (约 140 页) 覆盖全部港股 (含主板/创业板), 结果按 tushare hk_basic 过滤。
@@ -403,12 +410,12 @@ def industry_map(use_cache: bool = True) -> dict[str, str]:
             return json.loads(cache_path.read_text(encoding="utf-8"))
         except Exception:
             pass
-    stocks = hk_stock_list()
+    stocks = await hk_stock_list()
     valid = set(stocks["ts_code"].astype(str))
     mapping: dict[str, str] = {}
     page = 1
     while True:
-        rows = _em_data(
+        rows = await _em_data(
             "RPT_HKF10_INFO_ORGPROFILE",
             columns="SECUCODE,SECURITY_CODE,ORG_NAME,BELONG_INDUSTRY",
             page=page, page_size=100,
@@ -424,7 +431,7 @@ def industry_map(use_cache: bool = True) -> dict[str, str]:
         if len(rows) < 100:
             break
         page += 1
-        time.sleep(0.3)
+        await asyncio.sleep(0.3)
     cache_path.write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
     return mapping
 
@@ -433,18 +440,24 @@ def industry_map(use_cache: bool = True) -> dict[str, str]:
 # 日线 (腾讯港股 K 线) — 波动率/年末收盘/最新收盘
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=256)
-def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
-    """腾讯港股日线 (不复权), 列: date/open/close/high/low/vol。
+# 腾讯港股日线缓存 (原 lru_cache 语义: 进程内永久缓存)
+_TENCENT_CACHE: dict[str, pd.DataFrame] = {}
+
+
+async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
+    """腾讯港股日线 (不复权, 异步), 列: date/open/close/high/low/vol。
 
     腾讯 fqkline count 参数上限约 2000~3000, 超限返回空; 用 count=2000 取最近约 8 年
     (被截断时返回最近 2000 条), 足够近年选股 (2020+)。
     """
+    if ts_code in _TENCENT_CACHE:
+        return _TENCENT_CACHE[ts_code]
     symbol = ts_code.split(".")[0]
     end = datetime.now().strftime("%Y-%m-%d")
     params = {"param": f"hk{symbol},day,2000-01-01,{end},2000,"}
     try:
-        r = requests.get(TENCENT_KLINE_URL, params=params, headers=_UA, timeout=20)
+        client = await _get_http_client()
+        r = await client.get(TENCENT_KLINE_URL, params=params)
         j = r.json()
     except Exception:
         return pd.DataFrame()
@@ -469,15 +482,17 @@ def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date").reset_index(drop=True)
+    df = df.sort_values("date").reset_index(drop=True)
+    _TENCENT_CACHE[ts_code] = df
+    return df
 
 
-def year_volatility(ts_code: str, year: int) -> tuple[float | None, float | None]:
+async def year_volatility(ts_code: str, year: int) -> tuple[float | None, float | None]:
     """返回 (年末收盘价, 年化波动率 %); 无法获取时返回 (None, None)。
 
     波动率 = 日收益率标准差 × sqrt(252) × 100 (不复权收盘价, 与 A 股口径一致)。
     """
-    df = _tencent_kline_df(ts_code)
+    df = await _tencent_kline_df(ts_code)
     if df.empty:
         return None, None
     dfy = df[(df["date"].dt.year == year)].copy()
@@ -494,17 +509,17 @@ def year_volatility(ts_code: str, year: int) -> tuple[float | None, float | None
     return year_end_close, vol
 
 
-def latest_close(ts_code: str) -> float | None:
+async def latest_close(ts_code: str) -> float | None:
     """最近一个交易日收盘价 (股息率-TTM 分母)。"""
-    df = _tencent_kline_df(ts_code)
+    df = await _tencent_kline_df(ts_code)
     if df.empty:
         return None
     return float(df["close"].iloc[-1])
 
 
-def year_end_close(ts_code: str, year: int) -> float | None:
+async def year_end_close(ts_code: str, year: int) -> float | None:
     """某年最后一个交易日收盘价 (静态股息率分母)。"""
-    df = _tencent_kline_df(ts_code)
+    df = await _tencent_kline_df(ts_code)
     if df.empty:
         return None
     dfy = df[df["date"].dt.year == year]
@@ -513,9 +528,9 @@ def year_end_close(ts_code: str, year: int) -> float | None:
     return float(dfy["close"].iloc[-1])
 
 
-def avg_daily_amt_wan(ts_code: str, year: int) -> float | None:
+async def avg_daily_amt_wan(ts_code: str, year: int) -> float | None:
     """某年日均成交金额 (万港元), 近似 = mean(成交量(股) × 收盘价) / 10000。"""
-    df = _tencent_kline_df(ts_code)
+    df = await _tencent_kline_df(ts_code)
     if df.empty:
         return None
     dfy = df[df["date"].dt.year == year].copy()
@@ -531,7 +546,7 @@ def avg_daily_amt_wan(ts_code: str, year: int) -> float | None:
 # 便捷: 单只股票全部指标
 # ---------------------------------------------------------------------------
 
-def stock_metrics(ts_code: str, industry_map_: dict[str, str] | None = None) -> dict:
+async def stock_metrics(ts_code: str, industry_map_: dict[str, str] | None = None) -> dict:
     """汇总单只港股的全部原始数据 (供红利低波/基本面计算):
 
     Returns:
@@ -541,7 +556,7 @@ def stock_metrics(ts_code: str, industry_map_: dict[str, str] | None = None) -> 
         "balance": {year: {...}}, "last_close": float
       }
     """
-    stocks = hk_stock_list()
+    stocks = await hk_stock_list()
     hit = stocks[stocks["ts_code"].astype(str) == ts_code]
     if hit.empty:
         raise ValueError(f"未找到港股 {ts_code}")
@@ -557,8 +572,8 @@ def stock_metrics(ts_code: str, industry_map_: dict[str, str] | None = None) -> 
         "name": name,
         "market": market,
         "industry": ind,
-        "fina": _fina_indicator_map(ts_code),
-        "dividends": _dividend_map(ts_code),
-        "balance": _balance_map(ts_code),
-        "last_close": latest_close(ts_code),
+        "fina": await _fina_indicator_map(ts_code),
+        "dividends": await _dividend_map(ts_code),
+        "balance": await _balance_map(ts_code),
+        "last_close": await latest_close(ts_code),
     }

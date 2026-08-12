@@ -42,18 +42,18 @@ _SERIAL_TYPES = {
 }
 
 
-def _list_tables(cur) -> list[str]:
+async def _list_tables(conn) -> list[str]:
     """public schema 下所有用户表 (按名称排序)。"""
-    cur.execute(
+    rows = await conn.fetch(
         "SELECT table_name FROM information_schema.tables "
         "WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name;"
     )
-    return [r[0] for r in cur.fetchall()]
+    return [r[0] for r in rows]
 
 
-def _table_columns(cur, table: str) -> list[dict]:
+async def _table_columns(conn, table: str) -> list[dict]:
     """获取列定义: 名称/精确类型/NOT NULL/默认值(含 nextval 解析)/自增属性。"""
-    cur.execute(
+    rows = await conn.fetch(
         """
         SELECT a.attname,
                format_type(a.atttypid, a.atttypmod) AS data_type,
@@ -62,10 +62,10 @@ def _table_columns(cur, table: str) -> list[dict]:
                a.attidentity
         FROM pg_attribute a
         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-        WHERE a.attrelid = %s::regclass AND a.attnum > 0 AND NOT a.attisdropped
+        WHERE a.attrelid = $1::regclass AND a.attnum > 0 AND NOT a.attisdropped
         ORDER BY a.attnum;
         """,
-        (f"public.{table}",),
+        f"public.{table}",
     )
     return [
         {
@@ -75,7 +75,7 @@ def _table_columns(cur, table: str) -> list[dict]:
             "default": r[3],
             "identity": r[4],
         }
-        for r in cur.fetchall()
+        for r in rows
     ]
 
 
@@ -113,51 +113,51 @@ def _col_def(col: dict, table: str) -> str:
     return " ".join(parts)
 
 
-def _table_constraints(cur, table: str) -> list[tuple[str, str]]:
+async def _table_constraints(conn, table: str) -> list[tuple[str, str]]:
     """主键/唯一/检查约束 (contype p/u/c), 返回 [(conname, constraintdef)]。"""
-    cur.execute(
+    rows = await conn.fetch(
         """
         SELECT conname, pg_get_constraintdef(oid)
         FROM pg_constraint
-        WHERE conrelid = %s::regclass AND contype IN ('p', 'u', 'c')
+        WHERE conrelid = $1::regclass AND contype IN ('p', 'u', 'c')
         ORDER BY contype, conname;
         """,
-        (f"public.{table}",),
+        f"public.{table}",
     )
-    return [(r[0], r[1]) for r in cur.fetchall()]
+    return [(r[0], r[1]) for r in rows]
 
 
-def _foreign_keys(cur, table: str) -> list[tuple[str, str]]:
+async def _foreign_keys(conn, table: str) -> list[tuple[str, str]]:
     """外键约束 (contype f), 返回 [(conname, constraintdef)]。"""
-    cur.execute(
+    rows = await conn.fetch(
         """
         SELECT conname, pg_get_constraintdef(oid)
         FROM pg_constraint
-        WHERE conrelid = %s::regclass AND contype = 'f'
+        WHERE conrelid = $1::regclass AND contype = 'f'
         ORDER BY conname;
         """,
-        (f"public.{table}",),
+        f"public.{table}",
     )
-    return [(r[0], r[1]) for r in cur.fetchall()]
+    return [(r[0], r[1]) for r in rows]
 
 
-def _table_indexes(cur, table: str) -> list[str]:
+async def _table_indexes(conn, table: str) -> list[str]:
     """非约束索引 (排除主键/唯一约束自动建的索引), 返回完整 indexdef。"""
-    cur.execute(
+    rows = await conn.fetch(
         """
         SELECT pg_get_indexdef(idx.indexrelid)
         FROM pg_index idx
         JOIN pg_class i ON i.oid = idx.indexrelid
         JOIN pg_class t ON t.oid = idx.indrelid
         JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE n.nspname = 'public' AND t.relname = %s
+        WHERE n.nspname = 'public' AND t.relname = $1
           AND NOT idx.indisprimary
           AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = idx.indexrelid)
         ORDER BY i.relname;
         """,
-        (table,),
+        table,
     )
-    return [r[0] for r in cur.fetchall()]
+    return [r[0] for r in rows]
 
 
 def _write_table_ddl(out, table: str, cols: list[dict],
@@ -179,16 +179,18 @@ def _write_indexes(out, table: str, indexes: list[str]) -> None:
         out.write("\n")
 
 
-def _write_copy_data(cur, out, table: str, cols: list[dict]) -> int:
+async def _write_copy_data(conn, out, table: str, cols: list[dict]) -> int:
     """写 COPY 数据块, 返回导出行数。"""
     col_names = ", ".join(f'"{c["name"]}"' for c in cols)
     out.write(f"COPY public.{table} ({col_names}) FROM stdin;\n")
-    buf = io.StringIO()
-    cur.copy_expert(f"COPY public.{table} ({col_names}) TO STDOUT", buf)
-    out.write(buf.getvalue())
+    buf = io.BytesIO()
+    # asyncpg copy_from_query 会包装成 COPY (<query>) TO STDOUT, 传 SELECT 即可
+    await conn.copy_from_query(f"SELECT {col_names} FROM public.{table}", output=buf)
+    data = buf.getvalue().decode("utf-8")
+    out.write(data)
     out.write("\\.\n\n")
     # COPY text 格式: N 行数据 = N 个换行 (无表头)
-    return buf.getvalue().count("\n")
+    return data.count("\n")
 
 
 def _write_seq_reset(out, table: str, cols: list[dict]) -> None:
@@ -209,54 +211,53 @@ def _write_seq_reset(out, table: str, cols: list[dict]) -> None:
         out.write("\n")
 
 
-def dump_database(conn, tables: list[str] | None, out_path: Path,
-                  schema_only: bool = False, data_only: bool = False) -> None:
+async def dump_database(conn, tables: list[str] | None, out_path: Path,
+                        schema_only: bool = False, data_only: bool = False) -> None:
     """导出到 out_path, 返回 None (行数打印由调用方处理)。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with conn.cursor() as cur:
-        all_tables = _list_tables(cur)
-        tables = tables or all_tables
-        missing = [t for t in tables if t not in all_tables]
-        if missing:
-            raise RuntimeError(f"表不存在: {', '.join(missing)}; 可用: {', '.join(all_tables)}")
+    all_tables = await _list_tables(conn)
+    tables = tables or all_tables
+    missing = [t for t in tables if t not in all_tables]
+    if missing:
+        raise RuntimeError(f"表不存在: {', '.join(missing)}; 可用: {', '.join(all_tables)}")
 
-        fk_all: list[tuple[str, str, str]] = []  # (table, conname, constraintdef)
-        with out_path.open("w", encoding="utf-8") as out:
-            out.write(f"-- llm_caibao 数据库导出\n")
-            out.write(f"-- 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            out.write(f"-- 表: {', '.join(tables)}\n")
-            out.write("-- 可用 psql -f 或 scripts/restore_db.py 导入\n\n")
-            out.write("BEGIN;\n\n")
+    fk_all: list[tuple[str, str, str]] = []  # (table, conname, constraintdef)
+    with out_path.open("w", encoding="utf-8") as out:
+        out.write(f"-- llm_caibao 数据库导出\n")
+        out.write(f"-- 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        out.write(f"-- 表: {', '.join(tables)}\n")
+        out.write("-- 可用 psql -f 或 scripts/restore_db.py 导入\n\n")
+        out.write("BEGIN;\n\n")
 
-            for table in tables:
-                cols = _table_columns(cur, table)
-                if not cols:
-                    print(f"跳过 {table}: 表不存在或无列")
-                    continue
+        for table in tables:
+            cols = await _table_columns(conn, table)
+            if not cols:
+                print(f"跳过 {table}: 表不存在或无列")
+                continue
 
-                if not data_only:
-                    constraints = _table_constraints(cur, table)
-                    _write_table_ddl(out, table, cols, constraints)
-                    _write_indexes(out, table, _table_indexes(cur, table))
-                    fk_all.extend((table, n, d) for n, d in _foreign_keys(cur, table))
+            if not data_only:
+                constraints = await _table_constraints(conn, table)
+                _write_table_ddl(out, table, cols, constraints)
+                _write_indexes(out, table, await _table_indexes(conn, table))
+                fk_all.extend((table, n, d) for n, d in await _foreign_keys(conn, table))
 
-                if not schema_only:
-                    n = _write_copy_data(cur, out, table, cols)
-                    _write_seq_reset(out, table, cols)
-                    print(f"导出 {table}: {n} 行")
+            if not schema_only:
+                n = await _write_copy_data(conn, out, table, cols)
+                _write_seq_reset(out, table, cols)
+                print(f"导出 {table}: {n} 行")
 
-            # 外键统一放最后 (避免跨表创建顺序问题)
-            if fk_all and not data_only:
-                out.write("-- 外键约束\n")
-                for table, cname, cdef in fk_all:
-                    out.write(f"ALTER TABLE public.{table} ADD CONSTRAINT {cname} {cdef};\n")
-                out.write("\n")
+        # 外键统一放最后 (避免跨表创建顺序问题)
+        if fk_all and not data_only:
+            out.write("-- 外键约束\n")
+            for table, cname, cdef in fk_all:
+                out.write(f"ALTER TABLE public.{table} ADD CONSTRAINT {cname} {cdef};\n")
+            out.write("\n")
 
-            out.write("COMMIT;\n")
+        out.write("COMMIT;\n")
     print(f"已写出: {out_path} ({out_path.stat().st_size / 1024:.1f} KB)")
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="导出 llm_caibao 全部表结构与数据到 .sql")
     parser.add_argument("--out", default="", help="输出文件 (默认 backups/llm_caibao_<时间戳>.sql)")
     parser.add_argument("--table", action="append", default=[], help="只导出指定表 (可多次)")
@@ -271,10 +272,12 @@ def main() -> None:
         PROJECT_ROOT / "backups" / f"llm_caibao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql"
     )
 
-    with pg_service._connect() as conn:
-        dump_database(conn, args.table or None, out,
-                      schema_only=args.schema_only, data_only=args.data_only)
+    pool = await pg_service._get_pool()
+    async with pool.acquire() as conn:
+        await dump_database(conn, args.table or None, out,
+                            schema_only=args.schema_only, data_only=args.data_only)
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

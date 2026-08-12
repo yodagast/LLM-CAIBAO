@@ -16,12 +16,11 @@
 from __future__ import annotations
 
 import argparse
-import io
 import re
 import sys
 from pathlib import Path
 
-import psycopg2
+import asyncpg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -54,93 +53,102 @@ def _collect_create_tables(path: Path) -> list[str]:
     return tables
 
 
-def _exec_create_table(cur, stmt: str, keep_existing: bool) -> None:
+async def _exec_create_table(conn, stmt: str, keep_existing: bool) -> None:
     """执行完整 CREATE TABLE 语句 (--no-drop 且表已存在时跳过)。"""
     m = _CREATE_TABLE_RE.search(stmt)
     table = m.group(1)
     if keep_existing:
-        cur.execute(
+        rows = await conn.fetch(
             "SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema='public' AND table_name=%s;",
-            (table,),
+            "WHERE table_schema='public' AND table_name=$1;",
+            table,
         )
-        if cur.fetchone():
+        if rows:
             print(f"跳过已存在的表: {table} (--no-drop)")
             return
-    cur.execute(stmt)
+    await conn.execute(stmt)
     print(f"已创建表: {table}")
 
 
-def _exec_index(cur, stmt: str) -> None:
+async def _exec_index(conn, stmt: str) -> None:
     """CREATE INDEX 幂等化 (IF NOT EXISTS)。"""
     if stmt.startswith("CREATE INDEX"):
         stmt = re.sub(r"^CREATE (UNIQUE )?INDEX", r"CREATE \1INDEX IF NOT EXISTS", stmt)
-    cur.execute(stmt)
+    await conn.execute(stmt)
 
 
-def _restore(conn, path: Path, keep_existing: bool) -> None:
+async def _restore(conn, path: Path, keep_existing: bool) -> None:
     create_tables = _collect_create_tables(path)
-    conn.autocommit = True
 
-    with conn.cursor() as cur:
-        if not keep_existing and create_tables:
-            for t in create_tables:
-                cur.execute(f"DROP TABLE IF EXISTS public.{t} CASCADE")
-            print(f"已删除 {len(create_tables)} 张旧表 (drop-first)")
+    if not keep_existing and create_tables:
+        for t in create_tables:
+            await conn.execute(f"DROP TABLE IF EXISTS public.{t} CASCADE")
+        print(f"已删除 {len(create_tables)} 张旧表 (drop-first)")
 
-        stmt_buf: list[str] = []
-        in_copy = False
-        copy_header = ""
-        copy_lines: list[str] = []
-        executed = 0
+    stmt_buf: list[str] = []
+    in_copy = False
+    copy_header = ""
+    copy_lines: list[str] = []
+    executed = 0
 
-        def flush_stmt() -> None:
-            nonlocal executed
-            stmt = "".join(stmt_buf).strip()
-            if not stmt:
-                return
-            if stmt.startswith("CREATE TABLE"):
-                if _CREATE_TABLE_RE.search(stmt):
-                    _exec_create_table(cur, stmt, keep_existing)
-                    executed += 1
-                    return
-            if stmt.startswith("CREATE INDEX"):
-                _exec_index(cur, stmt)
+    async def flush_stmt() -> None:
+        nonlocal executed
+        stmt = "".join(stmt_buf).strip()
+        if not stmt:
+            return
+        if stmt.startswith("CREATE TABLE"):
+            if _CREATE_TABLE_RE.search(stmt):
+                await _exec_create_table(conn, stmt, keep_existing)
                 executed += 1
                 return
-            # BEGIN / COMMIT / SELECT setval / ALTER TABLE 外键 / COMMENT 等
-            cur.execute(stmt)
+        if stmt.startswith("CREATE INDEX"):
+            await _exec_index(conn, stmt)
             executed += 1
+            return
+        # BEGIN / COMMIT / SELECT setval / ALTER TABLE 外键 / COMMENT 等
+        await conn.execute(stmt)
+        executed += 1
 
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                s = line.strip()
-                if in_copy:
-                    if s == "\\.":
-                        # 结束 COPY 块: 执行 COPY ... FROM stdin
-                        cur.copy_expert(copy_header, io.StringIO("".join(copy_lines)))
-                        executed += 1
-                        in_copy = False
-                        copy_lines = []
-                    else:
-                        copy_lines.append(line)
-                    continue
-                if s.startswith("COPY ") and " FROM stdin" in s:
-                    flush_stmt()  # 先执行 COPY 前的语句 (CREATE TABLE)
-                    stmt_buf = []
-                    in_copy = True
-                    copy_header = s.rstrip(";")
-                    continue
-                stmt_buf.append(line)
-                if s.endswith(_STMT_END):
-                    flush_stmt()
-                    stmt_buf = []
-            flush_stmt()  # 文件尾残留语句
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if in_copy:
+                if s == "\\.":
+                    # 结束 COPY 块: 执行 COPY ... FROM stdin (asyncpg copy_to_table)
+                    m_tab = re.match(r"COPY (?:public\.)?([A-Za-z_][\w$]*)", copy_header)
+                    table = m_tab.group(1)
+                    m_col = re.search(r"\((.*?)\)\s*FROM stdin", copy_header)
+                    cols = [c.strip().strip('"') for c in m_col.group(1).split(",")]
+                    data = "".join(copy_lines)
+                    records = [ln for ln in data.split("\n") if ln != ""]
 
-        print(f"完成: 共执行 {executed} 条语句 (含 COPY 数据块)")
+                    async def gen_rows():
+                        for ln in records:
+                            yield (ln + "\n").encode("utf-8")
+
+                    await conn.copy_to_table(table, source=gen_rows(), columns=cols)
+                    executed += 1
+                    in_copy = False
+                    copy_lines = []
+                else:
+                    copy_lines.append(line)
+                continue
+            if s.startswith("COPY ") and " FROM stdin" in s:
+                await flush_stmt()  # 先执行 COPY 前的语句 (CREATE TABLE)
+                stmt_buf = []
+                in_copy = True
+                copy_header = s.rstrip(";")
+                continue
+            stmt_buf.append(line)
+            if s.endswith(_STMT_END):
+                await flush_stmt()
+                stmt_buf = []
+        await flush_stmt()  # 文件尾残留语句
+
+    print(f"完成: 共执行 {executed} 条语句 (含 COPY 数据块)")
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="从 .sql 备份导入 llm_caibao 数据库")
     parser.add_argument("--file", required=True, help="dump_db.py 生成的 .sql 文件")
     parser.add_argument("--connect", default="", help="目标连接串 (默认取 .env DATABASE_URL)")
@@ -152,11 +160,17 @@ def main() -> None:
         parser.error(f"文件不存在: {path}")
 
     dsn = args.connect or pg_service._dsn()
+    # .env DATABASE_URL 可能是 postgresql+asyncpg:// 前缀, asyncpg 只认 postgresql://
+    dsn = dsn.replace("postgresql+asyncpg://", "postgresql://").replace("postgres+asyncpg://", "postgres://")
     print(f"目标数据库: {dsn}")
-    with psycopg2.connect(dsn) as conn:
-        _restore(conn, path, keep_existing=args.no_drop)
+    conn = await asyncpg.connect(dsn)
+    try:
+        await _restore(conn, path, keep_existing=args.no_drop)
         print(f"导入完成: {path.name}")
+    finally:
+        await conn.close()
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

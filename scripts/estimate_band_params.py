@@ -18,6 +18,7 @@
 """
 
 import argparse
+import asyncio
 import csv
 import sys
 import time
@@ -37,9 +38,9 @@ CSV_HEADERS = [
 ]
 
 
-def _industry_stocks(industry: str, limit: int = 0) -> list:
+async def _industry_stocks(industry: str, limit: int = 0) -> list:
     """按东财行业分类子串匹配获取股票列表 (与基本面选股一致), 返回 [(ts_code, name)]。"""
-    df = data_service._stock_basic()
+    df = await data_service._stock_basic()
     if industry:
         df = df[df["industry"].fillna("").astype(str).str.contains(industry, na=False)]
     df = df.sort_values("ts_code")
@@ -48,18 +49,18 @@ def _industry_stocks(industry: str, limit: int = 0) -> list:
     return [(str(r["ts_code"]), str(r["name"])) for _, r in df.iterrows()]
 
 
-def estimate_one(ts_code: str, capital: float, start_date: str, end_date: str,
-                 objective: str, min_sharpe: float, max_trades: int | None = 100,
-                 sleep: float = 0.0) -> dict:
+async def estimate_one(ts_code: str, capital: float, start_date: str, end_date: str,
+                       objective: str, min_sharpe: float, max_trades: int | None = 100,
+                       sleep: float = 0.0) -> dict:
     """估算单只股票/基金的最优区间交易参数与指标。"""
-    info = data_service.resolve_code(ts_code)
-    df = data_service.get_daily(info["ts_code"], kind=info["kind"],
-                                start_date=start_date, end_date=end_date, adj="qfq")
+    info = await data_service.resolve_code(ts_code)
+    df = await data_service.get_daily(info["ts_code"], kind=info["kind"],
+                                      start_date=start_date, end_date=end_date, adj="qfq")
     if sleep and sleep > 0:
-        time.sleep(sleep)
-    r = band_service.optimize_band(df, capital=capital,
-                                   min_sharpe=min_sharpe, objective=objective,
-                                   max_trades=max_trades)
+        await asyncio.sleep(sleep)
+    r = await asyncio.to_thread(band_service.optimize_band, df, capital=capital,
+                                min_sharpe=min_sharpe, objective=objective,
+                                max_trades=max_trades)
     p, m, s, trades = r["params"], r["band"]["metrics"], r["search"], r["trades"]
     return {
         "name": info.get("name", ts_code),
@@ -105,7 +106,7 @@ def _sort_rows(rows: list, sort: str, order: str) -> list:
     return sorted(rows, key=key, reverse=(order == "desc"))
 
 
-def main() -> None:
+async def main() -> None:
     _load_env()
     parser = argparse.ArgumentParser(description="区间交易参数估算 (复用区间交易 tab 逻辑)")
     parser.add_argument("--code", default="", help="单只股票/基金代码 (如 600036 / 512170)")
@@ -137,7 +138,7 @@ def main() -> None:
     elif args.codes:
         stocks = [(c.strip(), c.strip()) for c in args.codes.split(",") if c.strip()]
     elif args.industry:
-        stocks = _industry_stocks(args.industry, args.limit)
+        stocks = await _industry_stocks(args.industry, args.limit)
     else:
         print("请指定 --code / --codes / --industry 之一。")
         return
@@ -150,8 +151,8 @@ def main() -> None:
     t0 = time.time()
     for i, (ts_code, _name) in enumerate(stocks, 1):
         try:
-            row = estimate_one(ts_code, args.capital, args.start, args.end,
-                               args.objective, args.min_sharpe, max_trades, args.sleep)
+            row = await estimate_one(ts_code, args.capital, args.start, args.end,
+                                     args.objective, args.min_sharpe, max_trades, args.sleep)
             results.append(row)
         except Exception as e:
             print(f"  ✗ {ts_code} 估算失败: {e}")
@@ -182,4 +183,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

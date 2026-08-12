@@ -116,21 +116,21 @@ PRESET_IDEAS: list[dict] = [
 ]
 
 
-def ensure_invest_ideas(user_id: int) -> None:
+async def ensure_invest_ideas(user_id: int) -> None:
     """该用户无任何精选思想时, 自动初始化预置人物 (幂等)。"""
-    pg_service.init_invest_ideas_schema()
-    if pg_service.count_invest_ideas(user_id) == 0:
+    await pg_service.init_invest_ideas_schema()
+    if await pg_service.count_invest_ideas(user_id) == 0:
         for p in PRESET_IDEAS:
-            pg_service.create_invest_idea(
+            await pg_service.create_invest_idea(
                 user_id, p["name"], p["school"],
                 json.dumps(p["tags"], ensure_ascii=False),
                 p["bio"], p["principles"])
 
 
-def list_ideas(user_id: int) -> list[dict]:
+async def list_ideas(user_id: int) -> list[dict]:
     """确保预置并返回该用户全部精选思想 (tags 反序列化为列表)。"""
-    ensure_invest_ideas(user_id)
-    items = pg_service.list_invest_ideas(user_id)
+    await ensure_invest_ideas(user_id)
+    items = await pg_service.list_invest_ideas(user_id)
     for it in items:
         try:
             it["tags"] = json.loads(it.get("tags") or "[]")
@@ -139,22 +139,22 @@ def list_ideas(user_id: int) -> list[dict]:
     return items
 
 
-def create_idea(user_id: int, name: str, school: str = "", tags: list | None = None,
-                bio: str = "", principles: str = "") -> int:
-    sid = pg_service.create_invest_idea(
+async def create_idea(user_id: int, name: str, school: str = "", tags: list | None = None,
+                      bio: str = "", principles: str = "") -> int:
+    sid = await pg_service.create_invest_idea(
         user_id, name, school,
         json.dumps(tags or [], ensure_ascii=False), bio, principles)
     return sid
 
 
-def update_idea(sid: int, user_id: int, name: str | None = None, school: str | None = None,
-                tags: list | None = None, bio: str | None = None,
-                principles: str | None = None) -> int:
-    return pg_service.update_invest_idea(
+async def update_idea(sid: int, user_id: int, name: str | None = None, school: str | None = None,
+                      tags: list | None = None, bio: str | None = None,
+                      principles: str | None = None) -> int:
+    return await pg_service.update_invest_idea(
         sid, user_id, name=name, school=school,
         tags=json.dumps(tags, ensure_ascii=False) if tags is not None else None,
         bio=bio, principles=principles)
 
 
-def delete_idea(sid: int, user_id: int) -> int:
-    return pg_service.delete_invest_idea(sid, user_id)
+async def delete_idea(sid: int, user_id: int) -> int:
+    return await pg_service.delete_invest_idea(sid, user_id)

@@ -29,7 +29,7 @@ from api import daily_recommend_service as drs  # noqa: E402
 from scripts.download_annual_reports import _load_env  # noqa: E402
 
 
-def main() -> None:
+async def main() -> None:
     _load_env()
     parser = argparse.ArgumentParser(description="全市场每日推荐扫描 (沪深全部A股 → pgsql)")
     parser.add_argument("--objective", default="balanced",
@@ -45,15 +45,15 @@ def main() -> None:
     args = parser.parse_args()
 
     max_trades = args.max_trades if args.max_trades and args.max_trades > 0 else None
-    total = len(drs._all_stocks(0))
+    total = len(await drs._all_stocks(0))
     print(f"全市场扫描: 沪深A股约 {total} 只, 目标={args.objective} 夏普≥{args.min_sharpe} "
           f"交易≤{max_trades if max_trades else '不限'} 区间 {args.start}~{args.end or '最新'} "
           f"批次={args.batch} {'(强制全量重算)' if args.force else '(续跑: 跳过已入库)'}")
     t0 = time.time()
-    r = drs.scan_all(limit=args.limit, objective=args.objective, min_sharpe=args.min_sharpe,
-                     max_trades=max_trades, sleep=args.sleep,
-                     start_date=args.start, end_date=args.end,
-                     skip_existing=not args.force, batch=args.batch)
+    r = await drs.scan_all(limit=args.limit, objective=args.objective, min_sharpe=args.min_sharpe,
+                           max_trades=max_trades, sleep=args.sleep,
+                           start_date=args.start, end_date=args.end,
+                           skip_existing=not args.force, batch=args.batch)
     dt = (time.time() - t0) / 60
     print(f"\n完成: 待扫描 {r['scanned']} 只 (成功 {r['ok']}, 失败 {r['fail']}, 续跑跳过 {r.get('skipped', 0)}), "
           f"入库 {r['stored']} 行, 推荐(买入价≥收盘价) {r['recommend_count']} 只, "
@@ -66,4 +66,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

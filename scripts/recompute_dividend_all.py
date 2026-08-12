@@ -16,13 +16,13 @@
   python scripts/recompute_dividend_all.py --codes 600585.SH   # 只处理指定股票
 """
 import argparse
+import asyncio
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import psycopg2.extras  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from api import data_service as ds  # noqa: E402
@@ -30,14 +30,14 @@ from api import pg_service as pg  # noqa: E402
 from api import redlowvol_service as rlv  # noqa: E402
 
 
-def _div_map(pro, ts_code: str) -> dict[int, float] | None:
+async def _div_map(pro, ts_code: str) -> dict[int, float] | None:
     """每只股票全年已实施每股现金红利之和 {year: total} (按 end_date 年份求和 + 去重)。
 
     返回 None 表示 tushare 接口错误/限频 (应跳过, 不能当作无分红置空);
     返回 {} 表示该股确实无分红记录。
     """
     try:
-        dv = pro.dividend(ts_code=ts_code)
+        dv = await pro.dividend(ts_code=ts_code)
     except Exception:
         return None
     if dv is None or dv.empty or "cash_div" not in dv.columns:
@@ -57,24 +57,24 @@ def _div_map(pro, ts_code: str) -> dict[int, float] | None:
     return out
 
 
-def _div_map_with_retry(pro, ts_code: str) -> dict[int, float] | None:
+async def _div_map_with_retry(pro, ts_code: str) -> dict[int, float] | None:
     """获取分红映射, 接口错误/限频时退避重试 (最多 3 次)。"""
     for attempt in range(3):
-        m = _div_map(pro, ts_code)
+        m = await _div_map(pro, ts_code)
         if m is not None:
             return m
-        time.sleep(0.5 * (attempt + 1))
+        await asyncio.sleep(0.5 * (attempt + 1))
     return None
 
 
-def _bulk_latest_close(pro) -> dict[str, float]:
+async def _bulk_latest_close(pro) -> dict[str, float]:
     """批量取最新交易日 (上个交易日) 全市场收盘价 {ts_code: close}; 停牌股单只回退。"""
-    probe = pro.daily(ts_code="000001.SZ", fields="trade_date,close")
+    probe = await pro.daily(ts_code="000001.SZ", fields="trade_date,close")
     if probe is None or probe.empty:
         return {}
     latest_date = str(probe.sort_values("trade_date").iloc[-1]["trade_date"])
     print("最新交易日:", latest_date)
-    full = pro.daily(trade_date=latest_date, fields="ts_code,close")
+    full = await pro.daily(trade_date=latest_date, fields="ts_code,close")
     m: dict[str, float] = {}
     if full is not None and not full.empty:
         for _, r in full.iterrows():
@@ -85,22 +85,21 @@ def _bulk_latest_close(pro) -> dict[str, float]:
     return m
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="全量重算 red_low_vol 分红字段")
     parser.add_argument("--codes", default="", help="只处理指定 ts_code, 逗号分隔")
     parser.add_argument("--sleep", type=float, default=0.1, help="dividend 调用间隔秒数")
     args = parser.parse_args()
 
-    pg.init_schema()
+    await pg.init_schema()
     pro = ds._init_pro()
 
-    with pg._connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT ts_code, year, eps, div_per_share AS old_div, "
-                "dividend_yield AS old_yield FROM red_low_vol"
-            )
-            rows = cur.fetchall()
+    pool = await pg._get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ts_code, year, eps, div_per_share AS old_div, "
+            "dividend_yield AS old_yield FROM red_low_vol"
+        )
     if args.codes:
         want = {c.strip() for c in args.codes.split(",") if c.strip()}
         rows = [r for r in rows if r["ts_code"] in want]
@@ -110,42 +109,40 @@ def main() -> None:
         by_stock.setdefault(r["ts_code"], []).append(r)
     print(f"共 {len(rows)} 行 / {len(by_stock)} 只股票")
 
-    close_map = _bulk_latest_close(pro)
+    close_map = await _bulk_latest_close(pro)
     missing = [c for c in by_stock if c not in close_map]
     print(f"停牌/缺收盘价需回退 {len(missing)} 只")
     for i, c in enumerate(missing):
-        v = rlv._latest_close(pro, c)
+        v = await rlv._latest_close(pro, c)
         if v and v > 0:
             close_map[c] = v
         if i % 500 == 0:
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
 
     updates: list[tuple] = []
     n = 0
     total = 0
     t0 = time.time()
 
-    def flush(conn) -> None:
+    async def flush(conn) -> None:
         nonlocal total
         if not updates:
             return
-        with conn.cursor() as cur:
-            for (ts_code, y, div, ny, nttm, np_, ng, close) in updates:
-                cur.execute(
-                    "UPDATE red_low_vol SET div_per_share=%s, dividend_yield=%s, "
-                    "dividend_yield_ttm=%s, payout_ratio=%s, dividend_growth_3y=%s, "
-                    "last_close=%s, updated_at=now() "
-                    "WHERE ts_code=%s AND year=%s",
-                    (div, ny, nttm, np_, ng, close, ts_code, y),
-                )
-        conn.commit()
+        for (ts_code, y, div, ny, nttm, np_, ng, close) in updates:
+            await conn.execute(
+                "UPDATE red_low_vol SET div_per_share=$1, dividend_yield=$2, "
+                "dividend_yield_ttm=$3, payout_ratio=$4, dividend_growth_3y=$5, "
+                "last_close=$6, updated_at=now() "
+                "WHERE ts_code=$7 AND year=$8",
+                div, ny, nttm, np_, ng, close, ts_code, y,
+            )
         total += len(updates)
         updates.clear()
 
-    with pg._connect() as conn:
+    async with pool.acquire() as conn:
         for ts_code, srows in by_stock.items():
-            dm = _div_map_with_retry(pro, ts_code)
-            time.sleep(args.sleep)
+            dm = await _div_map_with_retry(pro, ts_code)
+            await asyncio.sleep(args.sleep)
             close = close_map.get(ts_code)
             n += 1
             if dm is None:
@@ -181,11 +178,11 @@ def main() -> None:
             if n % 500 == 0:
                 print(f"  已处理 {n}/{len(by_stock)} 只, 累计更新 {total} 条, "
                       f"耗时 {time.time() - t0:.0f}s", flush=True)
-                flush(conn)
+                await flush(conn)
         print(f"  扫描完成, 待写入 {len(updates)} 条, 耗时 {time.time() - t0:.0f}s", flush=True)
-        flush(conn)
+        await flush(conn)
     print(f"完成: 共更新 {total} 行")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

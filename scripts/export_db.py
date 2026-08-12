@@ -18,42 +18,43 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import asyncio
+
 from api import pg_service  # noqa: E402
 
 DEFAULT_TABLES = ["red_low_vol", "fundamental_screen"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _business_cols(cur, table: str) -> list[str]:
+async def _business_cols(conn, table: str) -> list[str]:
     """获取业务列 (排除自增主键 id), 按表结构顺序。"""
-    cur.execute(
+    rows = await conn.fetch(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = %s AND column_name <> 'id' ORDER BY ordinal_position;",
-        (table,),
+        "WHERE table_name = $1 AND column_name <> 'id' ORDER BY ordinal_position;",
+        table,
     )
-    return [r[0] for r in cur.fetchall()]
+    return [r[0] for r in rows]
 
 
-def export_table(conn, table: str, out_dir: Path) -> Path:
+async def export_table(conn, table: str, out_dir: Path) -> Path:
     """导出单表为 CSV, 返回文件路径。"""
     out_dir.mkdir(parents=True, exist_ok=True)
-    with conn.cursor() as cur:
-        cols = _business_cols(cur, table)
-        if not cols:
-            raise RuntimeError(f"表 {table} 不存在或无业务列")
-        col_sql = ", ".join(cols)
-        buf = io.StringIO()
-        cur.copy_expert(
-            f"COPY (SELECT {col_sql} FROM {table}) TO STDOUT WITH (FORMAT csv, HEADER true)",
-            buf,
-        )
+    cols = await _business_cols(conn, table)
+    if not cols:
+        raise RuntimeError(f"表 {table} 不存在或无业务列")
+    col_sql = ", ".join(cols)
+    buf = io.BytesIO()
+    # asyncpg copy_from_query 会包装成 COPY (<query>) TO STDOUT, 传 SELECT + format 选项即可
+    await conn.copy_from_query(f"SELECT {col_sql} FROM {table}", output=buf,
+                               format="csv", header=True)
+    data = buf.getvalue().decode("utf-8")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = out_dir / f"{table}_{ts}.csv"
-    path.write_text(buf.getvalue(), encoding="utf-8")
+    path.write_text(data, encoding="utf-8")
     return path
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="导出 PostgreSQL 业务表到 CSV")
     parser.add_argument("--table", action="append", default=[],
                         help="要导出的表 (可多次; 默认导出全部业务表)")
@@ -65,15 +66,16 @@ def main() -> None:
     out_dir = Path(args.out_dir)
 
     # 确保表结构存在 (导出空表也 OK)
-    pg_service.init_schema()
-    pg_service.init_fundamental_schema()
+    await pg_service.init_schema()
+    await pg_service.init_fundamental_schema()
 
-    with pg_service._connect() as conn:
+    pool = await pg_service._get_pool()
+    async with pool.acquire() as conn:
         for table in tables:
-            path = export_table(conn, table, out_dir)
+            path = await export_table(conn, table, out_dir)
             rows = sum(1 for _ in path.open(encoding="utf-8")) - 1  # 减 header
             print(f"导出 {table}: {rows} 行 -> {path}")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

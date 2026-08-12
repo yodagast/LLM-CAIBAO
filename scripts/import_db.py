@@ -25,48 +25,50 @@ UNIQUE_KEYS = {
 }
 
 
-def _ensure_table(table: str) -> None:
+async def _ensure_table(table: str) -> None:
     if table == "red_low_vol":
-        pg_service.init_schema()
+        await pg_service.init_schema()
     else:
-        pg_service.init_fundamental_schema()
+        await pg_service.init_fundamental_schema()
 
 
-def _business_cols(cur, table: str) -> list[str]:
-    cur.execute(
+async def _business_cols(conn, table: str) -> list[str]:
+    rows = await conn.fetch(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = %s AND column_name <> 'id' ORDER BY ordinal_position;",
-        (table,),
+        "WHERE table_name = $1 AND column_name <> 'id' ORDER BY ordinal_position;",
+        table,
     )
-    return [r[0] for r in cur.fetchall()]
+    return [r[0] for r in rows]
 
 
-def import_table(table: str, filepath: Path) -> int:
-    """导入单表 CSV, 返回写入/更新行数。"""
+async def import_table(table: str, filepath: Path) -> int:
+    """导入单表 CSV, 返回写入/更新行数 (按业务唯一键幂等 upsert)。"""
     if table not in UNIQUE_KEYS:
         raise RuntimeError(f"不支持的表: {table}, 可用: {list(UNIQUE_KEYS)}")
-    _ensure_table(table)
+    await _ensure_table(table)
 
-    with pg_service._connect() as conn:
-        with conn.cursor() as cur:
-            cols = _business_cols(cur, table)
-            col_sql = ", ".join(cols)
-            tmp = f"tmp_{table}"
-            cur.execute(f"DROP TABLE IF EXISTS {tmp}")
-            cur.execute(f"CREATE TEMP TABLE {tmp} (LIKE {table} EXCLUDING IDENTITY)")
-            cur.execute(f"ALTER TABLE {tmp} DROP COLUMN IF EXISTS id")
-            with open(filepath, "r", encoding="utf-8") as f:
-                cur.copy_expert(f"COPY {tmp} ({col_sql}) FROM STDIN WITH (FORMAT csv, HEADER true)", f)
-
-            unique = UNIQUE_KEYS[table]
-            upd = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols
-                            if c not in unique and c != "updated_at")
-            cur.execute(
+    pool = await pg_service._get_pool()
+    async with pool.acquire() as conn:
+        cols = await _business_cols(conn, table)
+        col_sql = ", ".join(cols)
+        unique = UNIQUE_KEYS[table]
+        upd = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols
+                        if c not in unique and c != "updated_at")
+        tmp = f"tmp_{table}"
+        async with conn.transaction():
+            await conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+            await conn.execute(f"CREATE TEMP TABLE {tmp} (LIKE {table} EXCLUDING IDENTITY)")
+            await conn.execute(f"ALTER TABLE {tmp} DROP COLUMN IF EXISTS id")
+            # asyncpg copy_to_table 走 COPY 文本协议 (PG 端解析), 与旧版 copy_expert 语义一致。
+            # 注意: source 必须传 file-like (bytes 会被 os.fspath 误判为路径)。
+            with open(filepath, "rb") as f:
+                await conn.copy_to_table(tmp, source=f, columns=cols, format="csv", header=True)
+            r = await conn.fetch(
                 f"INSERT INTO {table} ({col_sql}) SELECT {col_sql} FROM {tmp} "
-                f"ON CONFLICT ({', '.join(unique)}) DO UPDATE SET {upd}, updated_at = now()",
+                f"ON CONFLICT ({', '.join(unique)}) DO UPDATE SET {upd}, updated_at = now() "
+                f"RETURNING 1"
             )
-            n = cur.rowcount
-        conn.commit()
+            n = len(r)
     return n
 
 
@@ -77,7 +79,7 @@ def table_from_filename(name: str) -> str | None:
     return None
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="从 CSV 导入 PostgreSQL 业务表")
     parser.add_argument("--file", default="", help="单个 CSV 文件路径")
     parser.add_argument("--dir", default="", help="备份目录, 导入其中所有 CSV")
@@ -103,11 +105,12 @@ def main() -> None:
         if not table:
             print(f"跳过 {path.name}: 无法识别表名 (可用 --table 指定)")
             continue
-        n = import_table(table, path)
+        n = await import_table(table, path)
         print(f"导入 {path.name} -> {table}: {n} 行 (upsert)")
         total += n
     print(f"完成, 共处理 {total} 行")
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

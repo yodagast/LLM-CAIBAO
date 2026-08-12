@@ -24,7 +24,7 @@ from api import hk_redlowvol_service as hkrlv  # noqa: E402
 from api import pg_service  # noqa: E402
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="港股红利低波数据初始化")
     parser.add_argument("--industry", default="", help="行业名称(东财港股行业), 空=全市场")
     parser.add_argument("--start", type=int, default=2024, help="起始年份")
@@ -37,16 +37,16 @@ def main() -> None:
     args = parser.parse_args()
 
     # 确保表结构存在
-    pg_service.init_hk_rlv_schema()
+    await pg_service.init_hk_rlv_schema()
 
     if args.build_industry:
         print("重建港股行业映射缓存 ...")
-        mp = hkd.industry_map(use_cache=False)
+        mp = await hkd.industry_map(use_cache=False)
         print(f"行业映射: {len(mp)} 只")
         return
 
     # 行业映射 (供行业过滤/入库)
-    ind_map = hkd.industry_map()
+    ind_map = await hkd.industry_map()
     print(f"行业映射: {len(ind_map)} 只")
 
     years = list(range(args.start, args.end + 1))
@@ -63,17 +63,17 @@ def main() -> None:
         failed = 0
         for ts_code in codes:
             try:
-                m = hkd.stock_metrics(ts_code, ind_map)
+                m = await hkd.stock_metrics(ts_code, ind_map)
                 for y in years:
-                    r = hkrlv.compute_stock_row(m, y)
+                    r = await hkrlv.compute_stock_row(m, y)
                     if r is not None:
                         rows.append(r)
             except Exception as e:
                 print(f"  [{ts_code}] 失败: {e}")
                 failed += 1
             if args.sleep > 0:
-                time.sleep(args.sleep)
-        stored = pg_service.upsert_hk_rlv_rows(rows)
+                await asyncio.sleep(args.sleep)
+        stored = await pg_service.upsert_hk_rlv_rows(rows)
         print(f"\n完成: 指定 {len(codes)} 只, 入库 {stored} 行, 失败 {failed}")
         return
 
@@ -81,8 +81,8 @@ def main() -> None:
           f"max_stocks={args.max_stocks} sleep={args.sleep}")
 
     t0 = time.time()
-    result = hkrlv.sync_industry_years(args.industry, years,
-                                       max_stocks=args.max_stocks, sleep=args.sleep)
+    result = await hkrlv.sync_industry_years(args.industry, years,
+                                             max_stocks=args.max_stocks, sleep=args.sleep)
     print(f"\n完成: 扫描 {result['scanned_total']} 条记录, 入库 {result['stored_total']} 条, "
           f"耗时 {time.time() - t0:.0f} 秒")
     for y, v in result["per_year"].items():
@@ -90,4 +90,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

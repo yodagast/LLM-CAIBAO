@@ -1,25 +1,26 @@
-"""tushare 数据服务层。
+"""tushare 数据服务层 (异步 aio)。
 
 职责:
-  - 从 ../.env 读取 TUSHARE_TOKEN 并初始化 tushare pro 接口
+  - 从 ../.env 读取 TUSHARE_TOKEN 并初始化 tushare 异步客户端 (httpx)
   - 股票代码解析: 6 位代码 → ts_code + 名称 (支持股票 / ETF)
   - 日线数据获取 (股票 daily / ETF fund_daily), 带内存缓存
   - 股票关键字搜索 (前端联想)
 
 约定 (与 strategy/ 下脚本一致):
   - token 从项目根目录 .env 读取 (TUSHARE_TOKEN)
+  - 所有 tushare 访问均为 aio (httpx AsyncClient), 调用点需 await
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from datetime import datetime, timedelta
-from functools import lru_cache
 from pathlib import Path
 
+import httpx
 import pandas as pd
-import tushare as ts
 
 # 项目根目录 (api/ 的上一级)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -38,53 +39,182 @@ def _load_env_token() -> None:
                 os.environ.setdefault(key.strip(), value.strip())
 
 
-def _init_pro():
+class _AsyncPro:
+    """tushare 异步客户端 (httpx AsyncClient), 方法名与官方 tushare pro 一致, 返回 DataFrame。
+
+    调用示例: `await pro.daily(ts_code="600036.SH", start_date="20240101", end_date="20240201")`。
+    """
+
+    BASE_URL = "http://api.tushare.pro"
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+        self._client: httpx.AsyncClient | None = None
+
+    async def _client_ensure(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(base_url=self.BASE_URL, timeout=30.0)
+        return self._client
+
+    @staticmethod
+    def _nonempty(params: dict) -> dict:
+        return {k: v for k, v in params.items() if v is not None and v != ""}
+
+    # tushare 限频/额度错误码 (token 每分钟调用次数限制等)
+    _FREQ_LIMIT_CODES = {40001, 40002, 40003, 40004, 40005, 40006, 40007, 40008, 40009, 40010}
+
+    async def _call(self, api_name: str, params: dict | None = None, fields: str = "") -> pd.DataFrame:
+        client = await self._client_ensure()
+        body = {"api_name": api_name, "token": self._token,
+                "params": params or {}, "fields": fields}
+        for attempt in range(4):
+            resp = await client.post("", json=body)
+            data = resp.json()
+            if data.get("code", -1) == 0:
+                flds = data["data"]["fields"]
+                items = data["data"]["items"] or []
+                return pd.DataFrame(items, columns=flds)
+            code = data.get("code")
+            msg = str(data.get("msg") or "")
+            # 限频/额度不足: 退避重试 (避免低频 token 连续调用被拒, 导致快照等批量场景失败)
+            if code in self._FREQ_LIMIT_CODES or "频率" in msg or "次数" in msg or "权限" in msg:
+                await asyncio.sleep(0.6 * (attempt + 1))
+                continue
+            raise RuntimeError(f"tushare {api_name} 失败: {msg or data}")
+        raise RuntimeError(f"tushare {api_name} 限频重试仍失败: {data.get('msg') or data}")
+
+    async def daily(self, **kw) -> pd.DataFrame:
+        return await self._call("daily", self._nonempty(kw))
+
+    async def daily_basic(self, **kw) -> pd.DataFrame:
+        return await self._call("daily_basic", self._nonempty(kw))
+
+    async def weekly(self, **kw) -> pd.DataFrame:
+        return await self._call("weekly", self._nonempty(kw))
+
+    async def monthly(self, **kw) -> pd.DataFrame:
+        return await self._call("monthly", self._nonempty(kw))
+
+    async def dividend(self, **kw) -> pd.DataFrame:
+        return await self._call("dividend", self._nonempty(kw))
+
+    async def stock_basic(self, **kw) -> pd.DataFrame:
+        return await self._call("stock_basic", self._nonempty(kw))
+
+    async def fund_basic(self, **kw) -> pd.DataFrame:
+        return await self._call("fund_basic", self._nonempty(kw))
+
+    async def fund_daily(self, **kw) -> pd.DataFrame:
+        return await self._call("fund_daily", self._nonempty(kw))
+
+    async def fund_share(self, **kw) -> pd.DataFrame:
+        return await self._call("fund_share", self._nonempty(kw))
+
+    async def fund_nav(self, **kw) -> pd.DataFrame:
+        return await self._call("fund_nav", self._nonempty(kw))
+
+    async def fina_indicator(self, **kw) -> pd.DataFrame:
+        return await self._call("fina_indicator", self._nonempty(kw))
+
+    async def balancesheet(self, **kw) -> pd.DataFrame:
+        return await self._call("balancesheet", self._nonempty(kw))
+
+    async def income(self, **kw) -> pd.DataFrame:
+        return await self._call("income", self._nonempty(kw))
+
+    async def cashflow(self, **kw) -> pd.DataFrame:
+        return await self._call("cashflow", self._nonempty(kw))
+
+    async def adj_factor(self, **kw) -> pd.DataFrame:
+        return await self._call("adj_factor", self._nonempty(kw))
+
+    async def hk_basic(self, **kw) -> pd.DataFrame:
+        return await self._call("hk_basic", self._nonempty(kw))
+
+    async def pro_bar(self, ts_code: str = "", freq: str = "D", adj: str | None = None,
+                      start_date: str = "", end_date: str = "") -> pd.DataFrame:
+        """周/月/日 K 线, 支持 qfq/hfq 复权 (与官方 ts.pro_bar 逻辑等价)。"""
+        if freq == "W":
+            df = await self.weekly(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        elif freq == "M":
+            df = await self.monthly(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        else:
+            df = await self.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        if df is None or df.empty:
+            return df
+        df = df.sort_values("trade_date").reset_index(drop=True)
+        if adj in ("qfq", "hfq"):
+            af = await self.adj_factor(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            if af is not None and not af.empty:
+                af = af.sort_values("trade_date").reset_index(drop=True)
+                df = df.merge(af[["trade_date", "adj_factor"]], on="trade_date", how="left")
+                df["adj_factor"] = df["adj_factor"].ffill()
+                last_af = df["adj_factor"].iloc[-1]
+                if last_af and last_af > 0:
+                    factor = df["adj_factor"] / last_af if adj == "qfq" else df["adj_factor"]
+                    for c in ("open", "high", "low", "close"):
+                        df[c] = df[c] * factor
+                    df["pre_close"] = df["close"].shift(1).fillna(df["close"])
+                df = df.drop(columns=["adj_factor"])
+        return df
+
+
+def _init_pro() -> _AsyncPro:
     _load_env_token()
     token = os.getenv("TUSHARE_TOKEN")
     if not token:
         raise RuntimeError("未设置 TUSHARE_TOKEN, 请在项目根目录 .env 中配置。")
-    ts.set_token(token)
-    return ts.pro_api(token)
+    return _AsyncPro(token)
 
 
 # ---------------------------------------------------------------------------
 # 股票基本信息 / 代码解析
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=1)
-def _stock_basic() -> pd.DataFrame:
-    """获取全部上市股票基本信息 (TTL 缓存 1h)。"""
+async def _stock_basic() -> pd.DataFrame:
+    """获取全部上市股票基本信息 (TTL 缓存 1h, 异步)。"""
     hit = _cache_get(_STOCK_BASIC_CACHE, "all", _TTL_STOCK_BASIC)
     if hit is not None:
         return hit
-    pro = _init_pro()
-    df = pro.stock_basic(exchange="", list_status="L",
-                         fields="ts_code,symbol,name,industry,market,list_date")
-    _cache_put(_STOCK_BASIC_CACHE, "all", df)
-    return df
+    async with _BASIC_LOCK:
+        hit = _cache_get(_STOCK_BASIC_CACHE, "all", _TTL_STOCK_BASIC)
+        if hit is not None:
+            return hit
+        pro = _init_pro()
+        df = await pro.stock_basic(exchange="", list_status="L",
+                                   fields="ts_code,symbol,name,industry,market,list_date")
+        _cache_put(_STOCK_BASIC_CACHE, "all", df)
+        return df
 
 
-@lru_cache(maxsize=1)
-def _fund_basic() -> pd.DataFrame:
-    """获取全部上市基金基本信息 (缓存, 用于 ETF 解析)。"""
-    pro = _init_pro()
-    try:
-        df = pro.fund_basic(market="E")
-    except Exception:
-        df = pd.DataFrame(columns=["ts_code", "name"])
-    # fund_basic 无 symbol 列, 由 ts_code 推导 (如 513050.SH → 513050)
-    if "symbol" not in df.columns:
-        df["symbol"] = df["ts_code"].str.split(".").str[0]
-    return df
+async def _fund_basic() -> pd.DataFrame:
+    """获取全部上市基金基本信息 (TTL 缓存 1h, 异步)。"""
+    hit = _cache_get(_FUND_BASIC_CACHE, "all", _TTL_FUND_BASIC)
+    if hit is not None:
+        return hit
+    async with _BASIC_LOCK:
+        hit = _cache_get(_FUND_BASIC_CACHE, "all", _TTL_FUND_BASIC)
+        if hit is not None:
+            return hit
+        pro = _init_pro()
+        try:
+            df = await pro.fund_basic(market="E")
+        except Exception:
+            df = pd.DataFrame(columns=["ts_code", "name"])
+        # fund_basic 无 symbol 列, 由 ts_code 推导 (如 513050.SH → 513050)
+        if "symbol" not in df.columns:
+            df["symbol"] = df["ts_code"].str.split(".").str[0]
+        _cache_put(_FUND_BASIC_CACHE, "all", df)
+        return df
 
 
-def _resolve_hk(ts_code: str) -> dict:
+async def _resolve_hk(ts_code: str) -> dict:
     """解析港股代码 → {"ts_code", "symbol", "name", "kind", "market"}。
 
     延迟导入 hk_data_service 避免循环依赖 (hk_data_service 依赖本模块的 _init_pro)。
     """
     from . import hk_data_service
-    stocks = hk_data_service.hk_stock_list()
+    stocks = await hk_data_service.hk_stock_list()
     hit = stocks[stocks["ts_code"].astype(str) == ts_code]
     if hit.empty:
         raise ValueError(f"未找到港股代码 [{ts_code}]。")
@@ -98,7 +228,7 @@ def _resolve_hk(ts_code: str) -> dict:
     }
 
 
-def resolve_code(code: str) -> dict:
+async def resolve_code(code: str) -> dict:
     """解析股票/ETF/港股 代码, 返回 {"ts_code", "symbol", "name", "kind"}。
 
     支持:
@@ -115,13 +245,13 @@ def resolve_code(code: str) -> dict:
 
     # 港股: 显式 .HK 后缀
     if ts_code is not None and ts_code.endswith(".HK"):
-        return _resolve_hk(ts_code)
+        return await _resolve_hk(ts_code)
     # 港股: 4~5 位纯数字代码 (A股均为 6 位, 5 位即视为港股零填充)
     if ts_code is None and code.isdigit() and 4 <= len(code) <= 5:
-        return _resolve_hk(f"{code.zfill(5)}.HK")
+        return await _resolve_hk(f"{code.zfill(5)}.HK")
 
-    stocks = _stock_basic()
-    funds = _fund_basic()
+    stocks = await _stock_basic()
+    funds = await _fund_basic()
 
     # 1) 6 位数字代码: 在股票 / 基金表中查找
     if ts_code is None:
@@ -146,7 +276,7 @@ def resolve_code(code: str) -> dict:
         return {"ts_code": ts_code, "symbol": row["symbol"], "name": row["name"], "kind": "fund"}
     # 港股带 .HK 后缀但不在 A股表 (如 00700.HK 前缀等)
     if ts_code.endswith(".HK"):
-        return _resolve_hk(ts_code)
+        return await _resolve_hk(ts_code)
     raise ValueError(f"未找到代码 [{ts_code}] 对应的股票/基金。")
 
 
@@ -160,12 +290,12 @@ def _is_fund_code(ts_code: str) -> bool:
     return symbol.startswith(FUND_PREFIXES)
 
 
-def search_stock(keyword: str, limit: int = 20) -> list[dict]:
+async def search_stock(keyword: str, limit: int = 20) -> list[dict]:
     """按代码或名称模糊搜索股票/基金, 供前端联想使用。"""
     keyword = (keyword or "").strip()
     if not keyword:
         return []
-    stocks = _stock_basic()
+    stocks = await _stock_basic()
     mask = (
         stocks["symbol"].str.contains(keyword, na=False)
         | stocks["ts_code"].str.contains(keyword, na=False)
@@ -179,7 +309,7 @@ def search_stock(keyword: str, limit: int = 20) -> list[dict]:
 
     # 若股票结果不足, 补充基金/ETF (常见于输入 5/1 开头代码或基金名称)
     if len(items) < limit:
-        funds = _fund_basic()
+        funds = await _fund_basic()
         fmask = (
             funds["symbol"].str.contains(keyword, na=False)
             | funds["ts_code"].str.contains(keyword, na=False)
@@ -195,7 +325,7 @@ def search_stock(keyword: str, limit: int = 20) -> list[dict]:
     if len(items) < limit:
         try:
             from . import hk_data_service
-            hk = hk_data_service.hk_stock_list()
+            hk = await hk_data_service.hk_stock_list()
             hkmask = (
                 hk["ts_code"].astype(str).str.contains(keyword, na=False)
                 | hk["name"].astype(str).str.contains(keyword, na=False)
@@ -211,13 +341,13 @@ def search_stock(keyword: str, limit: int = 20) -> list[dict]:
     return items[:limit]
 
 
-def search_industries(keyword: str = "", limit: int = 20) -> list[dict]:
+async def search_industries(keyword: str = "", limit: int = 20) -> list[dict]:
     """行业模糊搜索: 返回匹配的行业及所含股票数量 (供前端候选推荐)。
 
     按关键词子串匹配行业名, 无关键词时返回股票数最多的热门行业;
     结果按股票数降序。
     """
-    stocks = _stock_basic()
+    stocks = await _stock_basic()
     counts = stocks["industry"].value_counts()
     keyword = (keyword or "").strip()
     if keyword:
@@ -240,9 +370,14 @@ _DAILY_CACHE: dict[str, pd.DataFrame] = {}
 _DAILY_BASIC_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _DIVIDEND_CACHE: dict[str, tuple[float, object]] = {}
 _STOCK_BASIC_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_FUND_BASIC_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _TTL_DAILY_BASIC = 900     # 15 分钟 (估值/换手率每日更新)
 _TTL_DIVIDEND = 3600       # 1 小时 (分红低频变化)
 _TTL_STOCK_BASIC = 3600    # 1 小时 (全市场列表)
+_TTL_FUND_BASIC = 3600     # 1 小时 (全市场基金列表)
+
+# 防并发缓存穿透: 批量场景 (如自选股列表) 多个协程同时 miss 时, 只放行一个去拉取
+_BASIC_LOCK = asyncio.Lock()
 
 
 def _cache_get(cache: dict, key: str, ttl: float) -> pd.DataFrame | None:
@@ -256,12 +391,12 @@ def _cache_put(cache: dict, key: str, value) -> None:
     cache[key] = (time.time(), value)
 
 
-def _get_daily_basic(pro, ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+async def _get_daily_basic(pro, ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
     """daily_basic 全历史窗口带缓存 (15 分钟 TTL), 避免详情页每次重复拉取。"""
     hit = _cache_get(_DAILY_BASIC_CACHE, ts_code, _TTL_DAILY_BASIC)
     if hit is not None:
         return hit
-    b = pro.daily_basic(
+    b = await pro.daily_basic(
         ts_code=ts_code, start_date=start_date, end_date=end_date,
         fields="trade_date,close,pb,pe,pe_ttm,total_share,float_share,total_mv,circ_mv,dv_ratio,dv_ttm,turnover_rate")
     _cache_put(_DAILY_BASIC_CACHE, ts_code, b)
@@ -291,8 +426,8 @@ def _adj_close(df: pd.DataFrame) -> pd.Series:
     return pd.Series(out, index=df.index)
 
 
-def _get_hk_daily(ts_code: str, start_date: str, end_date: str,
-                  adj: str = "") -> pd.DataFrame:
+async def _get_hk_daily(ts_code: str, start_date: str, end_date: str,
+                        adj: str = "") -> pd.DataFrame:
     """港股日线 (数据源: 腾讯港股 K 线, 不复权), 返回 tushare daily 同构 DataFrame。
 
     列: trade_date(YYYYMMDD) / open / high / low / close / vol / amount /
@@ -300,7 +435,7 @@ def _get_hk_daily(ts_code: str, start_date: str, end_date: str,
     注意: 港股不提供可靠前复权序列, adj="qfq" 时仍返回原始价 (与 A 股 qfq 口径不同)。
     """
     from . import hk_data_service
-    df = hk_data_service._tencent_kline_df(ts_code)
+    df = await hk_data_service._tencent_kline_df(ts_code)
     if df.empty:
         raise ValueError(f"未获取到 {ts_code} 的港股日线数据。")
     # 日期过滤 (start_date/end_date 为 YYYYMMDD)
@@ -326,9 +461,9 @@ def _get_hk_daily(ts_code: str, start_date: str, end_date: str,
     return out
 
 
-def get_daily(ts_code: str, kind: str = "stock",
-              start_date: str = "20170101", end_date: str = "",
-              adj: str = "") -> pd.DataFrame:
+async def get_daily(ts_code: str, kind: str = "stock",
+                    start_date: str = "20170101", end_date: str = "",
+                    adj: str = "") -> pd.DataFrame:
     """获取单只股票/ETF/港股 日线 (trade_date 升序), 带内存缓存。
 
     adj: "" 不复权(原始价格) / "qfq" 前复权 (A股用 pct_chg 重建; 港股无可靠前复权, 返回原始价)。
@@ -342,7 +477,7 @@ def get_daily(ts_code: str, kind: str = "stock",
 
     # 港股走腾讯日线
     if kind == "hk" or str(ts_code).endswith(".HK"):
-        df = _get_hk_daily(ts_code, start_date, end_date, adj_key)
+        df = await _get_hk_daily(ts_code, start_date, end_date, adj_key)
         df = df.sort_values("trade_date").reset_index(drop=True)
         _DAILY_CACHE[cache_key] = df
         return df
@@ -351,15 +486,15 @@ def get_daily(ts_code: str, kind: str = "stock",
     df = pd.DataFrame()
     if kind == "fund" or _is_fund_code(ts_code):
         try:
-            df = pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            df = await pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
         except Exception:
             df = pd.DataFrame()
         if df.empty:
-            df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            df = await pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
     else:
-        df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        df = await pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
         if df.empty:
-            df = pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            df = await pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
 
     if df is None or df.empty:
         raise ValueError(f"未获取到 {ts_code} 在 {start_date}~{end_date} 的日线数据。")
@@ -373,32 +508,33 @@ def get_daily(ts_code: str, kind: str = "stock",
     return df
 
 
-def get_quote(ts_code: str, kind: str = "stock", days: int = 120) -> pd.DataFrame:
+async def get_quote(ts_code: str, kind: str = "stock", days: int = 120) -> pd.DataFrame:
     """获取最近 N 个交易日的行情数据 (升序), 供前端绘制行情曲线。"""
     end_date = datetime.now().strftime("%Y%m%d")
     # 按约 2.5 倍自然日预取, 以覆盖 N 个交易日
     start = (datetime.now() - timedelta(days=int(days * 2.5) + 30)).strftime("%Y%m%d")
-    df = get_daily(ts_code, kind, start_date=start, end_date=end_date)
+    df = await get_daily(ts_code, kind, start_date=start, end_date=end_date)
     return df.tail(days).reset_index(drop=True)
 
 
-def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
-              start_date: str = "", end_date: str = "", hist_years: int = 20) -> list[dict]:
+async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
+                    start_date: str = "", end_date: str = "", hist_years: int = 20) -> list[dict]:
     """获取 K 线 bars (周期: D日/W周/M月; 复权: qfq前复权/hfq后复权/空不复权)。
 
-    基于 tushare pro_bar 接口。返回升序 bars (含 open/high/low/close/pre_close/change/pct_chg/vol/amount/amplitude)。
+    基于 tushare pro_bar 接口 (异步)。返回升序 bars (含 open/high/low/close/pre_close/change/pct_chg/vol/amount/amplitude)。
     D 线额外附带 turnover_rate (换手率, 来自 daily_basic); W/M 线换手率为空。
     港股 (kind=hk / .HK) 走腾讯日线 (不复权), W/M 由日线聚合。
     """
     if kind == "hk" or str(ts_code).endswith(".HK"):
-        return _hk_kline(ts_code, freq, adj, start_date, end_date, hist_years)
+        return await _hk_kline(ts_code, freq, adj, start_date, end_date, hist_years)
 
     end = end_date or datetime.now().strftime("%Y%m%d")
     start = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
     adj_param = adj.strip() or None
+    pro = _init_pro()
     try:
-        df = ts.pro_bar(ts_code=ts_code, freq=freq.upper(), adj=adj_param,
-                        start_date=start, end_date=end)
+        df = await pro.pro_bar(ts_code=ts_code, freq=freq.upper(), adj=adj_param,
+                               start_date=start, end_date=end)
     except Exception as e:
         raise ValueError(f"获取 {ts_code} {freq}线{adj or '不复权'}数据失败: {e}")
     if df is None or df.empty:
@@ -409,9 +545,8 @@ def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
     turnover_map = {}
     if freq.upper() == "D" and kind != "fund":
         try:
-            pro = _init_pro()
-            tb = pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end,
-                                 fields="trade_date,turnover_rate")
+            tb = await pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end,
+                                       fields="trade_date,turnover_rate")
             if tb is not None and not tb.empty:
                 turnover_map = {
                     str(r["trade_date"]): _to_float(r.get("turnover_rate"))
@@ -444,12 +579,12 @@ def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
     return bars
 
 
-def _hk_kline(ts_code: str, freq: str = "D", adj: str = "",
-              start_date: str = "", end_date: str = "",
-              hist_years: int = 20) -> list[dict]:
+async def _hk_kline(ts_code: str, freq: str = "D", adj: str = "",
+                    start_date: str = "", end_date: str = "",
+                    hist_years: int = 20) -> list[dict]:
     """港股 K 线 (腾讯日线, 不复权); D 直接返回, W/M 由日线聚合。"""
     from . import hk_data_service
-    df = hk_data_service._tencent_kline_df(ts_code)
+    df = await hk_data_service._tencent_kline_df(ts_code)
     if df.empty:
         raise ValueError(f"未获取到 {ts_code} 的港股日线数据。")
     s = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
@@ -504,20 +639,20 @@ def _hk_kline(ts_code: str, freq: str = "D", adj: str = "",
     return bars
 
 
-def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
-                     hist_years: int = 20, date: str = "") -> dict:
+async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
+                           hist_years: int = 20, date: str = "") -> dict:
     """股票详情聚合: 最多 hist_years 年 K 线 + 52 周高低 + PB/PE/股本/市值 + 分红/股息率。
 
     date: 指定交易日 (YYYYMMDD) 查看该日行情快照, 空=最新交易日。
     港股 (kind=hk / .HK) 走 _get_hk_stock_detail (东财指标 + 腾讯日线, 金额单位万港元)。
     """
     if kind == "hk" or str(ts_code).endswith(".HK"):
-        return _get_hk_stock_detail(ts_code, days, hist_years, date)
+        return await _get_hk_stock_detail(ts_code, days, hist_years, date)
     pro = _init_pro()
     end_date = datetime.now().strftime("%Y%m%d")
     # K 线历史: 最多 hist_years 年 (约 250 交易日/年)
     start = (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
-    df = get_daily(ts_code, kind, start_date=start, end_date=end_date)
+    df = await get_daily(ts_code, kind, start_date=start, end_date=end_date)
 
     # 选中目标交易日 (指定日期或最新)
     if date:
@@ -567,7 +702,7 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     pb = pe = pe_ttm = total_share = float_share = total_mv = circ_mv = dv_ratio = None
     turnover_map = {}
     try:
-        b = _get_daily_basic(pro, ts_code, start, end_date)
+        b = await _get_daily_basic(pro, ts_code, start, end_date)
         if b is not None and not b.empty:
             b = b.sort_values("trade_date").reset_index(drop=True)
             turnover_map = dict(
@@ -589,7 +724,7 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     quote["turnover_rate"] = turnover_map.get(last_date)
 
     # 分红: 最新分红年度全部已实施每股现金红利之和 (一年多次分红求和)
-    div = _dividend_latest(pro, ts_code)
+    div = await _dividend_latest(pro, ts_code)
     div_per_share = div["cash_div"] if div else None
     dividend_end = div["end_date"] if div else ""
 
@@ -646,8 +781,8 @@ def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     }
 
 
-def _get_hk_stock_detail(ts_code: str, days: int = 250,
-                         hist_years: int = 20, date: str = "") -> dict:
+async def _get_hk_stock_detail(ts_code: str, days: int = 250,
+                               hist_years: int = 20, date: str = "") -> dict:
     """港股个股详情 (东财财务指标/分红 + 腾讯日线, 金额单位: 万港元)。
 
     返回与 A 股 get_stock_detail 同结构 (pb/pe_ttm/total_share万股/total_mv万港元/
@@ -656,7 +791,7 @@ def _get_hk_stock_detail(ts_code: str, days: int = 250,
     from . import hk_data_service as hkd
     end_date = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
-    df = get_daily(ts_code, "hk", start_date=start, end_date=end_date)
+    df = await get_daily(ts_code, "hk", start_date=start, end_date=end_date)
 
     # 选中目标交易日
     if date:
@@ -694,7 +829,7 @@ def _get_hk_stock_detail(ts_code: str, days: int = 250,
 
     # 东财港股财务指标 (最新财年) → 估值
     try:
-        m = hkd.stock_metrics(ts_code)
+        m = await hkd.stock_metrics(ts_code)
     except Exception:
         m = {}
     fina = m.get("fina") or {}
@@ -767,10 +902,29 @@ def _get_hk_stock_detail(ts_code: str, days: int = 250,
 
 # 快照 TTL 缓存 (15 分钟): 避免每次列表刷新对每只自选股重复打 tushare (daily/daily_basic/dividend)
 _SNAPSHOT_CACHE: dict[str, tuple[float, dict]] = {}
+# 快照 daily_basic 独立缓存 (key=ts_code): 自选股批量加载时复用, 避免每只重复拉 daily_basic
+_SNAPSHOT_BASIC_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _SNAPSHOT_TTL = 15 * 60
 
 
-def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250) -> dict:
+async def _get_snapshot_basic(pro, ts_code: str, start_date: str, end_date: str) -> pd.DataFrame | None:
+    """快照用的 daily_basic (带 15 分钟缓存, 与 _SNAPSHOT_CACHE 同生命周期)。
+
+    注意: 与 _get_daily_basic (详情页 20 年窗口) 缓存独立, 避免窗口污染。
+    """
+    hit = _SNAPSHOT_BASIC_CACHE.get(ts_code)
+    if hit and time.time() - hit[0] < _SNAPSHOT_TTL:
+        return hit[1]
+    try:
+        b = await pro.daily_basic(ts_code=ts_code, start_date=start_date, end_date=end_date,
+                                  fields="trade_date,close,pb,pe,pe_ttm,total_mv,circ_mv,dv_ratio")
+    except Exception:
+        b = None
+    _SNAPSHOT_BASIC_CACHE[ts_code] = (time.time(), b)
+    return b
+
+
+async def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250) -> dict:
     """轻量行情快照 (我的股票列表用): 最新收盘/涨跌幅 + 52周高低 + PE/PB + 总市值 + 股息率 + 每股分红。
 
     不取 20 年 K 线, 比 get_stock_detail 轻量; 股息率为 TTM 口径 (最新分红年度全年分红 / 最新收盘价)。
@@ -785,7 +939,7 @@ def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250) -> di
     pro = _init_pro()
     end_date = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=int(days * 1.6) + 30)).strftime("%Y%m%d")
-    df = get_daily(ts_code, kind, start_date=start, end_date=end_date)
+    df = await get_daily(ts_code, kind, start_date=start, end_date=end_date)
     last = df.iloc[-1]
     last_close = float(last["close"])
     last_date = str(last["trade_date"])
@@ -796,8 +950,7 @@ def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250) -> di
 
     pb = pe = pe_ttm = total_mv = circ_mv = dv_ratio = None
     try:
-        b = pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end_date,
-                            fields="trade_date,close,pb,pe,pe_ttm,total_mv,circ_mv,dv_ratio")
+        b = await _get_snapshot_basic(pro, ts_code, start, end_date)
         if b is not None and not b.empty:
             b = b.sort_values("trade_date").iloc[-1]
             pb = _to_float(b.get("pb"))
@@ -809,7 +962,7 @@ def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250) -> di
     except Exception:
         pass
 
-    div = _dividend_latest(pro, ts_code)
+    div = await _dividend_latest(pro, ts_code)
     div_per_share = div["cash_div"] if div else None
     dividend_yield = None
     if div_per_share is not None and last_close:
@@ -841,9 +994,6 @@ def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250) -> di
 # 基本面选股 (资产负债率 / ROE / 分红率)
 # ---------------------------------------------------------------------------
 
-MAX_SCAN_STOCKS = 500      # 未指定行业时最多扫描的股票数 (避免全市场逐只查询过慢)
-_SCAN_SLEEP = 0.12         # 逐只查询 tushare 的时间间隔 (秒), 防频率限制
-
 
 def _to_float(v) -> float | None:
     """安全转 float, 无效值返回 None。"""
@@ -856,7 +1006,7 @@ def _to_float(v) -> float | None:
         return None
 
 
-def _fina_latest(pro, ts_code: str, period: str = "") -> dict | None:
+async def _fina_latest(pro, ts_code: str, period: str = "") -> dict | None:
     """获取单只股票最新一期 (或指定报告期) 财务指标。
 
     未指定 period 时优先取最新年报 (end_date 以 1231 结尾), 保证 ROE 为全年口径;
@@ -864,9 +1014,9 @@ def _fina_latest(pro, ts_code: str, period: str = "") -> dict | None:
     """
     try:
         if period:
-            df = pro.fina_indicator(ts_code=ts_code, period=period)
+            df = await pro.fina_indicator(ts_code=ts_code, period=period)
         else:
-            df = pro.fina_indicator(ts_code=ts_code)
+            df = await pro.fina_indicator(ts_code=ts_code)
     except Exception:
         return None
     if df is None or df.empty:
@@ -886,7 +1036,7 @@ def _fina_latest(pro, ts_code: str, period: str = "") -> dict | None:
     }
 
 
-def _annual_div_per_share(pro, ts_code: str, year: int) -> float | None:
+async def _annual_div_per_share(pro, ts_code: str, year: int) -> float | None:
     """某分红年度 (end_date 年份==year) 全部已实施每股现金红利之和 (元)。
 
     tushare dividend 的 end_date 可为年内各期 (0630 中期/0930 三季/1231 年度),
@@ -896,7 +1046,7 @@ def _annual_div_per_share(pro, ts_code: str, year: int) -> float | None:
     cash_div 最大值。
     """
     try:
-        dv = pro.dividend(ts_code=ts_code)
+        dv = await pro.dividend(ts_code=ts_code)
     except Exception:
         return None
     if dv is None or dv.empty:
@@ -916,17 +1066,17 @@ def _annual_div_per_share(pro, ts_code: str, year: int) -> float | None:
     return mx if mx > 0 else None
 
 
-def _dividend_latest(pro, ts_code: str) -> dict | None:
+async def _dividend_latest(pro, ts_code: str) -> dict | None:
     """获取单只股票最近分红年度每股现金红利之和 (带 1h TTL 缓存)。"""
     hit = _DIVIDEND_CACHE.get(ts_code)
     if hit and (time.time() - hit[0]) < _TTL_DIVIDEND:
         return hit[1]
-    result = _dividend_latest_uncached(pro, ts_code)
+    result = await _dividend_latest_uncached(pro, ts_code)
     _DIVIDEND_CACHE[ts_code] = (time.time(), result)
     return result
 
 
-def _dividend_latest_uncached(pro, ts_code: str) -> dict | None:
+async def _dividend_latest_uncached(pro, ts_code: str) -> dict | None:
     """(无缓存) 获取单只股票最近一个分红年度全部已实施每股现金红利之和 (元)。
 
     按 end_date 年份聚合'实施'记录求和 (解决一年多次分红低估), 取最近有实施记录
@@ -934,7 +1084,7 @@ def _dividend_latest_uncached(pro, ts_code: str) -> dict | None:
     返回 {"end_date": "YYYY1231", "cash_div": 全年每股现金红利}。
     """
     try:
-        dv = pro.dividend(ts_code=ts_code)
+        dv = await pro.dividend(ts_code=ts_code)
     except Exception:
         return None
     if dv is None or dv.empty:
@@ -959,79 +1109,3 @@ def _dividend_latest_uncached(pro, ts_code: str) -> dict | None:
     best = dv.loc[dv["_cash"].idxmax()]
     val = float(best["_cash"])
     return {"end_date": str(best.get("end_date") or ""), "cash_div": val if val > 0 else None}
-
-
-def screen_by_fundamentals(industry: str = "", period: str = "",
-                           max_debt_to_assets: float = 60.0,
-                           min_roe: float = 10.0,
-                           min_payout_ratio: float = 30.0,
-                           max_stocks: int = 100,
-                           limit: int = 100) -> dict:
-    """按 资产负债率 ≤ / ROE ≥ / 分红率 ≥ 筛选股票。
-
-    - industry: 东财行业名称, 空串表示全市场 (最多扫描 max_stocks 只)
-    - period: 报告期 YYYYMMDD, 空串表示每只取最新年报 (无年报则最新一期)
-    - 分红率 (%) = 每股现金红利 / 每股收益 (dt_eps) × 100
-    """
-    pro = _init_pro()
-    stocks = _stock_basic()
-
-    if industry:
-        cand = stocks[stocks["industry"].str.contains(industry, na=False)].copy()
-    else:
-        cand = stocks.copy()
-    cand = cand.head(min(int(max_stocks) or MAX_SCAN_STOCKS, len(cand)))
-
-    results = []
-    scanned = 0
-    for _, row in cand.iterrows():
-        ts_code = row["ts_code"]
-        fina = _fina_latest(pro, ts_code, period)
-        scanned += 1
-        if fina is None:
-            continue
-
-        debt = fina["debt_to_assets"]
-        roe = fina["roe"]
-        eps = fina["dt_eps"]
-
-        # 分红率 = 每股现金红利 / 每股收益 × 100
-        payout = None
-        div = _dividend_latest(pro, ts_code)
-        if div is not None and div["cash_div"] is not None:
-            if eps and eps > 0:
-                payout = div["cash_div"] / eps * 100.0
-
-        # --- 过滤 ---
-        if max_debt_to_assets is not None and debt is not None and debt > max_debt_to_assets:
-            continue
-        if min_roe is not None and roe is not None and roe < min_roe:
-            continue
-        # 要求分红率时, 数据缺失视为不满足
-        if min_payout_ratio:
-            if payout is None or payout < min_payout_ratio:
-                continue
-
-        results.append({
-            "ts_code": ts_code,
-            "symbol": row["symbol"],
-            "name": row["name"],
-            "industry": row.get("industry", ""),
-            "end_date": fina["end_date"],
-            "debt_to_assets": debt,
-            "roe": roe,
-            "payout_ratio": payout,
-        })
-
-        time.sleep(_SCAN_SLEEP)
-
-    # 排序: ROE 高者优先, 缺失排后
-    results.sort(key=lambda x: (x["roe"] is not None, x["roe"] if x["roe"] is not None else -1),
-                 reverse=True)
-
-    return {
-        "scanned": scanned,
-        "matched": len(results),
-        "industry": industry,
-        "items": results[:limit],
-    }

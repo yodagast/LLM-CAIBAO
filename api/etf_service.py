@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timedelta
 
@@ -50,10 +51,10 @@ def _init_pro():
     return data_service._init_pro()
 
 
-def etf_list() -> list[dict]:
+async def etf_list() -> list[dict]:
     """场内 ETF/基金列表 (已上市未退市), 含费率/类型/日期等基础信息。"""
     pro = _init_pro()
-    df = pro.fund_basic(market="E", fields=(
+    df = await pro.fund_basic(market="E", fields=(
         "ts_code,name,management,fund_type,found_date,list_date,delist_date,m_fee,c_fee,status"))
     if df is None or df.empty:
         return []
@@ -74,13 +75,13 @@ def etf_list() -> list[dict]:
     return rows
 
 
-def _probe_trade_date() -> str:
+async def _probe_trade_date() -> str:
     """探测最新交易日 (轻量, 用 000001.SZ 日线)。"""
     pro = _init_pro()
     try:
-        d = pro.daily(ts_code="000001.SZ",
-                      start_date=(datetime.now() - timedelta(days=10)).strftime("%Y%m%d"),
-                      end_date="")
+        d = await pro.daily(ts_code="000001.SZ",
+                            start_date=(datetime.now() - timedelta(days=10)).strftime("%Y%m%d"),
+                            end_date="")
         if d is not None and not d.empty:
             return str(d["trade_date"].iloc[0])
     except Exception:
@@ -88,24 +89,24 @@ def _probe_trade_date() -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
-def _batch_share_nav() -> tuple[dict, dict]:
+async def _batch_share_nav() -> tuple[dict, dict]:
     """批量获取最新交易日全市场基金 份额 map 与 净值 map (各 1 次 tushare 调用, 带缓存)。"""
     pro = _init_pro()
     now = time.time()
     hit = _BATCH_CACHE.get("latest")
     if hit and now - hit[0] < _ETF_TTL:
         return hit[1], hit[2]
-    td = _probe_trade_date()
+    td = await _probe_trade_date()
     share_map: dict[str, float] = {}
     nav_map: dict[str, float] = {}
     try:
-        fs = pro.fund_share(trade_date=td)
+        fs = await pro.fund_share(trade_date=td)
         if fs is not None and not fs.empty:
             share_map = {str(r["ts_code"]): float(r["fd_share"]) for _, r in fs.iterrows()}
     except Exception:
         pass
     try:
-        fn = pro.fund_nav(nav_date=td)
+        fn = await pro.fund_nav(nav_date=td)
         if fn is not None and not fn.empty:
             nav_map = {str(r["ts_code"]): float(r["unit_nav"]) for _, r in fn.iterrows()}
     except Exception:
@@ -114,7 +115,7 @@ def _batch_share_nav() -> tuple[dict, dict]:
     return share_map, nav_map
 
 
-def _fetch_cached(ts_code: str, start_date: str) -> dict | None:
+async def _fetch_cached(ts_code: str, start_date: str) -> dict | None:
     """获取并缓存单只 ETF 的 fund_daily + fund_nav 历史序列 (近一年)。"""
     now = time.time()
     hit = _ETF_CACHE.get(ts_code)
@@ -122,10 +123,10 @@ def _fetch_cached(ts_code: str, start_date: str) -> dict | None:
         return hit[1]
     pro = _init_pro()
     try:
-        daily = pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date="")
+        daily = await pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date="")
         if daily is None or daily.empty:
             return None
-        nav = pro.fund_nav(ts_code=ts_code, start_date=start_date, end_date="")
+        nav = await pro.fund_nav(ts_code=ts_code, start_date=start_date, end_date="")
     except Exception:
         return None
     data = {"daily": daily, "nav": nav}
@@ -233,21 +234,21 @@ def _compute_metrics(info: dict, data: dict,
     }
 
 
-def sync_all(limit: int = 0, refresh: bool = False, sleep: float = 0.0,
-             batch: int = 100) -> dict:
+async def sync_all(limit: int = 0, refresh: bool = False, sleep: float = 0.0,
+                   batch: int = 100) -> dict:
     """全市场 ETF 指标初始化: 计算并 upsert 到 PostgreSQL etf_screen 表 (夜间脚本调用)。
 
     limit: 0=全部已上市 ETF (约2700只, 每只约 2 次 tushare 调用); 幂等 upsert 可断点续跑。
     前端 screen_etfs 检测到 DB 有数据后改为读库 (不再实时计算)。
     """
     from . import pg_service
-    pg_service.init_etf_schema()
+    await pg_service.init_etf_schema()
     if refresh:
         _ETF_CACHE.clear()
         _BATCH_CACHE.clear()
-    rows = etf_list()
+    rows = await etf_list()
     # 预排序 (规模代理): 先算规模大的
-    share_map, _ = _batch_share_nav()
+    share_map, _ = await _batch_share_nav()
     for r in rows:
         r["_scale_proxy"] = share_map.get(r["ts_code"])
     rows.sort(key=lambda r: (r["_scale_proxy"] is not None, r["_scale_proxy"] or 0),
@@ -256,12 +257,12 @@ def sync_all(limit: int = 0, refresh: bool = False, sleep: float = 0.0,
         rows = rows[:limit]
 
     start = (datetime.now() - timedelta(days=_START_BUFFER_DAYS)).strftime("%Y%m%d")
-    calc_date = _probe_trade_date()
+    calc_date = await _probe_trade_date()
     items: list[dict] = []
     ok = fail = 0
     stored = 0
     for i, info in enumerate(rows, 1):
-        data = _fetch_cached(info["ts_code"], start)
+        data = await _fetch_cached(info["ts_code"], start)
         if data is None:
             fail += 1
             continue
@@ -275,25 +276,25 @@ def sync_all(limit: int = 0, refresh: bool = False, sleep: float = 0.0,
         items.append(m)
         ok += 1
         if sleep > 0:
-            time.sleep(sleep)
+            await asyncio.sleep(sleep)
         if batch and batch > 0 and len(items) >= batch:
-            stored += pg_service.upsert_etf_rows(items)
+            stored += await pg_service.upsert_etf_rows(items)
             items = []
         if i % 200 == 0:
             print(f"  已处理 {i}/{len(rows)} ...")
     if items:
-        stored += pg_service.upsert_etf_rows(items)
+        stored += await pg_service.upsert_etf_rows(items)
     return {"total": len(rows), "ok": ok, "fail": fail,
             "stored": stored, "calc_date": calc_date}
 
 
-def screen_etfs(keyword: str = "", fund_type: str = "",
-                min_scale: float | None = None, max_m_fee: float | None = None,
-                max_c_fee: float | None = None, min_amount_20: float | None = None,
-                max_premium: float | None = None, min_pos52: float | None = None,
-                max_pos52: float | None = None,
-                sort_by: str = "scale", order: str = "desc",
-                limit: int = 300, refresh: bool = False) -> dict:
+async def screen_etfs(keyword: str = "", fund_type: str = "",
+                      min_scale: float | None = None, max_m_fee: float | None = None,
+                      max_c_fee: float | None = None, min_amount_20: float | None = None,
+                      max_premium: float | None = None, min_pos52: float | None = None,
+                      max_pos52: float | None = None,
+                      sort_by: str = "scale", order: str = "desc",
+                      limit: int = 300, refresh: bool = False) -> dict:
     """按条件筛选场内 ETF, 计算关键指标并按字段排序。
 
     优先读取 PostgreSQL etf_screen 表 (夜间初始化脚本 scripts/init_etf.py 产出,
@@ -305,9 +306,9 @@ def screen_etfs(keyword: str = "", fund_type: str = "",
         _BATCH_CACHE.clear()
 
     # 1) DB 优先: 已有初始化数据则直接读库 (快, 且覆盖全市场)
-    db_date = pg_service.latest_etf_calc_date()
+    db_date = await pg_service.latest_etf_calc_date()
     if db_date:
-        items = pg_service.query_etf(
+        items = await pg_service.query_etf(
             calc_date=db_date, keyword=keyword, fund_type=fund_type,
             min_scale=min_scale, max_m_fee=max_m_fee, max_c_fee=max_c_fee,
             min_amount_20=min_amount_20, max_premium=max_premium,
@@ -316,7 +317,7 @@ def screen_etfs(keyword: str = "", fund_type: str = "",
         return {
             "count": len(items), "items": items,
             "ok": len(items), "fail": 0,
-            "total": pg_service.count_etf_by_calc_date(db_date),
+            "total": await pg_service.count_etf_by_calc_date(db_date),
             "source": "db", "calc_date": db_date,
             "limit": limit, "sort_by": sort_by, "order": order,
             "fund_type": fund_type, "keyword": keyword,
@@ -324,7 +325,7 @@ def screen_etfs(keyword: str = "", fund_type: str = "",
         }
 
     # 2) 兜底: 实时计算 (初始化前)
-    rows = etf_list()
+    rows = await etf_list()
 
     # 基础过滤 (成本信息来自 fund_basic, 无需抓行情)
     if keyword:
@@ -339,7 +340,7 @@ def screen_etfs(keyword: str = "", fund_type: str = "",
         rows = [r for r in rows if r["c_fee"] is not None and r["c_fee"] <= max_c_fee]
 
     # 批量份额 → 规模代理 (份额×均价近似, 只用于预排序), 规模大的在前
-    share_map, _ = _batch_share_nav()
+    share_map, _ = await _batch_share_nav()
     for r in rows:
         r["_scale_proxy"] = share_map.get(r["ts_code"])
     rows.sort(key=lambda r: (r["_scale_proxy"] is not None, r["_scale_proxy"] or 0),
@@ -353,7 +354,7 @@ def screen_etfs(keyword: str = "", fund_type: str = "",
     for info in rows[:scan_cap]:
         if len(items) >= limit:
             break
-        data = _fetch_cached(info["ts_code"], start)
+        data = await _fetch_cached(info["ts_code"], start)
         if data is None:
             fail += 1
             continue

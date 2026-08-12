@@ -20,9 +20,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -33,39 +33,39 @@ from api import hk_redlowvol_service as hkrlv  # noqa: E402
 from api import pg_service  # noqa: E402
 
 
-def _process_stock(ts_code: str, ind_map: dict, years: list[int]) -> tuple[list, list] | None:
+async def _process_stock(ts_code: str, ind_map: dict, years: list[int]) -> tuple[list, list] | None:
     """处理单只股票: 一次拉取基础数据, 返回 (rlv_rows, fund_rows); 失败返回 None。
 
     异常需向调用方区分「真实无数据」与「接口异常」。真实无数据 (两表均无行) 返回 ([], []),
     调用方视为「已尝试、无数据」不计失败; 接口异常返回 None 计失败。
     """
     try:
-        m = hkd.stock_metrics(ts_code, ind_map)
+        m = await hkd.stock_metrics(ts_code, ind_map)
     except Exception:
         return None
     rlv: list = []
     fund: list = []
     for y in years:
-        r = hkrlv.compute_stock_row(m, y)
+        r = await hkrlv.compute_stock_row(m, y)
         if r is not None:
             rlv.append(r)
-        f = hkf.compute_stock_row(m, y)
+        f = await hkf.compute_stock_row(m, y)
         if f is not None:
             fund.append(f)
     return rlv, fund
 
 
-def _flush(rlv_rows: list, fund_rows: list) -> None:
+async def _flush(rlv_rows: list, fund_rows: list) -> None:
     """批量 upsert 两个表并清空待提交列表。"""
     if rlv_rows:
-        pg_service.upsert_hk_rlv_rows(rlv_rows)
+        await pg_service.upsert_hk_rlv_rows(rlv_rows)
         rlv_rows.clear()
     if fund_rows:
-        pg_service.upsert_hk_fundamental_rows(fund_rows)
+        await pg_service.upsert_hk_fundamental_rows(fund_rows)
         fund_rows.clear()
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="港股红利低波+基本面 全市场初始化")
     parser.add_argument("--start", type=int, default=2024, help="起始年份")
     parser.add_argument("--end", type=int, default=2025, help="结束年份")
@@ -73,7 +73,7 @@ def main() -> None:
     parser.add_argument("--industry", default="", help="行业名称(东财港股行业), 空=全市场")
     parser.add_argument("--codes", default="", help="指定港股代码(逗号分隔), 如 00700,00005; 优先级最高")
     parser.add_argument("--limit", type=int, default=0, help="最多处理股票数 (0=不限, 调试用)")
-    parser.add_argument("--workers", type=int, default=1, help="并行线程数 (1=串行, 建议 4~8)")
+    parser.add_argument("--workers", type=int, default=1, help="并行并发数 (1=串行, 建议 4~8)")
     parser.add_argument("--batch", type=int, default=50, help="每 N 只股票提交一次入库")
     parser.add_argument("--sleep", type=float, default=0.0, help="串行模式下每次调用间隔秒数")
     parser.add_argument("--force", action="store_true", help="忽略断点续跑, 全量重算")
@@ -81,8 +81,8 @@ def main() -> None:
     args = parser.parse_args()
 
     # 确保两张表存在
-    pg_service.init_hk_rlv_schema()
-    pg_service.init_hk_fundamental_schema()
+    await pg_service.init_hk_rlv_schema()
+    await pg_service.init_hk_fundamental_schema()
 
     years = list(range(args.start, args.end + 1))
     if args.years:
@@ -91,11 +91,11 @@ def main() -> None:
         print("年份列表为空。"); return
 
     print(f"行业映射加载中 ...")
-    ind_map = hkd.industry_map()
+    ind_map = await hkd.industry_map()
     print(f"行业映射: {len(ind_map)} 只")
 
     # 候选股票列表 (剔除 -R 柜台股)
-    stocks = hkd.hk_stock_list()
+    stocks = await hkd.hk_stock_list()
     codes: list[str] = []
     if args.codes:
         codes = [hkd._symbol_to_ts_code(c) for c in args.codes.split(",") if c.strip()]
@@ -115,7 +115,7 @@ def main() -> None:
     if args.codes or args.force:
         done_set: set = set()
     else:
-        done_set = pg_service.hk_synced_ts_codes(years)
+        done_set = await pg_service.hk_synced_ts_codes(years)
     pending = [c for c in codes if c not in done_set]
     print(f"候选 {len(codes)} 只 (行业={args.industry or '全市场'}, 年份={years}) "
           f"| 已同步跳过 {len(done_set)} | 待处理 {len(pending)}"
@@ -129,35 +129,37 @@ def main() -> None:
     ok = failed = no_data = 0
     t0 = time.time()
 
-    def _flush_if_batch(i: int) -> None:
+    async def _flush_if_batch(i: int) -> None:
         """每 batch 只提交一次 (串行按股票数, 并行按完成数)。"""
         if i % args.batch == 0:
-            _flush(rlv_rows, fund_rows)
+            await _flush(rlv_rows, fund_rows)
 
     if args.workers > 1:
-        # 并行模式: 各线程拉数据, 主线程收集并按完成数批量提交
-        with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futures = {ex.submit(_process_stock, c, ind_map, years): c for c in pending}
-            done_count = 0
-            for fut in as_completed(futures):
-                r = fut.result()
-                if r is None:
-                    failed += 1
-                elif not r[0] and not r[1]:
-                    no_data += 1
-                else:
-                    ok += 1
-                    rlv_rows.extend(r[0])
-                    fund_rows.extend(r[1])
-                done_count += 1
-                _flush_if_batch(done_count)
-                if done_count % args.progress == 0:
-                    _report(done_count, len(pending), ok, failed, no_data, t0)
-        _flush(rlv_rows, fund_rows)
+        # 并行模式: asyncio 并发拉数据 (Semaphore 限并发), 按顺序收集
+        sem = asyncio.Semaphore(args.workers)
+
+        async def _bounded(c: str):
+            async with sem:
+                return await _process_stock(c, ind_map, years)
+
+        results = await asyncio.gather(*(_bounded(c) for c in pending), return_exceptions=True)
+        for i, r in enumerate(results, 1):
+            if isinstance(r, Exception) or r is None:
+                failed += 1
+            elif not r[0] and not r[1]:
+                no_data += 1
+            else:
+                ok += 1
+                rlv_rows.extend(r[0])
+                fund_rows.extend(r[1])
+            await _flush_if_batch(i)
+            if i % args.progress == 0:
+                _report(i, len(pending), ok, failed, no_data, t0)
+        await _flush(rlv_rows, fund_rows)
     else:
         # 串行模式: 逐只处理 + 批量提交
         for i, ts_code in enumerate(pending, 1):
-            r = _process_stock(ts_code, ind_map, years)
+            r = await _process_stock(ts_code, ind_map, years)
             if r is None:
                 failed += 1
             elif not r[0] and not r[1]:
@@ -166,12 +168,12 @@ def main() -> None:
                 ok += 1
                 rlv_rows.extend(r[0])
                 fund_rows.extend(r[1])
-            _flush_if_batch(i)
+            await _flush_if_batch(i)
             if i % args.progress == 0:
                 _report(i, len(pending), ok, failed, no_data, t0)
             if args.sleep > 0:
-                time.sleep(args.sleep)
-        _flush(rlv_rows, fund_rows)
+                await asyncio.sleep(args.sleep)
+        await _flush(rlv_rows, fund_rows)
 
     _report(len(pending), len(pending), ok, failed, no_data, t0, final=True)
 
@@ -191,4 +193,4 @@ def _report(done: int, total: int, ok: int, failed: int, no_data: int,
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

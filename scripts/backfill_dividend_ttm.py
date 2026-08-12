@@ -18,19 +18,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import psycopg2.extras  # noqa: E402
+import asyncio
 
 from api import data_service as ds  # noqa: E402
 from api import pg_service as pg  # noqa: E402
 from api import redlowvol_service as rlv  # noqa: E402
 
 
-def main() -> None:
-    pg.init_schema()  # 确保 dividend_yield_ttm / last_close 列存在
+async def main() -> None:
+    await pg.init_schema()  # 确保 dividend_yield_ttm / last_close 列存在
     pro = ds._init_pro()
 
     # 1. 取最新交易日 (探针一只股票的最新日线)
-    probe = pro.daily(ts_code="000001.SZ", fields="trade_date,close")
+    probe = await pro.daily(ts_code="000001.SZ", fields="trade_date,close")
     if probe is None or probe.empty:
         print("无法获取最新交易日")
         return
@@ -38,7 +38,7 @@ def main() -> None:
     print("最新交易日:", latest_date)
 
     # 2. 批量取该日全市场收盘价 (一次调用)
-    full = pro.daily(trade_date=latest_date, fields="ts_code,close")
+    full = await pro.daily(trade_date=latest_date, fields="ts_code,close")
     close_map: dict[str, float] = {}
     if full is not None and not full.empty:
         for _, r in full.iterrows():
@@ -49,10 +49,9 @@ def main() -> None:
     print(f"该日全市场 {len(close_map)} 只")
 
     # 3. 读表内所有行
-    with pg._connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT ts_code, year, div_per_share FROM red_low_vol")
-            rows = cur.fetchall()
+    pool = await pg._get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT ts_code, year, div_per_share FROM red_low_vol")
 
     by_stock: dict[str, list] = {}
     for r in rows:
@@ -62,32 +61,30 @@ def main() -> None:
     missing = [c for c in by_stock if c not in close_map]
     print(f"停牌/缺收盘价需回退 {len(missing)} 只")
     for i, c in enumerate(missing):
-        v = rlv._latest_close(pro, c)
+        v = await rlv._latest_close(pro, c)
         if v and v > 0:
             close_map[c] = v
         if i % 500 == 0:
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
 
     # 5. 计算股息率-TTM 并回写
     updated = 0
-    with pg._connect() as conn:
-        with conn.cursor() as cur:
-            for ts_code, srows in by_stock.items():
-                close = close_map.get(ts_code)
-                if not close or close <= 0:
-                    continue
-                for r in srows:
-                    div = r["div_per_share"]
-                    ttm = (div / close * 100.0) if div and div > 0 else None
-                    cur.execute(
-                        "UPDATE red_low_vol SET last_close=%s, dividend_yield_ttm=%s, updated_at=now() "
-                        "WHERE ts_code=%s AND year=%s",
-                        (close, ttm, ts_code, r["year"]),
-                    )
-                    updated += 1
-        conn.commit()
+    async with pool.acquire() as conn:
+        for ts_code, srows in by_stock.items():
+            close = close_map.get(ts_code)
+            if not close or close <= 0:
+                continue
+            for r in srows:
+                div = r["div_per_share"]
+                ttm = (div / close * 100.0) if div and div > 0 else None
+                await conn.execute(
+                    "UPDATE red_low_vol SET last_close=$1, dividend_yield_ttm=$2, updated_at=now() "
+                    "WHERE ts_code=$3 AND year=$4",
+                    close, ttm, ts_code, r["year"],
+                )
+                updated += 1
     print(f"完成: 更新 {updated} 行")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -14,15 +14,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 import pandas as pd
 import pdfplumber
-import requests
 from bs4 import BeautifulSoup
 
 from . import data_service, pg_service
@@ -30,6 +31,16 @@ from . import data_service, pg_service
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PDF_ROOT = PROJECT_ROOT / "pdf" / "caibao"
 REPORT_DIR = PROJECT_ROOT / "reports"
+
+# 复用连接 (HTTP keep-alive, 异步 httpx)
+_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+
+async def _http_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None:
+        _HTTP_CLIENT = httpx.AsyncClient(timeout=180.0)
+    return _HTTP_CLIENT
 
 
 def _load_env() -> None:
@@ -57,12 +68,13 @@ _HEADERS = {
 # 1) 年报 PDF 下载 (精简自 down_caibao.py)
 # ---------------------------------------------------------------------------
 
-def _sina_pdf_links(stock_code: str, years: list[int]) -> list[tuple[int, str, str]]:
+async def _sina_pdf_links(stock_code: str, years: list[int]) -> list[tuple[int, str, str]]:
     """从新浪财经年报列表页抓取指定年份的 PDF 链接, 返回 [(year, url, title)]。"""
     url = BASE_URL_TEMPLATE.format(stock_code=stock_code)
     pdf_links: list[tuple[int, str, str]] = []
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        client = await _http_client()
+        resp = await client.get(url, headers=_HEADERS)
         resp.encoding = "gb2312"
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -112,10 +124,11 @@ def _sina_pdf_links(stock_code: str, years: list[int]) -> list[tuple[int, str, s
     return pdf_links
 
 
-def _detail_pdf_url(detail_url: str) -> str:
+async def _detail_pdf_url(detail_url: str) -> str:
     """从公告详情页解析 PDF 下载链接。"""
     try:
-        resp = requests.get(detail_url, headers=_HEADERS, timeout=30)
+        client = await _http_client()
+        resp = await client.get(detail_url, headers=_HEADERS)
         resp.encoding = "gb2312"
         soup = BeautifulSoup(resp.text, "html.parser")
         for link in soup.find_all("a", href=True):
@@ -127,21 +140,22 @@ def _detail_pdf_url(detail_url: str) -> str:
     return ""
 
 
-def _download_pdf(url: str, save_path: Path) -> bool:
-    """下载 PDF, 校验 %PDF 文件头, 失败自动重试一次 (带 Referer)。"""
+async def _download_pdf(url: str, save_path: Path) -> bool:
+    """下载 PDF (异步流式), 校验 %PDF 文件头, 失败自动重试一次 (带 Referer)。"""
     for attempt in range(2):
         try:
             hdrs = dict(_HEADERS)
             if attempt == 1:
                 hdrs["Referer"] = "https://finance.sina.com.cn/"
-            resp = requests.get(url, headers=hdrs, timeout=90, stream=True)
-            if resp.status_code != 200:
-                continue
-            tmp = save_path.with_suffix(".part")
-            with open(tmp, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=65536):
-                    if chunk:
-                        f.write(chunk)
+            client = await _http_client()
+            async with client.stream("GET", url, headers=hdrs) as resp:
+                if resp.status_code != 200:
+                    continue
+                tmp = save_path.with_suffix(".part")
+                with open(tmp, "wb") as f:
+                    async for chunk in resp.aiter_bytes(chunk_size=65536):
+                        if chunk:
+                            f.write(chunk)
             # 校验是否真 PDF
             head = tmp.read_bytes()[:1024]
             if b"%PDF" not in head:
@@ -158,12 +172,12 @@ def _download_pdf(url: str, save_path: Path) -> bool:
     return False
 
 
-def download_reports(ts_code: str, years: list[int], save_dir: Path | None = None) -> list[dict]:
+async def download_reports(ts_code: str, years: list[int], save_dir: Path | None = None) -> list[dict]:
     """下载指定年份年报 PDF, 返回 [{year, title, path}]。已存在的文件跳过。"""
     save_dir = save_dir or PDF_ROOT
     symbol = ts_code.split(".")[0]
     try:
-        info = data_service.resolve_code(ts_code)
+        info = await data_service.resolve_code(ts_code)
         name = info.get("name", symbol)
     except Exception:
         name = symbol
@@ -171,7 +185,7 @@ def download_reports(ts_code: str, years: list[int], save_dir: Path | None = Non
     stock_dir = save_dir / f"{name}-{symbol}"
     stock_dir.mkdir(parents=True, exist_ok=True)
 
-    pdf_links = _sina_pdf_links(symbol, years)
+    pdf_links = await _sina_pdf_links(symbol, years)
     files: list[dict] = []
     for year, detail_url, title in pdf_links:
         safe_title = re.sub(r"[\\/:*?\"<>|]", "_", title)
@@ -181,15 +195,15 @@ def download_reports(ts_code: str, years: list[int], save_dir: Path | None = Non
             files.append({"year": year, "title": title, "path": str(save_path)})
             continue
         # pdf_url 是公告详情页, 需先解析真实 PDF 下载链接
-        pdf_url = _detail_pdf_url(detail_url)
+        pdf_url = await _detail_pdf_url(detail_url)
         if not pdf_url:
             print(f"  [{year}] {title} - 未找到 PDF 链接, 跳过")
             continue
         print(f"  [{year}] 下载: {title}")
-        if not _download_pdf(pdf_url, save_path):
+        if not await _download_pdf(pdf_url, save_path):
             print(f"  [{year}] 下载失败: {title}")
             continue
-        time.sleep(1)
+        await asyncio.sleep(1)
         files.append({"year": year, "title": title, "path": str(save_path)})
     return files
 
@@ -246,7 +260,7 @@ def _year_rows(df: pd.DataFrame) -> dict:
     return out
 
 
-def collect_financials(ts_code: str, years: list[int]) -> dict:
+async def collect_financials(ts_code: str, years: list[int]) -> dict:
     """收集每年财务指标 (tushare 年报口径), 返回 {year: {指标: 值}}。
 
     注意: balancesheet/income/cashflow 接口存在披露时滞, end_date 若截断到请求
@@ -256,10 +270,10 @@ def collect_financials(ts_code: str, years: list[int]) -> dict:
     start = f"{min(years)}0101"
     end = datetime.now().strftime("%Y%m%d")
 
-    fina = _year_rows(pro.fina_indicator(ts_code=ts_code, start_date=start, end_date=end))
-    bal = _year_rows(pro.balancesheet(ts_code=ts_code, start_date=start, end_date=end))
-    inc = _year_rows(pro.income(ts_code=ts_code, start_date=start, end_date=end))
-    cf = _year_rows(pro.cashflow(ts_code=ts_code, start_date=start, end_date=end))
+    fina = _year_rows(await pro.fina_indicator(ts_code=ts_code, start_date=start, end_date=end))
+    bal = _year_rows(await pro.balancesheet(ts_code=ts_code, start_date=start, end_date=end))
+    inc = _year_rows(await pro.income(ts_code=ts_code, start_date=start, end_date=end))
+    cf = _year_rows(await pro.cashflow(ts_code=ts_code, start_date=start, end_date=end))
 
     out: dict = {}
     for y in years:
@@ -323,7 +337,7 @@ def collect_financials(ts_code: str, years: list[int]) -> dict:
     return out
 
 
-def _latest_valuation(ts_code: str) -> dict:
+async def _latest_valuation(ts_code: str) -> dict:
     """最新估值 (PE/PB/股息率/市值)。
 
     股息率用 daily_basic 的 dv_ttm (滚动12个月股息率): 它已包含一年多次分红
@@ -332,10 +346,10 @@ def _latest_valuation(ts_code: str) -> dict:
     """
     pro = data_service._init_pro()
     try:
-        df = pro.daily_basic(ts_code=ts_code,
-                             start_date=(datetime.now() - pd.Timedelta(days=30)).strftime("%Y%m%d"),
-                             end_date=datetime.now().strftime("%Y%m%d"),
-                             fields="trade_date,close,pe_ttm,pb,dv_ratio,dv_ttm,total_mv,circ_mv")
+        df = await pro.daily_basic(ts_code=ts_code,
+                                   start_date=(datetime.now() - pd.Timedelta(days=30)).strftime("%Y%m%d"),
+                                   end_date=datetime.now().strftime("%Y%m%d"),
+                                   fields="trade_date,close,pe_ttm,pb,dv_ratio,dv_ttm,total_mv,circ_mv")
         if df is None or df.empty:
             return {}
         row = df.sort_values("trade_date").iloc[-1]
@@ -364,11 +378,11 @@ def _yi(wan):
         return None
 
 
-def _hk_valuation(ts_code: str) -> dict:
+async def _hk_valuation(ts_code: str) -> dict:
     """港股最新估值 (PE/PB/股息率/市值, 东财指标 + 腾讯最新收盘)。"""
     from . import hk_data_service as hkd
     try:
-        m = hkd.stock_metrics(ts_code)
+        m = await hkd.stock_metrics(ts_code)
     except Exception:
         return {}
     fina = m.get("fina") or {}
@@ -388,14 +402,14 @@ def _hk_valuation(ts_code: str) -> dict:
     }
 
 
-def collect_hk_financials(ts_code: str, years: list[int]) -> dict:
+async def collect_hk_financials(ts_code: str, years: list[int]) -> dict:
     """港股各年财务指标 (东财港股 MAININDICATOR + 资产负债表 + 分红)。
 
     返回与 collect_financials 同结构 {year: {指标}}; 金额单位: 亿港元 (与 A 股亿元口径一致),
     比率: %。费用科目 (销售/管理/研发) 港股报表口径不同, 置 None (报告显示 —)。
     """
     from . import hk_data_service as hkd
-    m = hkd.stock_metrics(ts_code)
+    m = await hkd.stock_metrics(ts_code)
     fina = m.get("fina") or {}
     balance = m.get("balance") or {}
     out: dict = {}
@@ -681,8 +695,8 @@ def llm_available() -> bool:
     return bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY"))
 
 
-def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 5000) -> str:
-    """调用 LLM (DeepSeek / OpenAI 兼容接口)。"""
+async def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 5000) -> str:
+    """调用 LLM (DeepSeek / OpenAI 兼容接口, 异步 httpx)。"""
     _load_env()
     key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key:
@@ -693,7 +707,8 @@ def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 5000) -> s
     else:
         base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         model = os.getenv("LLM_MODEL", "gpt-4o-mini")
-    resp = requests.post(
+    client = await _http_client()
+    resp = await client.post(
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         json={
@@ -705,7 +720,6 @@ def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 5000) -> s
             "temperature": 0.3,
             "max_tokens": max_tokens,
         },
-        timeout=180,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -720,8 +734,8 @@ def _skill_prompt() -> str:
     return "你是一位专业财务分析师, 请对给定的公司财报数据进行分析。"
 
 
-def analyze_llm(info: dict, financials: dict, valuation: dict,
-                source_label: str = "tushare 年度财务数据") -> str:
+async def analyze_llm(info: dict, financials: dict, valuation: dict,
+                      source_label: str = "tushare 年度财务数据") -> str:
     """用 LLM 生成深度分析报告 (仅基于财务指标, 不依赖 PDF)。"""
     y0 = min(financials.keys()) if financials else ""
     y1 = max(financials.keys()) if financials else ""
@@ -745,7 +759,7 @@ def analyze_llm(info: dict, financials: dict, valuation: dict,
         "请严格按照上述 skill 的输出格式要求 (1 执行摘要 … 8 投资建议) 生成 Markdown 报告, "
         "务必基于给定数据, 严禁编造数字。"
     )
-    return _call_llm(_skill_prompt(), user)
+    return await _call_llm(_skill_prompt(), user)
 
 
 # ---------------------------------------------------------------------------
@@ -816,32 +830,35 @@ def _is_blank_year(d: dict) -> bool:
     return all(d.get(k) is None for k in keys)
 
 
-def sync_stock_financial(ts_code: str, years: list[int]) -> int:
+async def sync_stock_financial(ts_code: str, years: list[int]) -> int:
     """拉取 tushare 财务数据并入库 financial_data (幂等 upsert), 返回入库行数。"""
-    financials = collect_financials(ts_code, years)
+    financials = await collect_financials(ts_code, years)
     if not financials:
         return 0
     try:
-        info = data_service.resolve_code(ts_code)
+        info = await data_service.resolve_code(ts_code)
         name = info.get("name", ts_code.split(".")[0])
     except Exception:
         name = ts_code.split(".")[0]
-    valuation = _latest_valuation(ts_code)
+    valuation = await _latest_valuation(ts_code)
     rows = financials_to_rows(ts_code, name, financials, valuation)
-    return pg_service.upsert_financial_rows(rows)
+    return await pg_service.upsert_financial_rows(rows)
 
 
-def ensure_financials(ts_code: str, years: list[int]) -> tuple[dict, dict]:
+async def ensure_financials(ts_code: str, years: list[int]) -> tuple[dict, dict]:
     """确保 financial_data 已有该股票年份数据 (缺失自动拉取 tushare 入库)。
 
     返回 (financials, valuation): financials 为 {year: 指标} 结构, valuation 为最新估值。
     """
-    pg_service.init_financial_schema()
-    missing = [y for y in years if not pg_service.has_financial(ts_code, y)]
+    await pg_service.init_financial_schema()
+    missing = []
+    for y in years:
+        if not await pg_service.has_financial(ts_code, y):
+            missing.append(y)
     if missing:
         print(f"  [pgsql] {ts_code} 缺少年份 {missing}, 自动同步 tushare 财务数据入库...")
-        sync_stock_financial(ts_code, missing)
-    rows = pg_service.query_financial_by_code(ts_code, years)
+        await sync_stock_financial(ts_code, missing)
+    rows = await pg_service.query_financial_by_code(ts_code, years)
     financials = rows_to_financials(rows)
     valuation = {}
     if rows:
@@ -854,14 +871,14 @@ def ensure_financials(ts_code: str, years: list[int]) -> tuple[dict, dict]:
 # 6) 主入口
 # ---------------------------------------------------------------------------
 
-def analyze(ts_code: str, start_year: int, end_year: int,
-            use_llm: bool = False, save_dir: Path | None = None) -> dict:
+async def analyze(ts_code: str, start_year: int, end_year: int,
+                  use_llm: bool = False, save_dir: Path | None = None) -> dict:
     """基于财报数据 (存 pgsql 或港股东财数据) 生成分析报告, 不依赖 PDF 下载。
 
     支持 A股 (tushare, 存 pgsql) 与港股 (东财港股, 实时计算)。
     返回 {info, source, financials, valuation, markdown, llm_used, report_path, range}。
     """
-    info = data_service.resolve_code(ts_code)
+    info = await data_service.resolve_code(ts_code)
     ts = info["ts_code"]  # 带后缀, 接口需要 (如 600036.SH / 00700.HK)
     is_hk = info.get("kind") == "hk" or str(ts).endswith(".HK")
     if end_year < start_year:
@@ -871,13 +888,13 @@ def analyze(ts_code: str, start_year: int, end_year: int,
     if is_hk:
         # 港股: 东财港股数据实时计算
         source_label = "东方财富港股年度财务数据 (金额单位: 亿港元)"
-        financials = collect_hk_financials(ts, years)
-        valuation = _hk_valuation(ts)
+        financials = await collect_hk_financials(ts, years)
+        valuation = await _hk_valuation(ts)
         source = "hk_eastmoney"
     else:
         # A股: pgsql financial_data 优先, 缺失自动同步 tushare 入库
         source_label = "tushare 年度财务数据 (年报口径)"
-        financials, valuation = ensure_financials(ts, years)
+        financials, valuation = await ensure_financials(ts, years)
         source = "tushare"
 
     # 跳过数据完全缺失的年份 (如 2026 年报未披露 / 旧脏数据全空行)
@@ -889,7 +906,7 @@ def analyze(ts_code: str, start_year: int, end_year: int,
     llm_used = False
     if use_llm and llm_available():
         try:
-            markdown = analyze_llm(info, financials, valuation, source_label)
+            markdown = await analyze_llm(info, financials, valuation, source_label)
             llm_used = True
         except Exception as e:
             print(f"LLM 分析失败, 回退规则化: {e}")

@@ -115,39 +115,38 @@ def list_strategies() -> list[dict]:
     return out
 
 
-def run_strategy(key: str, limit: int | None = None) -> dict:
+async def run_strategy(key: str, limit: int | None = None) -> dict:
     """执行精选策略, 返回 {strategy, items, meta}。"""
     s = STRATEGY_MAP.get(key)
     if not s:
         raise ValueError(f"未知策略: {key}")
     limit = int(limit or s["limit"] or 20)
-    items = _query_by_type(s, limit)
+    items = await _query_by_type(s, limit)
     meta = {"count": len(items)}
     return {"strategy": {k: v for k, v in s.items() if k not in ("query",)}, "items": items, "meta": meta}
 
 
-def _best_year(type_: str) -> int:
+async def _best_year(type_: str) -> int:
     """取数据完整的最近年份 (latest_rlv_year 可能返回残缺年如 2026 仅 72 行)。
 
     rlv/fund 全市场约 5536 行, 阈值 3000; hk_rlv 全市场约 1000+ 行, 阈值 500。
     """
     table = {"rlv": "red_low_vol", "fund": "fundamental_screen", "hk_rlv": "hk_red_low_vol"}[type_]
     threshold = 500 if type_ == "hk_rlv" else 3000
-    with pg_service._connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT year, count(*) FROM {table} GROUP BY year ORDER BY year DESC")
-            rows = cur.fetchall()
-    for y, c in rows:
-        if c >= threshold:
-            return int(y)
-    return int(rows[0][0]) if rows else datetime.now().year - 1
+    pool = await pg_service._get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"SELECT year, count(*) AS c FROM {table} GROUP BY year ORDER BY year DESC")
+    for r in rows:
+        if r["c"] >= threshold:
+            return int(r["year"])
+    return int(rows[0]["year"]) if rows else datetime.now().year - 1
 
 
-def _query_by_type(s: dict, limit: int) -> list[dict]:
+async def _query_by_type(s: dict, limit: int) -> list[dict]:
     t = s["type"]
     q = s["query"]
     if t == "rlv":
-        year = _best_year("rlv")
+        year = await _best_year("rlv")
         filters = {
             "dividend_yield_ttm": {"min": q.get("min_dy_ttm"), "max": q.get("max_dy_ttm")},
             "payout_ratio": {"min": q.get("payout_min"), "max": q.get("payout_max")},
@@ -157,9 +156,9 @@ def _query_by_type(s: dict, limit: int) -> list[dict]:
             "free_cashflow": {"min": q.get("fcff_min")},
         }
         filters = _clean_filters(filters)
-        return pg_service.query_screen("", [year], sort_by=s["sort"], order=s["order"], limit=limit, filters=filters)
+        return await pg_service.query_screen("", [year], sort_by=s["sort"], order=s["order"], limit=limit, filters=filters)
     if t == "fund":
-        year = _best_year("fund")
+        year = await _best_year("fund")
         filters = {
             "roe": {"min": q.get("roe_min")},
             "debt_to_assets": {"max": q.get("debt_max")},
@@ -168,16 +167,16 @@ def _query_by_type(s: dict, limit: int) -> list[dict]:
             "assets_turn": {"min": q.get("assets_turn_min")},
         }
         filters = _clean_filters(filters)
-        return pg_service.query_fundamental("", [year], sort_by=s["sort"], order=s["order"], limit=limit, filters=filters)
+        return await pg_service.query_fundamental("", [year], sort_by=s["sort"], order=s["order"], limit=limit, filters=filters)
     if t == "etf":
         # DB 优先, 空库回退实时计算 (全市场首次较慢, 有缓存)
-        res = etf_service.screen_etfs(
+        res = await etf_service.screen_etfs(
             min_scale=q.get("min_scale"), max_m_fee=q.get("max_m_fee"),
             max_c_fee=q.get("max_c_fee"), max_premium=q.get("max_premium"),
             sort_by=s["sort"], order=s["order"], limit=limit)
         return res.get("items", [])
     if t == "hk_rlv":
-        year = _best_year("hk_rlv")
+        year = await _best_year("hk_rlv")
         filters = {
             "dividend_yield_ttm": {"min": q.get("min_dy_ttm"), "max": q.get("max_dy_ttm")},
             "payout_ratio": {"min": q.get("payout_min")},
@@ -185,7 +184,7 @@ def _query_by_type(s: dict, limit: int) -> list[dict]:
             "debt_to_assets": {"max": q.get("debt_max")},
         }
         filters = _clean_filters(filters)
-        return pg_service.query_hk_rlv("", [year], sort_by=s["sort"], order=s["order"], limit=limit, filters=filters)
+        return await pg_service.query_hk_rlv("", [year], sort_by=s["sort"], order=s["order"], limit=limit, filters=filters)
     return []
 
 
@@ -211,7 +210,7 @@ def _cached_backtest(key: str) -> dict | None:
     return None
 
 
-def backtest_strategy(key: str, years: int = BACKTEST_YEARS) -> dict:
+async def backtest_strategy(key: str, years: int = BACKTEST_YEARS) -> dict:
     """对策略当前入选股票池计算近 N 年等权持有参考指标 (累计/年化/最大回撤)。
 
     含幸存者偏差, 仅作策略参考指标。结果缓存 24h。
@@ -224,7 +223,7 @@ def backtest_strategy(key: str, years: int = BACKTEST_YEARS) -> dict:
     s = STRATEGY_MAP.get(key)
     if not s:
         raise ValueError(f"未知策略: {key}")
-    items = _query_by_type(s, limit=10)
+    items = await _query_by_type(s, limit=10)
     codes = [it["ts_code"] for it in items]
     result = {"key": key, "status": "ok", "metrics": None, "count": len(codes), "computed_at": int(now)}
     if not codes:
@@ -237,7 +236,7 @@ def backtest_strategy(key: str, years: int = BACKTEST_YEARS) -> dict:
     for code in codes:
         try:
             kind = "hk" if code.endswith(".HK") else ("fund" if data_service._is_fund_code(code) else "stock")
-            df = data_service.get_daily(code, kind=kind, start_date=start, adj="qfq" if kind == "stock" else "")
+            df = await data_service.get_daily(code, kind=kind, start_date=start, adj="qfq" if kind == "stock" else "")
             if df is None or len(df) < 20:
                 continue
             closes = df["close"].tolist()

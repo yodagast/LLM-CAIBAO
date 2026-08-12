@@ -23,7 +23,7 @@ from api import pg_service  # noqa: E402
 from api import redlowvol_service as rlv  # noqa: E402
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="红利低波数据初始化")
     parser.add_argument("--industry", default="", help="行业名称(东财分类), 空=全市场")
     parser.add_argument("--start", type=int, default=2024, help="起始年份")
@@ -33,14 +33,14 @@ def main() -> None:
     args = parser.parse_args()
 
     # 确保 red_low_vol 表存在
-    pg_service.init_schema()
+    await pg_service.init_schema()
     years = list(range(args.start, args.end + 1))
     print(f"初始化: 行业={args.industry or '全市场'} 年份={years} "
           f"max_stocks={args.max_stocks} sleep={args.sleep}")
 
     t0 = time.time()
-    result = rlv.sync_industry_years(args.industry, years,
-                                     max_stocks=args.max_stocks, sleep=args.sleep)
+    result = await rlv.sync_industry_years(args.industry, years,
+                                           max_stocks=args.max_stocks, sleep=args.sleep)
     print(f"\n完成: 扫描 {result['scanned_total']} 条记录, 入库 {result['stored_total']} 条, "
           f"耗时 {time.time() - t0:.0f} 秒")
     for y, v in result["per_year"].items():
@@ -48,4 +48,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

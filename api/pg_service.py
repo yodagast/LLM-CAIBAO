@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
-import psycopg2
-import psycopg2.extras
+import asyncpg
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# asyncpg 全局连接池 (运行时用)
+_pool: asyncpg.Pool | None = None
 
 # 允许前端排序的字段白名单 (防 SQL 注入)
 SORTABLE_COLUMNS = {
@@ -77,23 +80,40 @@ def _dsn() -> str:
     return os.getenv("DATABASE_URL", "postgresql://huangyong@localhost:5432/llm_caibao")
 
 
-def _connect() -> psycopg2.extensions.connection:
-    return psycopg2.connect(_dsn())
+async def _get_pool() -> asyncpg.Pool:
+    """获取全局 asyncpg 连接池 (惰性初始化)。"""
+    global _pool
+    if _pool is None:
+        dsn = _dsn()
+        # .env 中 DATABASE_URL 可能是 SQLAlchemy 风格 (postgresql+asyncpg://),
+        # asyncpg 只认 postgresql:// / postgres:// 前缀, 需转换
+        dsn = dsn.replace("postgresql+asyncpg://", "postgresql://").replace("postgres+asyncpg://", "postgres://")
+        _pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=10)
+    return _pool
+
+
+def _upsert_sql(table: str, cols: list[str], conflict: tuple[str, ...]) -> str:
+    """生成 asyncpg 风格 ($1..$n 位置占位符) 的幂等 upsert SQL。"""
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in conflict)
+    return (
+        f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({', '.join(conflict)}) DO UPDATE SET {updates}, updated_at = now();"
+    )
 
 
 # ---------------------------------------------------------------------------
 # 表结构
 # ---------------------------------------------------------------------------
 
-def init_schema() -> None:
+async def init_schema() -> None:
     """创建 red_low_vol 表与索引 (幂等), 并对旧表迁移新增列。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(SCHEMA_DDL)
-            # 旧表迁移: 新增 股息率-TTM / 上个交易日收盘价 列
-            cur.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS dividend_yield_ttm DOUBLE PRECISION;")
-            cur.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS last_close DOUBLE PRECISION;")
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(SCHEMA_DDL)
+        # 旧表迁移: 新增 股息率-TTM / 上个交易日收盘价 列
+        await conn.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS dividend_yield_ttm DOUBLE PRECISION;")
+        await conn.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS last_close DOUBLE PRECISION;")
 
 
 # ---------------------------------------------------------------------------
@@ -107,25 +127,16 @@ _UPSERT_COLS = [
     "avg_daily_mv", "avg_daily_amt", "end_date",
 ]
 
-_UPSERT_SQL = f"""
-INSERT INTO red_low_vol ({", ".join(_UPSERT_COLS)})
-VALUES ({", ".join("%(" + c + ")s" for c in _UPSERT_COLS)})
-ON CONFLICT (ts_code, year) DO UPDATE SET
-{", ".join(f"{c} = EXCLUDED.{c}" for c in _UPSERT_COLS if c not in ("ts_code", "year"))},
-updated_at = now();
-"""
+_UPSERT_SQL = _upsert_sql("red_low_vol", _UPSERT_COLS, ("ts_code", "year"))
 
 
-def upsert_rows(rows: list[dict]) -> int:
+async def upsert_rows(rows: list[dict]) -> int:
     """按 (ts_code, year) upsert 写入, 返回写入行数。"""
     if not rows:
         return 0
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            for r in rows:
-                params = {c: r.get(c) for c in _UPSERT_COLS}
-                cur.execute(_UPSERT_SQL, params)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_UPSERT_SQL, [tuple(r.get(c) for c in _UPSERT_COLS) for r in rows])
     return len(rows)
 
 
@@ -133,31 +144,18 @@ def upsert_rows(rows: list[dict]) -> int:
 # 查询
 # ---------------------------------------------------------------------------
 
-def has_data(industry: str, year: int) -> bool:
-    """该行业+年份是否已有数据 (行业子串匹配)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM red_low_vol WHERE industry LIKE %s AND year = %s LIMIT 1;",
-                (f"%{industry}%", year),
-            )
-            return cur.fetchone() is not None
-
-
-def count_by_industry_year(industry: str, year: int) -> int:
+async def count_by_industry_year(industry: str, year: int) -> int:
     """该行业+年份的记录数 (行业子串匹配, 与同步 str.contains 一致)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT count(*) FROM red_low_vol WHERE industry LIKE %s AND year = %s;",
-                (f"%{industry}%", year),
-            )
-            return int(cur.fetchone()[0])
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(
+            "SELECT count(*) FROM red_low_vol WHERE industry LIKE $1 AND year = $2;",
+            f"%{industry}%", year))
 
 
-def query_screen(industry: str, years: list[int], sort_by: str = "dividend_yield",
-                 order: str = "desc", limit: int = 500,
-                 filters: dict | None = None) -> list[dict]:
+async def query_screen(industry: str, years: list[int], sort_by: str = "dividend_yield",
+                       order: str = "desc", limit: int = 500,
+                       filters: dict | None = None) -> list[dict]:
     """按行业+年份(可多个)查询全部公司, 支持字段阈值筛选, 按指定指标排序。
 
     filters 形如 {"dividend_yield": {"min": 5}, "volatility": {"max": 20}}
@@ -168,12 +166,16 @@ def query_screen(industry: str, years: list[int], sort_by: str = "dividend_yield
 
     conds: list[str] = []
     params: list = []
+
+    def ph() -> str:
+        return f"${len(params) + 1}"
+
     if industry:
         # 子串匹配, 与同步逻辑 str.contains 一致 (如输入"电力"匹配"新型电力")
-        conds.append("industry LIKE %s")
+        conds.append(f"industry LIKE {ph()}")
         params.append(f"%{industry}%")
     if years:
-        conds.append("year = ANY(%s)")
+        conds.append(f"year = ANY({ph()}::int[])")
         params.append([int(y) for y in years])
 
     # 动态筛选条件
@@ -186,10 +188,10 @@ def query_screen(industry: str, years: list[int], sort_by: str = "dividend_yield
         else:
             mn, mx = flt, None
         if mn is not None:
-            conds.append(f"{col_name} >= %s")
+            conds.append(f"{col_name} >= {ph()}")
             params.append(mn)
         if mx is not None:
-            conds.append(f"{col_name} <= %s")
+            conds.append(f"{col_name} <= {ph()}")
             params.append(mx)
 
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
@@ -201,13 +203,12 @@ def query_screen(industry: str, years: list[int], sort_by: str = "dividend_yield
         FROM red_low_vol
         {where_sql}
         ORDER BY {col} {order_sql} NULLS LAST, ts_code ASC
-        LIMIT %s;
+        LIMIT {ph()}::int;
     """
     params.append(int(limit))
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
     return [dict(r) for r in rows]
 
 
@@ -264,60 +265,53 @@ _FUND_COLS = [
     "invturn_days", "arturn_days", "end_date",
 ]
 
-_FUND_UPSERT_SQL = f"""
-INSERT INTO fundamental_screen ({", ".join(_FUND_COLS)})
-VALUES ({", ".join("%(" + c + ")s" for c in _FUND_COLS)})
-ON CONFLICT (ts_code, year) DO UPDATE SET
-{", ".join(f"{c} = EXCLUDED.{c}" for c in _FUND_COLS if c not in ("ts_code", "year"))},
-updated_at = now();
-"""
+_FUND_UPSERT_SQL = _upsert_sql("fundamental_screen", _FUND_COLS, ("ts_code", "year"))
 
 
-def init_fundamental_schema() -> None:
+async def init_fundamental_schema() -> None:
     """创建 fundamental_screen 表与索引 (幂等)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(FUNDAMENTAL_SCHEMA_DDL)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(FUNDAMENTAL_SCHEMA_DDL)
 
 
-def upsert_fundamental_rows(rows: list[dict]) -> int:
+async def upsert_fundamental_rows(rows: list[dict]) -> int:
     if not rows:
         return 0
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(_FUND_UPSERT_SQL, {c: r.get(c) for c in _FUND_COLS})
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_FUND_UPSERT_SQL, [tuple(r.get(c) for c in _FUND_COLS) for r in rows])
     return len(rows)
 
 
-def count_fundamental_by_industry_year(industry: str, year: int) -> int:
+async def count_fundamental_by_industry_year(industry: str, year: int) -> int:
     """该行业+年份的记录数 (行业子串匹配)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT count(*) FROM fundamental_screen WHERE industry LIKE %s AND year = %s;",
-                (f"%{industry}%", year),
-            )
-            return int(cur.fetchone()[0])
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(
+            "SELECT count(*) FROM fundamental_screen WHERE industry LIKE $1 AND year = $2;",
+            f"%{industry}%", year))
 
 
-def query_fundamental(industry: str, years: list[int], sort_by: str = "roe",
-                      order: str = "desc", limit: int = 1000,
-                      filters: dict | None = None) -> list[dict]:
+async def query_fundamental(industry: str, years: list[int], sort_by: str = "roe",
+                            order: str = "desc", limit: int = 1000,
+                            filters: dict | None = None) -> list[dict]:
     """按行业+多年份查询基本面数据, 支持阈值筛选与排序。"""
     col = FUNDAMENTAL_SORTABLE_COLUMNS.get(sort_by, "roe")
     order_sql = "ASC" if str(order).lower() == "asc" else "DESC"
 
     conds: list[str] = []
     params: list = []
+
+    def ph() -> str:
+        return f"${len(params) + 1}"
+
     if industry:
         # 子串匹配, 与同步逻辑 str.contains 一致
-        conds.append("industry LIKE %s")
+        conds.append(f"industry LIKE {ph()}")
         params.append(f"%{industry}%")
     if years:
-        conds.append("year = ANY(%s)")
+        conds.append(f"year = ANY({ph()}::int[])")
         params.append([int(y) for y in years])
     for key, flt in (filters or {}).items():
         col_name = FUNDAMENTAL_SORTABLE_COLUMNS.get(key)
@@ -328,10 +322,10 @@ def query_fundamental(industry: str, years: list[int], sort_by: str = "roe",
         else:
             mn, mx = flt, None
         if mn is not None:
-            conds.append(f"{col_name} >= %s")
+            conds.append(f"{col_name} >= {ph()}")
             params.append(mn)
         if mx is not None:
-            conds.append(f"{col_name} <= %s")
+            conds.append(f"{col_name} <= {ph()}")
             params.append(mx)
 
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
@@ -342,13 +336,12 @@ def query_fundamental(industry: str, years: list[int], sort_by: str = "roe",
         FROM fundamental_screen
         {where_sql}
         ORDER BY {col} {order_sql} NULLS LAST, ts_code ASC
-        LIMIT %s;
+        LIMIT {ph()}::int;
     """
     params.append(int(limit))
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
     return [dict(r) for r in rows]
 
 
@@ -421,56 +414,46 @@ FINANCIAL_COLS = [
     "close", "pe_ttm", "pb", "dv_ratio", "total_mv",
 ]
 
-_FIN_UPSERT_SQL = f"""
-INSERT INTO financial_data ({", ".join(FINANCIAL_COLS)})
-VALUES ({", ".join("%(" + c + ")s" for c in FINANCIAL_COLS)})
-ON CONFLICT (ts_code, year) DO UPDATE SET
-{", ".join(f"{c} = EXCLUDED.{c}" for c in FINANCIAL_COLS if c not in ("ts_code", "year"))},
-updated_at = now();
-"""
+_FIN_UPSERT_SQL = _upsert_sql("financial_data", FINANCIAL_COLS, ("ts_code", "year"))
 
 
-def init_financial_schema() -> None:
+async def init_financial_schema() -> None:
     """创建 financial_data 表与索引 (幂等)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(FINANCIAL_SCHEMA_DDL)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(FINANCIAL_SCHEMA_DDL)
 
 
-def upsert_financial_rows(rows: list[dict]) -> int:
+async def upsert_financial_rows(rows: list[dict]) -> int:
     """按 (ts_code, year) upsert 写入财务数据, 返回行数。"""
     if not rows:
         return 0
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(_FIN_UPSERT_SQL, {c: r.get(c) for c in FINANCIAL_COLS})
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_FIN_UPSERT_SQL, [tuple(r.get(c) for c in FINANCIAL_COLS) for r in rows])
     return len(rows)
 
 
-def has_financial(ts_code: str, year: int) -> bool:
+async def has_financial(ts_code: str, year: int) -> bool:
     """该股票该年份是否已有财务数据。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM financial_data WHERE ts_code=%s AND year=%s LIMIT 1;",
-                        (ts_code, int(year)))
-            return cur.fetchone() is not None
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT 1 FROM financial_data WHERE ts_code=$1 AND year=$2 LIMIT 1;",
+            ts_code, int(year)) is not None
 
 
-def query_financial_by_code(ts_code: str, years: list[int]) -> list[dict]:
+async def query_financial_by_code(ts_code: str, years: list[int]) -> list[dict]:
     """查询某股票多年财务数据 (年报)。"""
     if not years:
         return []
     cols = ", ".join(FINANCIAL_COLS)
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                f"SELECT {cols} FROM financial_data "
-                "WHERE ts_code=%s AND year = ANY(%s) ORDER BY year;",
-                (ts_code, [int(y) for y in years]))
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"SELECT {cols} FROM financial_data "
+            "WHERE ts_code=$1 AND year = ANY($2::int[]) ORDER BY year;",
+            ts_code, [int(y) for y in years])
     return [dict(r) for r in rows]
 
 
@@ -511,133 +494,120 @@ DAILY_REC_COLS = [
     "trades", "objective", "industry", "achieved",
 ]
 
-_DR_UPSERT_SQL = f"""
-INSERT INTO daily_band_recommend ({", ".join(DAILY_REC_COLS)})
-VALUES ({", ".join("%(" + c + ")s" for c in DAILY_REC_COLS)})
-ON CONFLICT (calc_date, ts_code) DO UPDATE SET
-{", ".join(f"{c} = EXCLUDED.{c}" for c in DAILY_REC_COLS if c not in ("calc_date", "ts_code"))},
-updated_at = now();
-"""
+_DR_UPSERT_SQL = _upsert_sql("daily_band_recommend", DAILY_REC_COLS, ("calc_date", "ts_code"))
 
 
-def init_daily_rec_schema() -> None:
+async def init_daily_rec_schema() -> None:
     """创建 daily_band_recommend 表与索引 (幂等), 旧表自动补 industry 列。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(DAILY_REC_SCHEMA_DDL)
-            # 旧表迁移: 补 industry 列
-            cur.execute("""
-                SELECT column_name FROM information_schema.columns
-                WHERE table_name = 'daily_band_recommend' AND column_name = 'industry'
-            """)
-            if cur.fetchone() is None:
-                cur.execute("ALTER TABLE daily_band_recommend ADD COLUMN industry VARCHAR(64) DEFAULT ''")
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(DAILY_REC_SCHEMA_DDL)
+        # 旧表迁移: 补 industry 列
+        has_col = await conn.fetchval(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'daily_band_recommend' AND column_name = 'industry'")
+        if has_col is None:
+            await conn.execute("ALTER TABLE daily_band_recommend ADD COLUMN industry VARCHAR(64) DEFAULT ''")
 
 
-def upsert_daily_rec_rows(rows: list[dict]) -> int:
+async def upsert_daily_rec_rows(rows: list[dict]) -> int:
     """按 (calc_date, ts_code) upsert 写入每日推荐, 返回行数。"""
     if not rows:
         return 0
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(_DR_UPSERT_SQL, {c: r.get(c) for c in DAILY_REC_COLS})
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_DR_UPSERT_SQL, [tuple(r.get(c) for c in DAILY_REC_COLS) for r in rows])
     return len(rows)
 
 
-def has_daily_rec(calc_date: str, industry: str = "") -> int:
+async def has_daily_rec(calc_date: str, industry: str = "") -> int:
     """统计某计算日 (可选行业) 已入库的每日推荐行数; 用于缓存命中判断。"""
     if not calc_date:
         return 0
-    sql = "SELECT COUNT(*) FROM daily_band_recommend WHERE calc_date = %s"
+    sql = "SELECT COUNT(*) FROM daily_band_recommend WHERE calc_date = $1"
     params: list = [calc_date]
     if industry.strip():
-        sql += " AND industry LIKE %s"
+        sql += " AND industry LIKE $2"
         params.append(f"%{industry.strip()}%")
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            return int(cur.fetchone()[0] or 0)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(sql, *params) or 0)
 
 
-def daily_rec_done_codes(calc_date: str) -> list:
+async def daily_rec_done_codes(calc_date: str) -> list:
     """某计算日已入库的 ts_code 列表 (用于全市场续跑跳过)。"""
     if not calc_date:
         return []
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT ts_code FROM daily_band_recommend WHERE calc_date = %s",
-                        (calc_date,))
-            return [str(r[0]) for r in cur.fetchall()]
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT ts_code FROM daily_band_recommend WHERE calc_date = $1", calc_date)
+    return [str(r[0]) for r in rows]
 
 
-def backfill_daily_rec_industry(ts_code_industry: dict) -> int:
+async def backfill_daily_rec_industry(ts_code_industry: dict) -> int:
     """回填 daily_band_recommend 中 industry 为空的行 (按 ts_code 映射), 返回更新行数。"""
     if not ts_code_industry:
         return 0
     n = 0
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, ts_code FROM daily_band_recommend "
-                        "WHERE industry IS NULL OR industry = ''")
-            for row_id, ts_code in cur.fetchall():
-                ind = ts_code_industry.get(str(ts_code), "")
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch("SELECT id, ts_code FROM daily_band_recommend "
+                                    "WHERE industry IS NULL OR industry = ''")
+            for r in rows:
+                ind = ts_code_industry.get(str(r["ts_code"]), "")
                 if ind:
-                    cur.execute("UPDATE daily_band_recommend SET industry=%s WHERE id=%s",
-                                (ind, row_id))
+                    await conn.execute("UPDATE daily_band_recommend SET industry=$1 WHERE id=$2",
+                                       ind, r["id"])
                     n += 1
-        conn.commit()
     return n
 
 
-def latest_calc_date() -> str:
+async def latest_calc_date() -> str:
     """最近一次计算的 calc_date。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT max(calc_date) FROM daily_band_recommend;")
-            return str(cur.fetchone()[0] or "")
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        v = await conn.fetchval("SELECT max(calc_date) FROM daily_band_recommend;")
+    return str(v or "")
 
 
-def query_daily_recommend(calc_date: str | None = None, buy_above_close: bool = True,
-                          limit: int = 500, industry: str = "") -> list[dict]:
+async def query_daily_recommend(calc_date: str | None = None, buy_above_close: bool = True,
+                                limit: int = 500, industry: str = "") -> list[dict]:
     """查询某计算日的推荐 (buy_price >= close), 按 close 降序; industry 非空时按行业子串过滤。"""
     if not calc_date:
-        calc_date = latest_calc_date()
+        calc_date = await latest_calc_date()
     if not calc_date:
         return []
-    sql = "SELECT * FROM daily_band_recommend WHERE calc_date = %s"
+    sql = "SELECT * FROM daily_band_recommend WHERE calc_date = $1"
     params: list = [calc_date]
     if buy_above_close:
         sql += " AND buy_price >= close"
     if industry.strip():
-        sql += " AND industry LIKE %s"
+        sql += " AND industry LIKE $2"
         params.append(f"%{industry.strip()}%")
-    sql += " ORDER BY close DESC LIMIT %s"
+    sql += f" ORDER BY close DESC LIMIT ${len(params) + 1}::int"
     params.append(int(limit))
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
     return [dict(r) for r in rows]
 
 
-def latest_rlv_year() -> int:
+async def latest_rlv_year() -> int:
     """red_low_vol 最新数据年份。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT max(year) FROM red_low_vol;")
-            return int(cur.fetchone()[0] or 0)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        v = await conn.fetchval("SELECT max(year) FROM red_low_vol;")
+    return int(v or 0)
 
 
-def query_dividend_recommend(min_dy_ttm: float = 3.0, industry: str = "",
-                             year_min: int | None = None, year_max: int | None = None,
-                             limit: int = 500,
-                             payout_min: float | None = None,
-                             payout_max: float | None = None,
-                             roe_min: float | None = None,
-                             roe_max: float | None = None) -> list[dict]:
+async def query_dividend_recommend(min_dy_ttm: float = 3.0, industry: str = "",
+                                   year_min: int | None = None, year_max: int | None = None,
+                                   limit: int = 500,
+                                   payout_min: float | None = None,
+                                   payout_max: float | None = None,
+                                   roe_min: float | None = None,
+                                   roe_max: float | None = None) -> list[dict]:
     """红利低波动态股息率推荐: 年份区间 股息率-TTM >= N 的公司, 按 ttm 降序。
 
     直接读 red_low_vol (无需重新计算), 供每日推荐 方法2 使用。
@@ -646,16 +616,16 @@ def query_dividend_recommend(min_dy_ttm: float = 3.0, industry: str = "",
     year_conds: list[str] = []
     year_params: list = []
     if year_min:
-        year_conds.append("year >= %s")
+        year_conds.append("year >= $%d" % (len(year_params) + 1))
         year_params.append(int(year_min))
     if year_max:
-        year_conds.append("year <= %s")
+        year_conds.append("year <= $%d" % (len(year_params) + 1))
         year_params.append(int(year_max))
     if not year_conds:
-        latest = latest_rlv_year()
+        latest = await latest_rlv_year()
         if not latest:
             return []
-        year_conds.append("year = %s")
+        year_conds.append("year = $1")
         year_params.append(latest)
     sql = ("SELECT ts_code, symbol, name, industry, year, "
            "dividend_yield, dividend_yield_ttm, last_close, volatility, div_per_share, "
@@ -663,29 +633,28 @@ def query_dividend_recommend(min_dy_ttm: float = 3.0, industry: str = "",
            "FROM red_low_vol WHERE " + " AND ".join(year_conds))
     params: list = year_params
     if industry.strip():
-        sql += " AND industry LIKE %s"
+        sql += " AND industry LIKE $%d" % (len(params) + 1)
         params.append(f"%{industry.strip()}%")
     if min_dy_ttm is not None and float(min_dy_ttm) > 0:
-        sql += " AND dividend_yield_ttm >= %s"
+        sql += " AND dividend_yield_ttm >= $%d" % (len(params) + 1)
         params.append(float(min_dy_ttm))
     if payout_min is not None:
-        sql += " AND payout_ratio >= %s"
+        sql += " AND payout_ratio >= $%d" % (len(params) + 1)
         params.append(float(payout_min))
     if payout_max is not None:
-        sql += " AND payout_ratio <= %s"
+        sql += " AND payout_ratio <= $%d" % (len(params) + 1)
         params.append(float(payout_max))
     if roe_min is not None:
-        sql += " AND roe >= %s"
+        sql += " AND roe >= $%d" % (len(params) + 1)
         params.append(float(roe_min))
     if roe_max is not None:
-        sql += " AND roe <= %s"
+        sql += " AND roe <= $%d" % (len(params) + 1)
         params.append(float(roe_max))
-    sql += " ORDER BY dividend_yield_ttm DESC NULLS LAST, ts_code ASC LIMIT %s"
+    sql += " ORDER BY dividend_yield_ttm DESC NULLS LAST, ts_code ASC LIMIT $%d::int" % (len(params) + 1)
     params.append(int(limit))
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
     return [dict(r) for r in rows]
 
 
@@ -705,63 +674,56 @@ CREATE TABLE IF NOT EXISTS my_stocks (
 """
 
 
-def init_my_stocks_schema() -> None:
+async def init_my_stocks_schema() -> None:
     """创建 my_stocks 表 (幂等), 并为旧表迁移 user_id 列与唯一约束。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(MY_STOCKS_SCHEMA_DDL)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(MY_STOCKS_SCHEMA_DDL)
             # 旧表迁移: 新增 user_id (旧数据归 0 隐藏), 唯一约束从 ts_code 改为 (user_id, ts_code)
-            cur.execute("ALTER TABLE my_stocks ADD COLUMN IF NOT EXISTS user_id BIGINT NOT NULL DEFAULT 0;")
-            cur.execute("ALTER TABLE my_stocks DROP CONSTRAINT IF EXISTS my_stocks_ts_code_key;")
-            cur.execute("DROP INDEX IF EXISTS my_stocks_ts_code_key;")
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_my_stocks_user_ts ON my_stocks (user_id, ts_code);")
-        conn.commit()
+            await conn.execute("ALTER TABLE my_stocks ADD COLUMN IF NOT EXISTS user_id BIGINT NOT NULL DEFAULT 0;")
+            await conn.execute("ALTER TABLE my_stocks DROP CONSTRAINT IF EXISTS my_stocks_ts_code_key;")
+            await conn.execute("DROP INDEX IF EXISTS my_stocks_ts_code_key;")
+            await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_my_stocks_user_ts ON my_stocks (user_id, ts_code);")
 
 
-def add_my_stock(user_id: int, ts_code: str, name: str) -> bool:
+async def add_my_stock(user_id: int, ts_code: str, name: str) -> bool:
     """为指定用户添加自选股 ((user_id, ts_code) 唯一), 返回是否为新插入。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO my_stocks (user_id, ts_code, name) VALUES (%s, %s, %s) "
-                "ON CONFLICT (user_id, ts_code) DO NOTHING",
-                (user_id, ts_code, name),
-            )
-            inserted = cur.rowcount > 0
-        conn.commit()
-    return inserted
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO my_stocks (user_id, ts_code, name) VALUES ($1, $2, $3) "
+            "ON CONFLICT (user_id, ts_code) DO NOTHING RETURNING id",
+            user_id, ts_code, name)
+    return row is not None
 
 
-def remove_my_stock(user_id: int, ts_code: str) -> int:
+async def remove_my_stock(user_id: int, ts_code: str) -> int:
     """移除指定用户的自选股, 返回删除行数。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM my_stocks WHERE user_id = %s AND ts_code = %s",
-                        (user_id, ts_code))
-            n = cur.rowcount
-        conn.commit()
-    return n
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("DELETE FROM my_stocks WHERE user_id = $1 AND ts_code = $2 RETURNING id",
+                                user_id, ts_code)
+    return len(rows)
 
 
-def list_my_stocks(user_id: int) -> list[dict]:
+async def list_my_stocks(user_id: int) -> list[dict]:
     """列出指定用户的全部自选股 (按添加时间升序)。"""
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT ts_code, name, added_at FROM my_stocks "
-                "WHERE user_id = %s ORDER BY added_at ASC, id ASC",
-                (user_id,))
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ts_code, name, added_at FROM my_stocks "
+            "WHERE user_id = $1 ORDER BY added_at ASC, id ASC", user_id)
     return [dict(r) for r in rows]
 
 
-def has_my_stock(user_id: int, ts_code: str) -> bool:
+async def has_my_stock(user_id: int, ts_code: str) -> bool:
     """某股票是否已在指定用户的自选股中。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM my_stocks WHERE user_id = %s AND ts_code = %s LIMIT 1",
-                        (user_id, ts_code))
-            return cur.fetchone() is not None
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT 1 FROM my_stocks WHERE user_id = $1 AND ts_code = $2 LIMIT 1",
+            user_id, ts_code) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -785,80 +747,75 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
 """
 
 
-def init_auth_schema() -> None:
+async def init_auth_schema() -> None:
     """创建 users / sessions 表 (幂等)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(AUTH_SCHEMA_DDL)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(AUTH_SCHEMA_DDL)
 
 
-def create_user(username: str, password_hash: str) -> tuple[int | None, bool]:
+async def create_user(username: str, password_hash: str) -> tuple[int | None, bool]:
     """创建用户, 返回 (user_id, 是否新插入)。用户名已存在时 user_id 为 None。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO users (username, password_hash) VALUES (%s, %s) "
-                "ON CONFLICT (username) DO NOTHING RETURNING id",
-                (username, password_hash),
-            )
-            row = cur.fetchone()
-        conn.commit()
-    return (int(row[0]) if row else None, row is not None)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO users (username, password_hash) VALUES ($1, $2) "
+            "ON CONFLICT (username) DO NOTHING RETURNING id",
+            username, password_hash)
+    return (int(row["id"]) if row else None, row is not None)
 
 
-def get_user_by_username(username: str) -> dict | None:
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT id, username, password_hash, created_at FROM users WHERE username = %s",
-                        (username,))
-            r = cur.fetchone()
+async def get_user_by_username(username: str) -> dict | None:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT id, username, password_hash, created_at FROM users WHERE username = $1",
+            username)
     return dict(r) if r else None
 
 
-def get_user_by_id(user_id: int) -> dict | None:
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT id, username, created_at FROM users WHERE id = %s", (user_id,))
-            r = cur.fetchone()
+async def get_user_by_id(user_id: int) -> dict | None:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT id, username, created_at FROM users WHERE id = $1", user_id)
     return dict(r) if r else None
 
 
-def create_session(token: str, user_id: int, expires_at) -> None:
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (%s, %s, %s)",
-                        (token, user_id, expires_at))
-        conn.commit()
+async def create_session(token: str, user_id: int, expires_at) -> None:
+    # asyncpg 对 timestamp (无时区) 列要求 naive datetime; tz-aware (如 main 传入的
+    # datetime.now(timezone.utc)) 需转成 UTC naive, 否则 asyncpg 报错
+    if hasattr(expires_at, "tzinfo") and expires_at.tzinfo is not None:
+        expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, $3)",
+                           token, user_id, expires_at)
 
 
-def get_session_user(token: str) -> dict | None:
+async def get_session_user(token: str) -> dict | None:
     """按会话 token 返回 {id, username} (已过期返回 None)。"""
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id "
-                "WHERE s.token = %s AND s.expires_at > now()",
-                (token,))
-            r = cur.fetchone()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id "
+            "WHERE s.token = $1 AND s.expires_at > now()", token)
     return dict(r) if r else None
 
 
-def delete_session(token: str) -> None:
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
-        conn.commit()
+async def delete_session(token: str) -> None:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM sessions WHERE token = $1", token)
 
 
-def delete_user(user_id: int) -> None:
+async def delete_user(user_id: int) -> None:
     """注销账号: 删除该用户的会话、自选股及用户记录 (不可恢复)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM my_stocks WHERE user_id = %s", (user_id,))
-            cur.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
-            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM my_stocks WHERE user_id = $1", user_id)
+            await conn.execute("DELETE FROM sessions WHERE user_id = $1", user_id)
+            await conn.execute("DELETE FROM users WHERE id = $1", user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -919,60 +876,53 @@ _HK_RLV_COLS = [
     "avg_daily_mv", "avg_daily_amt", "end_date",
 ]
 
-_HK_RLV_UPSERT_SQL = f"""
-INSERT INTO hk_red_low_vol ({", ".join(_HK_RLV_COLS)})
-VALUES ({", ".join("%(" + c + ")s" for c in _HK_RLV_COLS)})
-ON CONFLICT (ts_code, year) DO UPDATE SET
-{", ".join(f"{c} = EXCLUDED.{c}" for c in _HK_RLV_COLS if c not in ("ts_code", "year"))},
-updated_at = now();
-"""
+_HK_RLV_UPSERT_SQL = _upsert_sql("hk_red_low_vol", _HK_RLV_COLS, ("ts_code", "year"))
 
 
-def init_hk_rlv_schema() -> None:
+async def init_hk_rlv_schema() -> None:
     """创建 hk_red_low_vol 表与索引 (幂等)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(HK_RLV_SCHEMA_DDL)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(HK_RLV_SCHEMA_DDL)
 
 
-def upsert_hk_rlv_rows(rows: list[dict]) -> int:
+async def upsert_hk_rlv_rows(rows: list[dict]) -> int:
     """按 (ts_code, year) upsert 写入港股红利低波, 返回行数。"""
     if not rows:
         return 0
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(_HK_RLV_UPSERT_SQL, {c: r.get(c) for c in _HK_RLV_COLS})
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_HK_RLV_UPSERT_SQL, [tuple(r.get(c) for c in _HK_RLV_COLS) for r in rows])
     return len(rows)
 
 
-def count_hk_rlv_by_industry_year(industry: str, year: int) -> int:
+async def count_hk_rlv_by_industry_year(industry: str, year: int) -> int:
     """该行业+年份的记录数 (行业子串匹配)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT count(*) FROM hk_red_low_vol WHERE industry LIKE %s AND year = %s;",
-                (f"%{industry}%", year),
-            )
-            return int(cur.fetchone()[0])
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(
+            "SELECT count(*) FROM hk_red_low_vol WHERE industry LIKE $1 AND year = $2;",
+            f"%{industry}%", year))
 
 
-def query_hk_rlv(industry: str, years: list[int], sort_by: str = "dividend_yield",
-                 order: str = "desc", limit: int = 500,
-                 filters: dict | None = None) -> list[dict]:
+async def query_hk_rlv(industry: str, years: list[int], sort_by: str = "dividend_yield",
+                       order: str = "desc", limit: int = 500,
+                       filters: dict | None = None) -> list[dict]:
     """港股红利低波: 按行业+多年份查询, 支持阈值筛选与排序 (字段白名单防注入)。"""
     col = HK_RLV_SORTABLE_COLUMNS.get(sort_by, "dividend_yield")
     order_sql = "ASC" if str(order).lower() == "asc" else "DESC"
 
     conds: list[str] = []
     params: list = []
+
+    def ph() -> str:
+        return f"${len(params) + 1}"
+
     if industry:
-        conds.append("industry LIKE %s")
+        conds.append(f"industry LIKE {ph()}")
         params.append(f"%{industry}%")
     if years:
-        conds.append("year = ANY(%s)")
+        conds.append(f"year = ANY({ph()}::int[])")
         params.append([int(y) for y in years])
     for key, flt in (filters or {}).items():
         col_name = HK_RLV_SORTABLE_COLUMNS.get(key)
@@ -983,10 +933,10 @@ def query_hk_rlv(industry: str, years: list[int], sort_by: str = "dividend_yield
         else:
             mn, mx = flt, None
         if mn is not None:
-            conds.append(f"{col_name} >= %s")
+            conds.append(f"{col_name} >= {ph()}")
             params.append(mn)
         if mx is not None:
-            conds.append(f"{col_name} <= %s")
+            conds.append(f"{col_name} <= {ph()}")
             params.append(mx)
 
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
@@ -998,22 +948,13 @@ def query_hk_rlv(industry: str, years: list[int], sort_by: str = "dividend_yield
         FROM hk_red_low_vol
         {where_sql}
         ORDER BY {col} {order_sql} NULLS LAST, ts_code ASC
-        LIMIT %s;
+        LIMIT {ph()}::int;
     """
     params.append(int(limit))
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
     return [dict(r) for r in rows]
-
-
-def latest_hk_rlv_year() -> int:
-    """hk_red_low_vol 最新数据年份。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT max(year) FROM hk_red_low_vol;")
-            return int(cur.fetchone()[0] or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1080,59 +1021,52 @@ _HK_FUND_COLS = [
     "invturn_days", "arturn_days", "eps", "operate_income", "net_profit", "total_mv", "end_date",
 ]
 
-_HK_FUND_UPSERT_SQL = f"""
-INSERT INTO hk_fundamental_screen ({", ".join(_HK_FUND_COLS)})
-VALUES ({", ".join("%(" + c + ")s" for c in _HK_FUND_COLS)})
-ON CONFLICT (ts_code, year) DO UPDATE SET
-{", ".join(f"{c} = EXCLUDED.{c}" for c in _HK_FUND_COLS if c not in ("ts_code", "year"))},
-updated_at = now();
-"""
+_HK_FUND_UPSERT_SQL = _upsert_sql("hk_fundamental_screen", _HK_FUND_COLS, ("ts_code", "year"))
 
 
-def init_hk_fundamental_schema() -> None:
+async def init_hk_fundamental_schema() -> None:
     """创建 hk_fundamental_screen 表与索引 (幂等)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(HK_FUNDAMENTAL_SCHEMA_DDL)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(HK_FUNDAMENTAL_SCHEMA_DDL)
 
 
-def upsert_hk_fundamental_rows(rows: list[dict]) -> int:
+async def upsert_hk_fundamental_rows(rows: list[dict]) -> int:
     if not rows:
         return 0
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(_HK_FUND_UPSERT_SQL, {c: r.get(c) for c in _HK_FUND_COLS})
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_HK_FUND_UPSERT_SQL, [tuple(r.get(c) for c in _HK_FUND_COLS) for r in rows])
     return len(rows)
 
 
-def count_hk_fundamental_by_industry_year(industry: str, year: int) -> int:
+async def count_hk_fundamental_by_industry_year(industry: str, year: int) -> int:
     """该行业+年份的记录数 (行业子串匹配)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT count(*) FROM hk_fundamental_screen WHERE industry LIKE %s AND year = %s;",
-                (f"%{industry}%", year),
-            )
-            return int(cur.fetchone()[0])
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(
+            "SELECT count(*) FROM hk_fundamental_screen WHERE industry LIKE $1 AND year = $2;",
+            f"%{industry}%", year))
 
 
-def query_hk_fundamental(industry: str, years: list[int], sort_by: str = "roe",
-                         order: str = "desc", limit: int = 1000,
-                         filters: dict | None = None) -> list[dict]:
+async def query_hk_fundamental(industry: str, years: list[int], sort_by: str = "roe",
+                               order: str = "desc", limit: int = 1000,
+                               filters: dict | None = None) -> list[dict]:
     """港股基本面: 按行业+多年份查询, 支持阈值筛选与排序。"""
     col = HK_FUNDAMENTAL_SORTABLE_COLUMNS.get(sort_by, "roe")
     order_sql = "ASC" if str(order).lower() == "asc" else "DESC"
 
     conds: list[str] = []
     params: list = []
+
+    def ph() -> str:
+        return f"${len(params) + 1}"
+
     if industry:
-        conds.append("industry LIKE %s")
+        conds.append(f"industry LIKE {ph()}")
         params.append(f"%{industry}%")
     if years:
-        conds.append("year = ANY(%s)")
+        conds.append(f"year = ANY({ph()}::int[])")
         params.append([int(y) for y in years])
     for key, flt in (filters or {}).items():
         col_name = HK_FUNDAMENTAL_SORTABLE_COLUMNS.get(key)
@@ -1143,10 +1077,10 @@ def query_hk_fundamental(industry: str, years: list[int], sort_by: str = "roe",
         else:
             mn, mx = flt, None
         if mn is not None:
-            conds.append(f"{col_name} >= %s")
+            conds.append(f"{col_name} >= {ph()}")
             params.append(mn)
         if mx is not None:
-            conds.append(f"{col_name} <= %s")
+            conds.append(f"{col_name} <= {ph()}")
             params.append(mx)
 
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
@@ -1158,17 +1092,16 @@ def query_hk_fundamental(industry: str, years: list[int], sort_by: str = "roe",
         FROM hk_fundamental_screen
         {where_sql}
         ORDER BY {col} {order_sql} NULLS LAST, ts_code ASC
-        LIMIT %s;
+        LIMIT {ph()}::int;
     """
     params.append(int(limit))
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
     return [dict(r) for r in rows]
 
 
-def hk_synced_ts_codes(years: list[int]) -> set:
+async def hk_synced_ts_codes(years: list[int]) -> set:
     """港股两表在给定年份全部有数据的 ts_code 集合 (全市场续跑断点用)。
 
     某股票被视为「已同步」= hk_red_low_vol 与 hk_fundamental_screen 中,
@@ -1178,16 +1111,15 @@ def hk_synced_ts_codes(years: list[int]) -> set:
     if not years:
         return set()
     result: set | None = None
-    for table in ("hk_red_low_vol", "hk_fundamental_screen"):
-        with _connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT ts_code FROM {table} WHERE year = ANY(%s) "
-                    "GROUP BY ts_code HAVING count(DISTINCT year) = %s",
-                    (years, len(years)),
-                )
-                s = {str(r[0]) for r in cur.fetchall()}
-        result = s if result is None else (result & s)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        for table in ("hk_red_low_vol", "hk_fundamental_screen"):
+            rows = await conn.fetch(
+                f"SELECT ts_code FROM {table} WHERE year = ANY($1::int[]) "
+                "GROUP BY ts_code HAVING count(DISTINCT year) = $2",
+                years, len(years))
+            s = {str(r[0]) for r in rows}
+            result = s if result is None else (result & s)
     return result or set()
 
 
@@ -1256,95 +1188,92 @@ _ETF_COLS = [
     "premium", "track_dev", "high52", "low52", "pos52", "calc_date",
 ]
 
-_ETF_UPSERT_SQL = f"""
-INSERT INTO etf_screen ({", ".join(_ETF_COLS)})
-VALUES ({", ".join("%(" + c + ")s" for c in _ETF_COLS)})
-ON CONFLICT (ts_code) DO UPDATE SET
-{", ".join(f"{c} = EXCLUDED.{c}" for c in _ETF_COLS if c != "ts_code")},
-updated_at = now();
-"""
+_ETF_UPSERT_SQL = _upsert_sql("etf_screen", _ETF_COLS, ("ts_code",))
 
 
-def init_etf_schema() -> None:
+async def init_etf_schema() -> None:
     """创建 etf_screen 表与索引 (幂等)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(ETF_SCHEMA_DDL)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(ETF_SCHEMA_DDL)
 
 
-def upsert_etf_rows(rows: list[dict]) -> int:
+async def upsert_etf_rows(rows: list[dict]) -> int:
     if not rows:
         return 0
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(_ETF_UPSERT_SQL, {c: r.get(c) for c in _ETF_COLS})
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_ETF_UPSERT_SQL, [tuple(r.get(c) for c in _ETF_COLS) for r in rows])
     return len(rows)
 
 
-def latest_etf_calc_date() -> str:
+async def latest_etf_calc_date() -> str:
     """etf_screen 中最近计算日 (空串=尚无数据)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT max(calc_date) FROM etf_screen;")
-            v = cur.fetchone()[0]
-            return str(v) if v else ""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        v = await conn.fetchval("SELECT max(calc_date) FROM etf_screen;")
+    return str(v) if v else ""
 
 
-def count_etf_by_calc_date(calc_date: str) -> int:
+async def count_etf_by_calc_date(calc_date: str) -> int:
     """指定计算日的 ETF 记录数。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM etf_screen WHERE calc_date = %s;",
-                        (calc_date,))
-            return int(cur.fetchone()[0])
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval("SELECT count(*) FROM etf_screen WHERE calc_date = $1;",
+                                       calc_date))
 
 
-def query_etf(calc_date: str = "", keyword: str = "", fund_type: str = "",
-              min_scale: float | None = None, max_m_fee: float | None = None,
-              max_c_fee: float | None = None, min_amount_20: float | None = None,
-              max_premium: float | None = None, min_pos52: float | None = None,
-              max_pos52: float | None = None,
-              sort_by: str = "scale", order: str = "desc",
-              limit: int = 300) -> list[dict]:
+async def query_etf(calc_date: str = "", keyword: str = "", fund_type: str = "",
+                    min_scale: float | None = None, max_m_fee: float | None = None,
+                    max_c_fee: float | None = None, min_amount_20: float | None = None,
+                    max_premium: float | None = None, min_pos52: float | None = None,
+                    max_pos52: float | None = None,
+                    sort_by: str = "scale", order: str = "desc",
+                    limit: int = 300) -> list[dict]:
     """查询 ETF 筛选数据, 支持阈值筛选与排序 (NULL 值排最后)。"""
     col = ETF_SORTABLE_COLUMNS.get(sort_by, "scale")
     order_sql = "ASC" if str(order).lower() == "asc" else "DESC"
 
     conds: list[str] = []
     params: list = []
+    _ph_n = 0
+
+    def ph() -> str:
+        """递增占位符序号 (同一 f-string 内多次调用也各自递增, 不依赖 params 长度)。"""
+        nonlocal _ph_n
+        _ph_n += 1
+        return f"${_ph_n}"
+
     if calc_date:
-        conds.append("calc_date = %s")
+        conds.append(f"calc_date = {ph()}")
         params.append(calc_date)
     if keyword:
-        conds.append("(name ILIKE %s OR ts_code ILIKE %s)")
+        conds.append(f"(name ILIKE {ph()} OR ts_code ILIKE {ph()})")
         params.append(f"%{keyword}%")
         params.append(f"%{keyword}%")
     if fund_type:
-        conds.append("fund_type ILIKE %s")
+        conds.append(f"fund_type ILIKE {ph()}")
         params.append(f"%{fund_type}%")
     if min_scale is not None:
-        conds.append("scale >= %s")
+        conds.append(f"scale >= {ph()}")
         params.append(min_scale)
     if max_m_fee is not None:
-        conds.append("m_fee <= %s")
+        conds.append(f"m_fee <= {ph()}")
         params.append(max_m_fee)
     if max_c_fee is not None:
-        conds.append("c_fee <= %s")
+        conds.append(f"c_fee <= {ph()}")
         params.append(max_c_fee)
     if min_amount_20 is not None:
-        conds.append("avg_amount_20 >= %s")
+        conds.append(f"avg_amount_20 >= {ph()}")
         params.append(min_amount_20)
     if max_premium is not None:
-        conds.append("ABS(premium) <= %s")
+        conds.append(f"ABS(premium) <= {ph()}")
         params.append(max_premium)
     if min_pos52 is not None:
-        conds.append("pos52 >= %s")
+        conds.append(f"pos52 >= {ph()}")
         params.append(min_pos52)
     if max_pos52 is not None:
-        conds.append("pos52 <= %s")
+        conds.append(f"pos52 <= {ph()}")
         params.append(max_pos52)
 
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
@@ -1353,13 +1282,12 @@ def query_etf(calc_date: str = "", keyword: str = "", fund_type: str = "",
         FROM etf_screen
         {where_sql}
         ORDER BY {col} {order_sql} NULLS LAST, ts_code ASC
-        LIMIT %s;
+        LIMIT {ph()}::int;
     """
     params.append(int(limit))
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
     return [dict(r) for r in rows]
 
 
@@ -1391,128 +1319,106 @@ CREATE INDEX IF NOT EXISTS idx_custom_strat_stock ON custom_strategy_stocks (str
 """
 
 
-def init_custom_strategy_schema() -> None:
+async def init_custom_strategy_schema() -> None:
     """创建自定义策略表 (幂等)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(CUSTOM_STRATEGY_SCHEMA_DDL)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(CUSTOM_STRATEGY_SCHEMA_DDL)
 
 
-def create_custom_strategy(user_id: int, name: str, desc_text: str = "",
-                           category: str = "我的策略", source: str = "manual",
-                           filter_info: str = "") -> int:
+async def create_custom_strategy(user_id: int, name: str, desc_text: str = "",
+                                 category: str = "我的策略", source: str = "manual",
+                                 filter_info: str = "") -> int:
     """创建自定义策略, 返回策略 id。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO custom_strategies (user_id, name, desc_text, category, source, filter_info) "
-                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (user_id, name, desc_text, category, source, filter_info))
-            sid = cur.fetchone()[0]
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        sid = await conn.fetchval(
+            "INSERT INTO custom_strategies (user_id, name, desc_text, category, source, filter_info) "
+            "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+            user_id, name, desc_text, category, source, filter_info)
     return int(sid)
 
 
-def list_custom_strategies(user_id: int) -> list[dict]:
+async def list_custom_strategies(user_id: int) -> list[dict]:
     """列出指定用户的全部自定义策略 (含公司数量)。"""
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT c.id, c.name, c.desc_text, c.category, c.source, c.filter_info, c.created_at, "
-                "       (SELECT count(*) FROM custom_strategy_stocks s WHERE s.strategy_id = c.id) AS stock_count "
-                "FROM custom_strategies c WHERE c.user_id = %s ORDER BY c.id DESC",
-                (user_id,))
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT c.id, c.name, c.desc_text, c.category, c.source, c.filter_info, c.created_at, "
+            "       (SELECT count(*) FROM custom_strategy_stocks s WHERE s.strategy_id = c.id) AS stock_count "
+            "FROM custom_strategies c WHERE c.user_id = $1 ORDER BY c.id DESC", user_id)
     return [dict(r) for r in rows]
 
 
-def get_custom_strategy(sid: int) -> dict | None:
+async def get_custom_strategy(sid: int) -> dict | None:
     """按 id 查策略 (不限用户, 调用方自行校验归属)。"""
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, user_id, name, desc_text, category, source, filter_info, created_at "
-                "FROM custom_strategies WHERE id = %s", (sid,))
-            r = cur.fetchone()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT id, user_id, name, desc_text, category, source, filter_info, created_at "
+            "FROM custom_strategies WHERE id = $1", sid)
     return dict(r) if r else None
 
 
-def update_custom_strategy(sid: int, user_id: int, name: str | None = None,
-                           desc_text: str | None = None, category: str | None = None) -> int:
+async def update_custom_strategy(sid: int, user_id: int, name: str | None = None,
+                                 desc_text: str | None = None, category: str | None = None) -> int:
     """更新自定义策略 (仅限本人), 返回受影响行数。"""
     sets, params = [], []
     if name is not None:
-        sets.append("name = %s"); params.append(name)
+        sets.append("name = $%d" % (len(params) + 1)); params.append(name)
     if desc_text is not None:
-        sets.append("desc_text = %s"); params.append(desc_text)
+        sets.append("desc_text = $%d" % (len(params) + 1)); params.append(desc_text)
     if category is not None:
-        sets.append("category = %s"); params.append(category)
+        sets.append("category = $%d" % (len(params) + 1)); params.append(category)
     if not sets:
         return 0
     params += [sid, user_id]
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE custom_strategies SET {', '.join(sets)} WHERE id = %s AND user_id = %s",
-                params)
-            n = cur.rowcount
-        conn.commit()
-    return n
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"UPDATE custom_strategies SET {', '.join(sets)} WHERE id = ${len(params) - 1} AND user_id = ${len(params)} RETURNING id",
+            *params)
+    return len(rows)
 
 
-def delete_custom_strategy(sid: int, user_id: int) -> int:
+async def delete_custom_strategy(sid: int, user_id: int) -> int:
     """删除自定义策略及其全部公司 (仅限本人), 返回删除行数。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM custom_strategy_stocks WHERE strategy_id = %s", (sid,))
-            cur.execute("DELETE FROM custom_strategies WHERE id = %s AND user_id = %s", (sid, user_id))
-            n = cur.rowcount
-        conn.commit()
-    return n
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM custom_strategy_stocks WHERE strategy_id = $1", sid)
+            rows = await conn.fetch("DELETE FROM custom_strategies WHERE id = $1 AND user_id = $2 RETURNING id",
+                                    sid, user_id)
+    return len(rows)
 
 
-def add_strategy_stock(sid: int, ts_code: str, name: str = "", note: str = "") -> bool:
+async def add_strategy_stock(sid: int, ts_code: str, name: str = "", note: str = "") -> bool:
     """向策略添加公司 ((strategy_id, ts_code) 唯一), 返回是否为新插入。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO custom_strategy_stocks (strategy_id, ts_code, name, note) "
-                "VALUES (%s, %s, %s, %s) ON CONFLICT (strategy_id, ts_code) DO NOTHING",
-                (sid, ts_code, name, note))
-            inserted = cur.rowcount > 0
-        conn.commit()
-    return inserted
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO custom_strategy_stocks (strategy_id, ts_code, name, note) "
+            "VALUES ($1, $2, $3, $4) ON CONFLICT (strategy_id, ts_code) DO NOTHING RETURNING id",
+            sid, ts_code, name, note)
+    return row is not None
 
 
-def batch_add_strategy_stocks(sid: int, stocks: list[dict]) -> int:
-    """批量向策略添加公司 (保存选股结果用), 返回新增数。"""
-    n = 0
-    for s in stocks:
-        if add_strategy_stock(sid, s["ts_code"], s.get("name", ""), s.get("note", "")):
-            n += 1
-    return n
-
-
-def remove_strategy_stock(sid: int, ts_code: str) -> int:
+async def remove_strategy_stock(sid: int, ts_code: str) -> int:
     """从策略移除公司, 返回删除行数。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM custom_strategy_stocks WHERE strategy_id = %s AND ts_code = %s",
-                        (sid, ts_code))
-            n = cur.rowcount
-        conn.commit()
-    return n
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("DELETE FROM custom_strategy_stocks WHERE strategy_id = $1 AND ts_code = $2 RETURNING id",
+                                sid, ts_code)
+    return len(rows)
 
 
-def list_strategy_stocks(sid: int) -> list[dict]:
+async def list_strategy_stocks(sid: int) -> list[dict]:
     """列出策略内全部公司 (按添加时间升序)。"""
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT ts_code, name, note, added_at FROM custom_strategy_stocks "
-                "WHERE strategy_id = %s ORDER BY added_at ASC, id ASC", (sid,))
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ts_code, name, note, added_at FROM custom_strategy_stocks "
+            "WHERE strategy_id = $1 ORDER BY added_at ASC, id ASC", sid)
     return [dict(r) for r in rows]
 
 
@@ -1534,84 +1440,74 @@ CREATE INDEX IF NOT EXISTS idx_invest_ideas_user ON invest_ideas (user_id);
 """
 
 
-def init_invest_ideas_schema() -> None:
+async def init_invest_ideas_schema() -> None:
     """创建精选思想表 (幂等)。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(INVEST_IDEAS_SCHEMA_DDL)
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(INVEST_IDEAS_SCHEMA_DDL)
 
 
-def count_invest_ideas(user_id: int) -> int:
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM invest_ideas WHERE user_id = %s", (user_id,))
-            return int(cur.fetchone()[0])
+async def count_invest_ideas(user_id: int) -> int:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval("SELECT count(*) FROM invest_ideas WHERE user_id = $1", user_id))
 
 
-def create_invest_idea(user_id: int, name: str, school: str = "", tags: str = "",
-                       bio: str = "", principles: str = "") -> int:
+async def create_invest_idea(user_id: int, name: str, school: str = "", tags: str = "",
+                             bio: str = "", principles: str = "") -> int:
     """创建精选思想 skill, 返回 id。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO invest_ideas (user_id, name, school, tags, bio, principles) "
-                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (user_id, name, school, tags, bio, principles))
-            sid = cur.fetchone()[0]
-        conn.commit()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        sid = await conn.fetchval(
+            "INSERT INTO invest_ideas (user_id, name, school, tags, bio, principles) "
+            "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+            user_id, name, school, tags, bio, principles)
     return int(sid)
 
 
-def list_invest_ideas(user_id: int) -> list[dict]:
+async def list_invest_ideas(user_id: int) -> list[dict]:
     """列出指定用户的全部精选思想 (按 id 升序)。"""
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, name, school, tags, bio, principles, created_at "
-                "FROM invest_ideas WHERE user_id = %s ORDER BY id ASC", (user_id,))
-            rows = cur.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, school, tags, bio, principles, created_at "
+            "FROM invest_ideas WHERE user_id = $1 ORDER BY id ASC", user_id)
     return [dict(r) for r in rows]
 
 
-def get_invest_idea(sid: int) -> dict | None:
-    with _connect() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, user_id, name, school, tags, bio, principles, created_at "
-                "FROM invest_ideas WHERE id = %s", (sid,))
-            r = cur.fetchone()
+async def get_invest_idea(sid: int) -> dict | None:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT id, user_id, name, school, tags, bio, principles, created_at "
+            "FROM invest_ideas WHERE id = $1", sid)
     return dict(r) if r else None
 
 
-def update_invest_idea(sid: int, user_id: int, name: str | None = None,
-                       school: str | None = None, tags: str | None = None,
-                       bio: str | None = None, principles: str | None = None) -> int:
+async def update_invest_idea(sid: int, user_id: int, name: str | None = None,
+                             school: str | None = None, tags: str | None = None,
+                             bio: str | None = None, principles: str | None = None) -> int:
     """更新精选思想 (仅限本人), 返回受影响行数。"""
     sets, params = [], []
     for col, val in (("name", name), ("school", school), ("tags", tags),
                      ("bio", bio), ("principles", principles)):
         if val is not None:
-            sets.append(f"{col} = %s"); params.append(val)
+            sets.append(f"{col} = $%d" % (len(params) + 1)); params.append(val)
     if not sets:
         return 0
     params += [sid, user_id]
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE invest_ideas SET {', '.join(sets)} WHERE id = %s AND user_id = %s",
-                params)
-            n = cur.rowcount
-        conn.commit()
-    return n
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"UPDATE invest_ideas SET {', '.join(sets)} WHERE id = ${len(params) - 1} AND user_id = ${len(params)} RETURNING id",
+            *params)
+    return len(rows)
 
 
-def delete_invest_idea(sid: int, user_id: int) -> int:
+async def delete_invest_idea(sid: int, user_id: int) -> int:
     """删除精选思想 (仅限本人), 返回受影响行数。"""
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM invest_ideas WHERE id = %s AND user_id = %s",
-                        (sid, user_id))
-            n = cur.rowcount
-        conn.commit()
-    return n
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("DELETE FROM invest_ideas WHERE id = $1 AND user_id = $2 RETURNING id",
+                                sid, user_id)
+    return len(rows)

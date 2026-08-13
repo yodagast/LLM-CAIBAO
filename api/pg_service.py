@@ -1037,6 +1037,37 @@ _HK_FUND_COLS = [
 _HK_FUND_UPSERT_SQL = _upsert_sql("hk_fundamental_screen", _HK_FUND_COLS, ("ts_code", "year"))
 
 
+# Alpha158 回测: 日线表 stock_daily_bars (数据保障 + qlib 构建数据源)
+ALPHA158_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS stock_daily_bars (
+    id            BIGSERIAL PRIMARY KEY,
+    symbol        VARCHAR(16)  NOT NULL,
+    trade_date    DATE         NOT NULL,
+    open          NUMERIC(14,4),
+    high          NUMERIC(14,4),
+    low           NUMERIC(14,4),
+    close         NUMERIC(14,4),
+    pre_close     NUMERIC(14,4),
+    pct_chg       NUMERIC(10,4),
+    vol           NUMERIC(18,4),   -- 成交量(手)
+    amount        NUMERIC(20,4),   -- 成交额(千元)
+    vwap          NUMERIC(14,4),   -- 成交均价(元) = amount*1000/(vol*100)
+    adj_factor    NUMERIC(14,4),   -- 复权因子
+    turnover_rate NUMERIC(10,4),   -- 换手率(%)
+    UNIQUE (symbol, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_daily_symbol_date
+    ON stock_daily_bars (symbol, trade_date);
+"""
+
+
+async def init_alpha158_schema() -> None:
+    """创建 stock_daily_bars 表与索引 (幂等), 供 Alpha158 回测数据保障/qlib 构建。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(ALPHA158_SCHEMA_DDL)
+
+
 async def init_hk_fundamental_schema() -> None:
     """创建 hk_fundamental_screen 表与索引 (幂等), 并对旧表迁移新增列。"""
     pool = await _get_pool()

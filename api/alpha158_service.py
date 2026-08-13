@@ -20,6 +20,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from . import pg_service
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_QLIB_DIR = ROOT / "storage" / "qlib_data" / "cn_data"
 
@@ -225,6 +227,8 @@ def _sync_one_sync(symbol: str, start: str, end: str, sleep: float = 0.1) -> lis
 
 async def _ensure_stock_data(symbols: list[str], start: str, end: str) -> tuple[list[str], list[dict]]:
     """确保股票池在 [start, end] 有数据; 缺失则同步。返回 (ok_symbols, skipped)。"""
+    # 确保日线表存在 (服务器部署可能未跑 sync_tushare_pg.py, 表可能缺失)
+    await pg_service.init_alpha158_schema()
     pool = await _get_pool()
     ok: list[str] = []
     skipped: list[dict] = []

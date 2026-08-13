@@ -44,6 +44,7 @@ async def _startup() -> None:
         await pg_service.init_my_stocks_schema()
         await pg_service.init_hk_rlv_schema()
         await pg_service.init_hk_fundamental_schema()
+        await pg_service.init_alpha158_schema()
         await pg_service.init_etf_schema()
         await pg_service.init_auth_schema()
         await pg_service.init_custom_strategy_schema()

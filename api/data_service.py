@@ -1033,6 +1033,7 @@ async def _fina_latest(pro, ts_code: str, period: str = "") -> dict | None:
         "roe": _to_float(row.get("roe")),
         "dt_eps": _to_float(row.get("dt_eps")),
         "fcff": _to_float(row.get("fcff")),
+        "gross_margin": _to_float(row.get("grossprofit_margin")),
     }
 
 

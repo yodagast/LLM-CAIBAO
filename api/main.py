@@ -22,6 +22,7 @@ from . import auth_service, backtest_engine, band_service, caibao_service, data_
 from . import daily_recommend_service, etf_service, fundamental_service, hk_data_service
 from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvol_service
 from . import invest_ideas_service, strategy_service
+from . import alpha158_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -234,6 +235,20 @@ class CaibaoRequest(BaseModel):
     start_year: int = Field(2022, ge=2000, le=2100, description="起始年份")
     end_year: int = Field(2024, ge=2000, le=2100, description="结束年份")
     use_llm: bool = Field(False, description="是否使用 LLM 深度分析 (默认 False=基于 TUSHARE 财报数据规则化分析; True 且 .env 配置了 API Key 时用 LLM)")
+
+
+class Alpha158Request(BaseModel):
+    """Alpha158 因子回测请求 (股票池 = 我的股票, 或显式 symbols)。"""
+    symbols: list[str] = Field(default_factory=list,
+                               description="股票代码列表(空=我的股票中的 A 股)")
+    data_start: str = Field("20160101", description="因子计算起点 YYYYMMDD")
+    train_start: str = Field("20170101", description="训练样本起点 YYYYMMDD")
+    test_start: str = Field("20190801", description="回测起点 YYYYMMDD")
+    test_end: str = Field("", description="回测终点 YYYYMMDD, 空=最新")
+    enter_threshold: float = Field(0.001, description="买入阈值: 预测>此值建仓")
+    exit_threshold: float | None = Field(None, description="卖出阈值: 预测<此值空仓 (空=买入阈值)")
+    min_holding: int = Field(20, ge=1, le=250, description="建仓后最短持有天数")
+    initial_capital: float = Field(100000.0, gt=0, description="初始资金")
 
 
 class DailyRecRequest(BaseModel):
@@ -475,6 +490,61 @@ async def backtest(req: BacktestRequest) -> dict:
         },
         "strategies": strategies,
     }
+
+
+@app.post("/api/alpha158/backtest")
+async def alpha158_backtest(req: Alpha158Request, request: Request) -> dict:
+    """Alpha158 因子回测 (股票池 = 我的股票 A 股, 或显式 symbols)。
+
+    链路: 数据保障(tushare->pgsql) -> qlib 数据构建 -> Alpha158 因子 ->
+          pooled walk-forward LightGBM -> 单标的 长/空 回测 -> 等权组合聚合。
+    耗时较长(数十秒~分钟), 由前端 loading 提示。
+    """
+    user = await _require_user(request)
+    symbols = [s.strip().upper() for s in req.symbols if s and s.strip()]
+    if not symbols:
+        # 默认使用当前用户 我的股票 中的 A 股股票 (排除港股/ETF)
+        stocks = await pg_service.list_my_stocks(user["id"])
+        symbols = []
+        for s in stocks:
+            code = s["ts_code"]
+            if not code.endswith((".SH", ".SZ")):
+                continue  # 港股暂不支持 Alpha158
+            try:
+                info = await data_service.resolve_code(code)
+            except Exception:
+                continue
+            if info.get("kind") == "stock":
+                symbols.append(code)
+        if not symbols:
+            raise HTTPException(status_code=400,
+                                detail="我的股票中没有可回测的 A 股, 请先添加或显式传入 symbols")
+
+    params = {
+        "data_start": req.data_start,
+        "train_start": req.train_start,
+        "test_start": req.test_start,
+        "test_end": req.test_end or "",
+        "enter_threshold": req.enter_threshold,
+        "exit_threshold": req.exit_threshold if req.exit_threshold is not None else req.enter_threshold,
+        "min_holding": req.min_holding,
+        "initial_capital": req.initial_capital,
+    }
+    try:
+        result = await alpha158_service.backtest(symbols, params)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Alpha158 回测失败: {e}")
+    # 补充股票名称 (resolve_code 有 TTL 缓存)
+    try:
+        for st in result.get("stocks", []):
+            info = await data_service.resolve_code(st["ts_code"])
+            st["name"] = info["name"]
+        for sk in result.get("skipped", []):
+            info = await data_service.resolve_code(sk["ts_code"])
+            sk["name"] = info["name"]
+    except Exception:
+        pass
+    return result
 
 
 @app.post("/api/fundamental/screen")

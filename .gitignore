@@ -26,5 +26,8 @@ wheels/
 # 港股数据缓存 (股票列表/行业映射, 可重新生成)
 /cache/
 
+# 可再生的 qlib 数据目录 (由 scripts/export_qlib_data.py 从 pgsql 导出)
+/storage/
+
 # 定时更新日志
 /logs/

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=47" />
+  <link rel="stylesheet" href="/static/css/style.css?v=49" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -24,7 +24,7 @@
         <button type="button" class="tab" data-tab="strategies">策略Hub</button>
         <button type="button" class="tab" data-tab="caibao">财报挖掘</button>
         <button type="button" class="tab" data-tab="band">区间交易估价</button>
-        <button type="button" class="tab" data-tab="backtest">策略回测</button>
+        <button type="button" class="tab" data-tab="backtest">回测策略</button>
       </div>
       <div class="tabs-auth" id="auth-zone"></div>
     </nav>
@@ -238,6 +238,14 @@
               <label for="rlv_f_payout_max">分红率 ≤ (%)</label>
               <input type="number" id="rlv_f_payout_max" placeholder="如 80" min="0" step="1" />
             </div>
+            <div class="field">
+              <label for="rlv_f_fcf">自由现金流 ≥ (万元)</label>
+              <input type="number" id="rlv_f_fcf" placeholder="如 100000" step="1000" />
+            </div>
+            <div class="field">
+              <label for="rlv_f_gm">毛利率 ≥ (%)</label>
+              <input type="number" id="rlv_f_gm" placeholder="如 30" min="0" step="0.5" />
+            </div>
           </div>
 
           <div class="form-actions">
@@ -277,6 +285,7 @@
                   <th class="sortable" data-sort="volatility">波动率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="div_per_share">每股分红<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="free_cashflow">自由现金流<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="eps">EPS<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="payout_ratio">分红率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
@@ -328,6 +337,10 @@
               <label for="sc_f_gm">毛利率 ≥ (%)</label>
               <input type="number" id="sc_f_gm" placeholder="如 30" min="0" step="0.5" />
             </div>
+            <div class="field">
+              <label for="sc_f_fcf">自由现金流 ≥ (万元)</label>
+              <input type="number" id="sc_f_fcf" placeholder="如 100000" step="1000" />
+            </div>
           </div>
 
           <div class="form-actions">
@@ -365,6 +378,7 @@
                   <th class="sortable" data-sort="assets_turn">总资产周转率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="equity_multiplier">权益乘数<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="free_cashflow">自由现金流<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="total_cur_assets">流动资产<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="money_cap">现金<span class="sort-arrow"></span></th>
@@ -433,6 +447,14 @@
               <label for="hk_rlv_f_payout_max">分红率 ≤ (%)</label>
               <input type="number" id="hk_rlv_f_payout_max" placeholder="如 80" min="0" step="1" />
             </div>
+            <div class="field">
+              <label for="hk_rlv_f_fcf">自由现金流 ≥ (万港元)</label>
+              <input type="number" id="hk_rlv_f_fcf" placeholder="如 100000" step="1000" />
+            </div>
+            <div class="field">
+              <label for="hk_rlv_f_gm">毛利率 ≥ (%)</label>
+              <input type="number" id="hk_rlv_f_gm" placeholder="如 30" min="0" step="0.5" />
+            </div>
           </div>
 
           <div class="form-actions">
@@ -473,6 +495,7 @@
                   <th class="sortable" data-sort="volatility">波动率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="div_per_share">每股分红<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="free_cashflow">自由现金流<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="eps">EPS<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="payout_ratio">分红率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
@@ -524,6 +547,10 @@
               <label for="hk_sc_f_gm">毛利率 ≥ (%)</label>
               <input type="number" id="hk_sc_f_gm" placeholder="如 30" min="0" step="0.5" />
             </div>
+            <div class="field">
+              <label for="hk_sc_f_fcf">自由现金流 ≥ (万港元)</label>
+              <input type="number" id="hk_sc_f_fcf" placeholder="如 100000" step="1000" />
+            </div>
           </div>
 
           <div class="form-actions">
@@ -562,6 +589,7 @@
                   <th class="sortable" data-sort="assets_turn">总资产周转率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="equity_multiplier">权益乘数<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="free_cashflow">自由现金流<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="current_ratio">流动比率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="total_cur_assets">流动资产<span class="sort-arrow"></span></th>
@@ -601,6 +629,7 @@
         <div class="result-head">
           <h2 id="strategy-title">策略</h2>
           <span class="hint" id="strategy-sub"></span>
+          <button type="button" class="btn-primary btn-sm" id="strategy-a158-btn" style="margin-left:auto" title="将本策略筛选出的 A 股公司导入 Alpha158 回测">📈 Alpha158 回测</button>
         </div>
         <div class="card table-card">
           <div class="table-wrap">
@@ -614,6 +643,7 @@
         <div class="result-head">
           <h2 id="custom-st-title">我的策略</h2>
           <span class="hint" id="custom-st-sub"></span>
+          <button type="button" class="btn-primary btn-sm" id="custom-st-a158-btn" style="margin-left:auto" title="将本策略的全部 A 股公司导入 Alpha158 回测">📈 Alpha158 回测</button>
         </div>
         <div class="card table-card">
           <div class="table-wrap">
@@ -833,8 +863,17 @@
       </section>
     </section>
 
-    <!-- ================= Tab: 策略回测 ================= -->
+    <!-- ================= Tab: 回测 (买入持有回测 / Alpha158 回测) ================= -->
     <section id="tab-backtest" class="hidden">
+      <div class="screener-nav">
+        <div class="seg-group" id="seg-backtest">
+          <button type="button" class="seg-btn active" data-panel="buyhold">买入持有回测</button>
+          <button type="button" class="seg-btn" data-panel="alpha158">Alpha158 回测</button>
+        </div>
+      </div>
+
+      <!-- 面板 1: 买入持有回测 -->
+      <div class="bt-panel" data-panel="buyhold">
     <!-- 输入表单 -->
     <section class="card form-card">
       <div class="card-title">
@@ -947,6 +986,129 @@
         </div>
       </div>
     </section>
+      </div><!-- /bt-panel buyhold -->
+
+      <!-- 面板 2: Alpha158 回测 -->
+      <div class="bt-panel hidden" data-panel="alpha158">
+      <section class="card form-card">
+        <div class="card-title">
+          <h2>Alpha158 因子回测</h2>
+        </div>
+        <form id="alpha158-form" autocomplete="off">
+          <div class="grid">
+            <div class="field alpha-pool-field">
+              <label id="a158-pool-label">股票池 (我的股票 A 股)</label>
+              <div class="alpha-pool" id="a158-pool">
+                <span class="alpha-pool-loading">加载我的股票中…</span>
+              </div>
+              <div class="field-tip">默认全选 A 股; 港股 / ETF 暂不支持 Alpha158</div>
+            </div>
+            <div class="field">
+              <label for="a158_data_start">因子起点 (YYYYMMDD)</label>
+              <input type="text" id="a158_data_start" value="20160101" placeholder="20160101" />
+              <div class="field-tip">Alpha158 需 60 日滚动窗口 warmup</div>
+            </div>
+            <div class="field">
+              <label for="a158_test_start">回测起点 (YYYYMMDD)</label>
+              <input type="text" id="a158_test_start" value="20190801" placeholder="20190801" />
+            </div>
+            <div class="field">
+              <label for="a158_test_end">回测终点 (空=最新)</label>
+              <input type="text" id="a158_test_end" placeholder="YYYYMMDD" />
+            </div>
+            <div class="field">
+              <label for="a158_enter_thr">买入阈值 (预测收益&gt;)</label>
+              <input type="number" id="a158_enter_thr" value="0.001" step="0.0005" min="0" />
+              <div class="field-tip">预测次日收益超过该值才建仓</div>
+            </div>
+            <div class="field">
+              <label for="a158_exit_thr">卖出阈值 (预测收益&lt;, 空=买入阈值)</label>
+              <input type="number" id="a158_exit_thr" placeholder="0" step="0.0005" />
+              <div class="field-tip">低于该值空仓; 设置低于买入阈值可减少无效换手</div>
+            </div>
+            <div class="field">
+              <label for="a158_min_holding">最短持有天数</label>
+              <input type="number" id="a158_min_holding" value="20" min="1" max="250" />
+              <div class="field-tip">建仓后至少持有 N 天再允许卖出</div>
+            </div>
+            <div class="field">
+              <label for="a158_capital">初始资金 (元)</label>
+              <input type="number" id="a158_capital" value="100000" min="1000" step="1000" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="a158-btn">
+              <span class="btn-icon">📈</span> 运行 Alpha158 回测
+            </button>
+            <span class="range-hint" id="a158-hint"></span>
+          </div>
+        </form>
+      </section>
+
+      <!-- 加载 / 错误 -->
+      <div class="loading hidden" id="a158-loading">
+        <div class="spinner"></div>
+        <span>正在同步数据、计算 Alpha158 因子并训练模型 (约 30~120 秒)…</span>
+      </div>
+      <div class="error hidden" id="a158-error"></div>
+
+      <!-- 结果区 -->
+      <section class="result hidden" id="a158-result">
+        <div class="result-head">
+          <h2 id="a158-result-title">Alpha158 回测 · 等权组合</h2>
+          <span class="hint" id="a158-result-sub"></span>
+        </div>
+
+        <!-- 组合指标卡 -->
+        <div class="metric-cards" id="a158-metrics"></div>
+
+        <!-- 组合曲线 -->
+        <div class="card chart-card">
+          <div class="card-title">
+            <h3>组合累计收益曲线 (%)</h3>
+            <span class="hint">等权组合 · Alpha158 策略 vs 买入持有 (含交易成本)</span>
+          </div>
+          <div id="a158-chart" class="chart"></div>
+        </div>
+
+        <!-- 组合回撤 -->
+        <div class="card chart-card">
+          <div class="card-title">
+            <h3>组合回撤 (%)</h3>
+            <span class="hint">Alpha158 策略净值相对历史高点的回撤</span>
+          </div>
+          <div id="a158-dd-chart" class="chart"></div>
+        </div>
+
+        <!-- 个股表格 -->
+        <div class="card table-card">
+          <div class="card-title">
+            <h3>个股回测结果</h3>
+            <span class="hint">同参数下各股票 Alpha158 长/空回测 · 点击表头排序</span>
+          </div>
+          <div class="table-wrap">
+            <table id="a158-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="ts_code">代码<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_return">总收益<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="annual_return">年化<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="max_drawdown">回撤<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="sharpe">夏普<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="calmar">卡玛<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="n_trades">换手<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_cost">成本<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="exposure">仓位<span class="sort-arrow"></span></th>
+                  <th>区间</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      </div><!-- /bt-panel alpha158 -->
     </section><!-- /tab-backtest -->
 
   </main>
@@ -956,6 +1118,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=64"></script>
+  <script src="/static/js/app.js?v=69"></script>
 </body>
 </html>

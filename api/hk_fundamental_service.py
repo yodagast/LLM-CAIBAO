@@ -51,6 +51,9 @@ async def compute_stock_row(m: dict, year: int) -> dict | None:
         "assets_turn": fina.get("assets_turn"),
         "equity_multiplier": fina.get("equity_multiplier"),
         "gross_margin": fina.get("gross_margin"),
+        # 自由现金流 ≈ 经营现金流 + 投资现金流 (万港元); 投资现金流通常为负
+        "free_cashflow": (fina.get("ocf_wan") + fina.get("icf_wan"))
+        if fina.get("ocf_wan") is not None and fina.get("icf_wan") is not None else None,
         "debt_to_assets": fina.get("debt_to_assets"),
         "current_ratio": fina.get("current_ratio"),
         "total_cur_assets": bs.get("total_cur_assets_wan"),

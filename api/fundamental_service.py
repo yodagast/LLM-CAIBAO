@@ -40,6 +40,7 @@ async def _annual_fina(pro, ts_code: str, year: int) -> dict | None:
         "debt_to_assets": ds._to_float(row.get("debt_to_assets")),
         # 该账号 fina_indicator 无 invturn_days/arturn_days, 用 ar_turn 计算应收周转天数
         "ar_turn": ds._to_float(row.get("ar_turn")),
+        "fcff": ds._to_float(row.get("fcff")),
     }
 
 
@@ -127,6 +128,8 @@ async def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
         "assets_turn": fina["assets_turn"],
         "equity_multiplier": equity_multiplier,
         "gross_margin": fina["gross_margin"],
+        # tushare fcff 单位为元, 转换为万元存储 (与 free_cashflow 单位一致)
+        "free_cashflow": (fina["fcff"] or 0) / 10000.0 or None,
         "debt_to_assets": fina["debt_to_assets"],
         "total_cur_assets": bs["total_cur_assets_wan"] if bs else None,
         "money_cap": bs["money_cap_wan"] if bs else None,

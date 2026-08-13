@@ -26,6 +26,7 @@ SORTABLE_COLUMNS = {
     "volatility": "volatility",
     "div_per_share": "div_per_share",
     "free_cashflow": "free_cashflow",
+    "gross_margin": "gross_margin",
     "eps": "eps",
     "payout_ratio": "payout_ratio",
     "roe": "roe",
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS red_low_vol (
     volatility            DOUBLE PRECISION,   -- 年化波动率 % (日收益率标准差 * sqrt(252))
     div_per_share         DOUBLE PRECISION,   -- 每股现金分红 (元)
     free_cashflow         DOUBLE PRECISION,   -- 企业自由现金流 (万元)
+    gross_margin          DOUBLE PRECISION,   -- 毛利率 %
     eps                   DOUBLE PRECISION,   -- 每股收益 (元)
     payout_ratio          DOUBLE PRECISION,   -- 分红率 % (每股分红/每股收益)
     dividend_growth_3y    DOUBLE PRECISION,   -- 3 年每股股利复合增长率 %
@@ -88,7 +90,7 @@ async def _get_pool() -> asyncpg.Pool:
         # .env 中 DATABASE_URL 可能是 SQLAlchemy 风格 (postgresql+asyncpg://),
         # asyncpg 只认 postgresql:// / postgres:// 前缀, 需转换
         dsn = dsn.replace("postgresql+asyncpg://", "postgresql://").replace("postgres+asyncpg://", "postgres://")
-        _pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=10)
+        _pool = await asyncpg.create_pool(dsn=dsn, min_size=5, max_size=20)
     return _pool
 
 
@@ -111,9 +113,10 @@ async def init_schema() -> None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA_DDL)
-        # 旧表迁移: 新增 股息率-TTM / 上个交易日收盘价 列
+        # 旧表迁移: 新增 股息率-TTM / 上个交易日收盘价 / 毛利率 列
         await conn.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS dividend_yield_ttm DOUBLE PRECISION;")
         await conn.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS last_close DOUBLE PRECISION;")
+        await conn.execute("ALTER TABLE red_low_vol ADD COLUMN IF NOT EXISTS gross_margin DOUBLE PRECISION;")
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +125,7 @@ async def init_schema() -> None:
 
 _UPSERT_COLS = [
     "ts_code", "symbol", "name", "industry", "year",
-    "dividend_yield", "dividend_yield_ttm", "last_close", "volatility", "div_per_share", "free_cashflow", "eps",
+    "dividend_yield", "dividend_yield_ttm", "last_close", "volatility", "div_per_share", "free_cashflow", "gross_margin", "eps",
     "payout_ratio", "dividend_growth_3y", "roe", "debt_to_assets",
     "avg_daily_mv", "avg_daily_amt", "end_date",
 ]
@@ -197,7 +200,7 @@ async def query_screen(industry: str, years: list[int], sort_by: str = "dividend
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
     sql = f"""
         SELECT ts_code, symbol, name, industry, year,
-               dividend_yield, dividend_yield_ttm, last_close, volatility, div_per_share, free_cashflow, eps,
+               dividend_yield, dividend_yield_ttm, last_close, volatility, div_per_share, free_cashflow, gross_margin, eps,
                payout_ratio, dividend_growth_3y, roe, debt_to_assets,
                avg_daily_mv, avg_daily_amt, end_date
         FROM red_low_vol
@@ -230,6 +233,7 @@ CREATE TABLE IF NOT EXISTS fundamental_screen (
     assets_turn           DOUBLE PRECISION,   -- 总资产周转率
     equity_multiplier     DOUBLE PRECISION,   -- 权益乘数 = 总资产/归母权益
     gross_margin          DOUBLE PRECISION,   -- 毛利率 %
+    free_cashflow         DOUBLE PRECISION,   -- 企业自由现金流 (万元)
     debt_to_assets        DOUBLE PRECISION,   -- 资产负债率 %
     total_cur_assets      DOUBLE PRECISION,   -- 流动资产 (万元)
     money_cap             DOUBLE PRECISION,   -- 货币资金/现金 (万元)
@@ -251,6 +255,7 @@ FUNDAMENTAL_SORTABLE_COLUMNS = {
     "assets_turn": "assets_turn",
     "equity_multiplier": "equity_multiplier",
     "gross_margin": "gross_margin",
+    "free_cashflow": "free_cashflow",
     "debt_to_assets": "debt_to_assets",
     "total_cur_assets": "total_cur_assets",
     "money_cap": "money_cap",
@@ -261,7 +266,7 @@ FUNDAMENTAL_SORTABLE_COLUMNS = {
 _FUND_COLS = [
     "ts_code", "symbol", "name", "industry", "year",
     "close", "roe", "net_margin", "assets_turn", "equity_multiplier",
-    "gross_margin", "debt_to_assets", "total_cur_assets", "money_cap",
+    "gross_margin", "free_cashflow", "debt_to_assets", "total_cur_assets", "money_cap",
     "invturn_days", "arturn_days", "end_date",
 ]
 
@@ -269,10 +274,12 @@ _FUND_UPSERT_SQL = _upsert_sql("fundamental_screen", _FUND_COLS, ("ts_code", "ye
 
 
 async def init_fundamental_schema() -> None:
-    """创建 fundamental_screen 表与索引 (幂等)。"""
+    """创建 fundamental_screen 表与索引 (幂等), 并对旧表迁移新增列。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(FUNDAMENTAL_SCHEMA_DDL)
+        # 旧表迁移: 新增 自由现金流 列
+        await conn.execute("ALTER TABLE fundamental_screen ADD COLUMN IF NOT EXISTS free_cashflow DOUBLE PRECISION;")
 
 
 async def upsert_fundamental_rows(rows: list[dict]) -> int:
@@ -331,7 +338,7 @@ async def query_fundamental(industry: str, years: list[int], sort_by: str = "roe
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
     sql = f"""
         SELECT ts_code, symbol, name, industry, year, close, roe, net_margin,
-               assets_turn, equity_multiplier, gross_margin, debt_to_assets,
+               assets_turn, equity_multiplier, gross_margin, free_cashflow, debt_to_assets,
                total_cur_assets, money_cap, invturn_days, arturn_days, end_date
         FROM fundamental_screen
         {where_sql}
@@ -837,6 +844,7 @@ CREATE TABLE IF NOT EXISTS hk_red_low_vol (
     volatility            DOUBLE PRECISION,   -- 年化波动率 % (日收益 std * sqrt(252))
     div_per_share         DOUBLE PRECISION,   -- 每股现金分红 (港元)
     free_cashflow         DOUBLE PRECISION,   -- 企业自由现金流 ≈ OCF+ICF (万港元)
+    gross_margin          DOUBLE PRECISION,   -- 毛利率 %
     eps                   DOUBLE PRECISION,   -- 每股收益 (港元)
     payout_ratio          DOUBLE PRECISION,   -- 分红率 % (每股分红/每股收益)
     dividend_growth_3y    DOUBLE PRECISION,   -- 3 年每股股利复合增长率 %
@@ -859,6 +867,7 @@ HK_RLV_SORTABLE_COLUMNS = {
     "volatility": "volatility",
     "div_per_share": "div_per_share",
     "free_cashflow": "free_cashflow",
+    "gross_margin": "gross_margin",
     "eps": "eps",
     "payout_ratio": "payout_ratio",
     "roe": "roe",
@@ -871,7 +880,7 @@ HK_RLV_SORTABLE_COLUMNS = {
 
 _HK_RLV_COLS = [
     "ts_code", "symbol", "name", "industry", "market", "year",
-    "dividend_yield", "dividend_yield_ttm", "last_close", "volatility", "div_per_share", "free_cashflow",
+    "dividend_yield", "dividend_yield_ttm", "last_close", "volatility", "div_per_share", "free_cashflow", "gross_margin",
     "eps", "payout_ratio", "dividend_growth_3y", "roe", "debt_to_assets",
     "avg_daily_mv", "avg_daily_amt", "end_date",
 ]
@@ -880,10 +889,12 @@ _HK_RLV_UPSERT_SQL = _upsert_sql("hk_red_low_vol", _HK_RLV_COLS, ("ts_code", "ye
 
 
 async def init_hk_rlv_schema() -> None:
-    """创建 hk_red_low_vol 表与索引 (幂等)。"""
+    """创建 hk_red_low_vol 表与索引 (幂等), 并对旧表迁移新增列。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(HK_RLV_SCHEMA_DDL)
+        # 旧表迁移: 新增 毛利率 列
+        await conn.execute("ALTER TABLE hk_red_low_vol ADD COLUMN IF NOT EXISTS gross_margin DOUBLE PRECISION;")
 
 
 async def upsert_hk_rlv_rows(rows: list[dict]) -> int:
@@ -942,7 +953,7 @@ async def query_hk_rlv(industry: str, years: list[int], sort_by: str = "dividend
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
     sql = f"""
         SELECT ts_code, symbol, name, industry, market, year,
-               dividend_yield, dividend_yield_ttm, last_close, volatility, div_per_share, free_cashflow,
+               dividend_yield, dividend_yield_ttm, last_close, volatility, div_per_share, free_cashflow, gross_margin,
                eps, payout_ratio, dividend_growth_3y, roe, debt_to_assets,
                avg_daily_mv, avg_daily_amt, end_date
         FROM hk_red_low_vol
@@ -976,6 +987,7 @@ CREATE TABLE IF NOT EXISTS hk_fundamental_screen (
     assets_turn           DOUBLE PRECISION,   -- 总资产周转率 = 营收/总资产
     equity_multiplier     DOUBLE PRECISION,   -- 权益乘数 = 总资产/归母权益
     gross_margin          DOUBLE PRECISION,   -- 毛利率 %
+    free_cashflow         DOUBLE PRECISION,   -- 企业自由现金流 ≈ OCF+ICF (万港元)
     debt_to_assets        DOUBLE PRECISION,   -- 资产负债率 %
     current_ratio         DOUBLE PRECISION,   -- 流动比率
     total_cur_assets      DOUBLE PRECISION,   -- 流动资产 (万港元)
@@ -1002,6 +1014,7 @@ HK_FUNDAMENTAL_SORTABLE_COLUMNS = {
     "assets_turn": "assets_turn",
     "equity_multiplier": "equity_multiplier",
     "gross_margin": "gross_margin",
+    "free_cashflow": "free_cashflow",
     "debt_to_assets": "debt_to_assets",
     "current_ratio": "current_ratio",
     "total_cur_assets": "total_cur_assets",
@@ -1017,7 +1030,7 @@ HK_FUNDAMENTAL_SORTABLE_COLUMNS = {
 _HK_FUND_COLS = [
     "ts_code", "symbol", "name", "industry", "market", "year",
     "close", "roe", "net_margin", "assets_turn", "equity_multiplier",
-    "gross_margin", "debt_to_assets", "current_ratio", "total_cur_assets", "money_cap",
+    "gross_margin", "free_cashflow", "debt_to_assets", "current_ratio", "total_cur_assets", "money_cap",
     "invturn_days", "arturn_days", "eps", "operate_income", "net_profit", "total_mv", "end_date",
 ]
 
@@ -1025,10 +1038,12 @@ _HK_FUND_UPSERT_SQL = _upsert_sql("hk_fundamental_screen", _HK_FUND_COLS, ("ts_c
 
 
 async def init_hk_fundamental_schema() -> None:
-    """创建 hk_fundamental_screen 表与索引 (幂等)。"""
+    """创建 hk_fundamental_screen 表与索引 (幂等), 并对旧表迁移新增列。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(HK_FUNDAMENTAL_SCHEMA_DDL)
+        # 旧表迁移: 新增 自由现金流 列
+        await conn.execute("ALTER TABLE hk_fundamental_screen ADD COLUMN IF NOT EXISTS free_cashflow DOUBLE PRECISION;")
 
 
 async def upsert_hk_fundamental_rows(rows: list[dict]) -> int:
@@ -1086,7 +1101,7 @@ async def query_hk_fundamental(industry: str, years: list[int], sort_by: str = "
     where_sql = ("WHERE " + " AND ".join(conds)) if conds else ""
     sql = f"""
         SELECT ts_code, symbol, name, industry, market, year, close, roe, net_margin,
-               assets_turn, equity_multiplier, gross_margin, debt_to_assets, current_ratio,
+               assets_turn, equity_multiplier, gross_margin, free_cashflow, debt_to_assets, current_ratio,
                total_cur_assets, money_cap, invturn_days, arturn_days,
                eps, operate_income, net_profit, total_mv, end_date
         FROM hk_fundamental_screen

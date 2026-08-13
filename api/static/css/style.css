@@ -658,3 +658,55 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
   .field label { font-size: 12.5px; }
   .footer { padding: 14px 12px; font-size: 11px; }
 }
+
+/* ---------- Alpha158 回测 tab ---------- */
+.alpha-pool-field { grid-column: 1 / -1; }   /* 股票池跨满整行 */
+.alpha-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+  min-height: 40px;
+}
+.alpha-pool-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color .15s, box-shadow .15s;
+}
+.alpha-pool-item:hover { border-color: var(--primary, #4f46e5); }
+.alpha-pool-item input { accent-color: var(--primary, #4f46e5); cursor: pointer; }
+.alpha-pool-item em {
+  font-style: normal;
+  color: #9ca3af;
+  font-size: 11px;
+}
+.alpha-pool-item:has(input:checked) {
+  border-color: var(--primary, #4f46e5);
+  background: #eef2ff;
+}
+.alpha-pool-unsupported {
+  width: 100%;
+  color: #9ca3af;
+  font-size: 12px;
+  padding: 4px 2px;
+}
+.alpha-pool-source {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #374151;
+  font-size: 12px;
+  padding: 2px 2px 4px;
+}
+.alpha-pool-loading { color: #6b7280; font-size: 13px; }

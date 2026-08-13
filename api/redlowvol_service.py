@@ -174,6 +174,7 @@ async def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
     fcff = fina["fcff"] if fina else None
     # tushare fcff 单位为元, 统一转换为万元存储 (与 total_mv / amount 单位一致)
     free_cashflow = fcff / 10000.0 if fcff is not None else None
+    gross_margin = fina["gross_margin"] if fina else None
     end_date = fina["end_date"] if fina else ""
 
     div_per_share = await _div_per_share(pro, ts_code, year)
@@ -207,6 +208,7 @@ async def compute_stock_row(pro, ts_code: str, symbol: str, name: str,
         "volatility": volatility,
         "div_per_share": div_per_share,
         "free_cashflow": free_cashflow,
+        "gross_margin": gross_margin,
         "eps": eps,
         "payout_ratio": payout_ratio,
         "dividend_growth_3y": div_growth,

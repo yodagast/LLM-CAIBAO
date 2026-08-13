@@ -101,6 +101,7 @@ async def compute_stock_row(m: dict, year: int, last_close: float | None = None)
         "volatility": volatility,
         "div_per_share": div_per_share,
         "free_cashflow": free_cashflow,
+        "gross_margin": fina.get("gross_margin"),
         "eps": eps,
         "payout_ratio": payout_ratio,
         "dividend_growth_3y": dividend_growth,

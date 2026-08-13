@@ -65,9 +65,19 @@
   const myResult = $("#my-result");
   const mySub = $("#my-sub");
 
+  // Alpha158 回测元素
+  const a158Form = $("#alpha158-form");
+  const a158Btn = $("#a158-btn");
+  const a158Loading = $("#a158-loading");
+  const a158Error = $("#a158-error");
+  const a158Result = $("#a158-result");
+  const a158PoolBox = $("#a158-pool");
+
   let chart = null;
   let quoteChart = null;
   let bandChart = null;
+  let alphaChart = null;
+  let alphaDdChart = null;
   let searchTimer = null;
 
   // ---------- 工具 ----------
@@ -305,11 +315,37 @@
       });
       // 切到策略Hub 时刷新策略列表 (自定义策略可能变化)
       if (btn.dataset.tab === "strategies") { loadStrategies(); loadIdeas(); }
+      // 切到回测 tab 且 Alpha158 子面板可见时刷新股票池
+      if (btn.dataset.tab === "backtest") {
+        const ap = document.getElementById("bt-alpha158");
+        if (ap && !ap.classList.contains("hidden")) loadAlpha158Pool();
+      }
       // 切换后重算图表尺寸 (隐藏容器尺寸为 0)
       setTimeout(() => {
         if (chart) chart.resize();
         if (quoteChart) quoteChart.resize();
         if (bandChart) bandChart.resize();
+        if (alphaChart) alphaChart.resize();
+        if (alphaDdChart) alphaDdChart.resize();
+      }, 80);
+    });
+  });
+
+  // ---------- 回测 tab: 买入持有回测 / Alpha158 回测 子面板切换 ----------
+  document.querySelectorAll("#seg-backtest .seg-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#seg-backtest .seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      document.querySelectorAll("#tab-backtest .bt-panel").forEach((p) => {
+        p.classList.toggle("hidden", p.dataset.panel !== btn.dataset.panel);
+      });
+      if (btn.dataset.panel === "alpha158") loadAlpha158Pool();
+      // 隐藏面板宽度为 0, 切换后重算图表尺寸
+      setTimeout(() => {
+        if (chart) chart.resize();
+        if (quoteChart) quoteChart.resize();
+        if (bandChart) bandChart.resize();
+        if (alphaChart) alphaChart.resize();
+        if (alphaDdChart) alphaDdChart.resize();
       }, 80);
     });
   });
@@ -436,12 +472,12 @@
   });
   // 3) 筛选徽章: filters 字段 → 输入框映射 (按视图类型)
   const FILTER_BADGE_MAP = {
-    rlv: { dividend_yield_ttm: { min: "#rlv_f_dy", max: "#rlv_f_dy_max" }, volatility: { max: "#rlv_f_vol" }, roe: { min: "#rlv_f_roe_min", max: "#rlv_f_roe_max" }, debt_to_assets: { max: "#rlv_f_debt" }, payout_ratio: { min: "#rlv_f_payout_min", max: "#rlv_f_payout_max" } },
-    screen: { roe: { min: "#sc_f_roe", max: "#sc_f_roe_max" }, debt_to_assets: { max: "#sc_f_debt" }, gross_margin: { min: "#sc_f_gm" } },
-    hk_rlv: { dividend_yield_ttm: { min: "#hk_rlv_f_dy", max: "#hk_rlv_f_dy_max" }, volatility: { max: "#hk_rlv_f_vol" }, roe: { min: "#hk_rlv_f_roe_min", max: "#hk_rlv_f_roe_max" }, debt_to_assets: { max: "#hk_rlv_f_debt" }, payout_ratio: { min: "#hk_rlv_f_payout_min", max: "#hk_rlv_f_payout_max" } },
-    hk_screen: { roe: { min: "#hk_sc_f_roe", max: "#hk_sc_f_roe_max" }, debt_to_assets: { max: "#hk_sc_f_debt" }, gross_margin: { min: "#hk_sc_f_gm" } },
+    rlv: { dividend_yield_ttm: { min: "#rlv_f_dy", max: "#rlv_f_dy_max" }, volatility: { max: "#rlv_f_vol" }, roe: { min: "#rlv_f_roe_min", max: "#rlv_f_roe_max" }, debt_to_assets: { max: "#rlv_f_debt" }, payout_ratio: { min: "#rlv_f_payout_min", max: "#rlv_f_payout_max" }, free_cashflow: { min: "#rlv_f_fcf" }, gross_margin: { min: "#rlv_f_gm" } },
+    screen: { roe: { min: "#sc_f_roe", max: "#sc_f_roe_max" }, debt_to_assets: { max: "#sc_f_debt" }, gross_margin: { min: "#sc_f_gm" }, free_cashflow: { min: "#sc_f_fcf" } },
+    hk_rlv: { dividend_yield_ttm: { min: "#hk_rlv_f_dy", max: "#hk_rlv_f_dy_max" }, volatility: { max: "#hk_rlv_f_vol" }, roe: { min: "#hk_rlv_f_roe_min", max: "#hk_rlv_f_roe_max" }, debt_to_assets: { max: "#hk_rlv_f_debt" }, payout_ratio: { min: "#hk_rlv_f_payout_min", max: "#hk_rlv_f_payout_max" }, free_cashflow: { min: "#hk_rlv_f_fcf" }, gross_margin: { min: "#hk_rlv_f_gm" } },
+    hk_screen: { roe: { min: "#hk_sc_f_roe", max: "#hk_sc_f_roe_max" }, debt_to_assets: { max: "#hk_sc_f_debt" }, gross_margin: { min: "#hk_sc_f_gm" }, free_cashflow: { min: "#hk_sc_f_fcf" } },
   };
-  const FILTER_BADGE_LABELS = { dividend_yield_ttm: "股息率TTM", volatility: "波动率", roe: "ROE", debt_to_assets: "资产负债率", payout_ratio: "分红率", gross_margin: "毛利率" };
+  const FILTER_BADGE_LABELS = { dividend_yield_ttm: "股息率TTM", volatility: "波动率", roe: "ROE", debt_to_assets: "资产负债率", payout_ratio: "分红率", gross_margin: "毛利率", free_cashflow: "自由现金流" };
   function filterBadges(filters, view) {
     const map = FILTER_BADGE_MAP[view] || {};
     const badges = [];
@@ -469,6 +505,7 @@
   const SCREEN_SORT_LABELS = {
     year: "年份", name: "名称", close: "最近价", roe: "ROE", net_margin: "净利润率",
     assets_turn: "总资产周转率", equity_multiplier: "权益乘数", gross_margin: "毛利率",
+    free_cashflow: "自由现金流",
     debt_to_assets: "资产负债率", total_cur_assets: "流动资产", money_cap: "现金",
     invturn_days: "存货周转天数", arturn_days: "应收周转天数",
   };
@@ -494,6 +531,8 @@
     if (!isNaN(debt)) filters.debt_to_assets = { max: debt };
     const gm = parseFloat($("#sc_f_gm").value);
     if (!isNaN(gm)) filters.gross_margin = { min: gm };
+    const fcf = parseFloat($("#sc_f_fcf").value);
+    if (!isNaN(fcf)) filters.free_cashflow = { min: fcf };
 
     return {
       industry: $("#sc_industry").value.trim(),
@@ -643,6 +682,7 @@
         <td class="num">${it.assets_turn == null ? "—" : Number(it.assets_turn).toFixed(2)}</td>
         <td class="num">${it.equity_multiplier == null ? "—" : Number(it.equity_multiplier).toFixed(2)}</td>
         <td class="num ${cls(it.gross_margin || 0)}">${fmtPctVal(it.gross_margin)}</td>
+        <td class="num">${fmtYi(it.free_cashflow)}</td>
         <td class="num">${fmtPctVal(it.debt_to_assets)}</td>
         <td class="num">${fmtYi(it.total_cur_assets)}</td>
         <td class="num">${fmtYi(it.money_cap)}</td>
@@ -660,7 +700,7 @@
     name: "名称",
     dividend_yield: "静态股息率", dividend_yield_ttm: "股息率TTM", last_close: "上日收盘",
     volatility: "波动率", div_per_share: "每股分红",
-    free_cashflow: "自由现金流", eps: "每股收益", payout_ratio: "分红率",
+    free_cashflow: "自由现金流", gross_margin: "毛利率", eps: "每股收益", payout_ratio: "分红率",
     dividend_growth_3y: "3年股利增长", roe: "ROE", debt_to_assets: "资产负债率",
     avg_daily_mv: "日均市值", avg_daily_amt: "日均成交额",
   };
@@ -723,6 +763,8 @@
       if (payoutMin !== null) filters.payout_ratio.min = payoutMin;
       if (payoutMax !== null) filters.payout_ratio.max = payoutMax;
     }
+    const fcf = fNum("#rlv_f_fcf"); if (fcf !== null) filters.free_cashflow = { min: fcf };
+    const gm = fNum("#rlv_f_gm"); if (gm !== null) filters.gross_margin = { min: gm };
 
     return {
       industry: $("#rlv_industry").value.trim(),
@@ -876,6 +918,7 @@
         <td class="num">${fmtPctVal(it.volatility)}</td>
         <td class="num">${it.div_per_share == null ? "—" : Number(it.div_per_share).toFixed(2) + " 元"}</td>
         <td class="num">${fmtYi(it.free_cashflow)}</td>
+        <td class="num ${cls(it.gross_margin || 0)}">${fmtPctVal(it.gross_margin)}</td>
         <td class="num">${it.eps == null ? "—" : Number(it.eps).toFixed(2)}</td>
         <td class="num">${fmtPctVal(it.payout_ratio)}</td>
         <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
@@ -939,7 +982,7 @@
   const HK_RLV_SORT_LABELS = {
     name: "名称", dividend_yield: "静态股息率", dividend_yield_ttm: "股息率TTM",
     last_close: "上日收盘", volatility: "波动率", div_per_share: "每股分红",
-    free_cashflow: "自由现金流", eps: "每股收益", payout_ratio: "分红率",
+    free_cashflow: "自由现金流", gross_margin: "毛利率", eps: "每股收益", payout_ratio: "分红率",
     dividend_growth_3y: "3年股利增长", roe: "ROE", debt_to_assets: "资产负债率",
     avg_daily_mv: "总市值", avg_daily_amt: "日均成交额",
   };
@@ -984,6 +1027,8 @@
       if (payoutMin !== null) filters.payout_ratio.min = payoutMin;
       if (payoutMax !== null) filters.payout_ratio.max = payoutMax;
     }
+    const fcf = fNum("#hk_rlv_f_fcf"); if (fcf !== null) filters.free_cashflow = { min: fcf };
+    const gm = fNum("#hk_rlv_f_gm"); if (gm !== null) filters.gross_margin = { min: gm };
     return {
       industry: $("#hk_rlv_industry").value.trim(),
       years, sort_by: hkRlvSort.by, order: hkRlvSort.order,
@@ -1131,6 +1176,7 @@
         <td class="num">${fmtPctVal(it.volatility)}</td>
         <td class="num">${it.div_per_share == null ? "—" : Number(it.div_per_share).toFixed(2) + " 元"}</td>
         <td class="num">${fmtYi(it.free_cashflow)}</td>
+        <td class="num ${cls(it.gross_margin || 0)}">${fmtPctVal(it.gross_margin)}</td>
         <td class="num">${it.eps == null ? "—" : Number(it.eps).toFixed(2)}</td>
         <td class="num">${fmtPctVal(it.payout_ratio)}</td>
         <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
@@ -1146,6 +1192,7 @@
   const HK_SCREEN_SORT_LABELS = {
     year: "年份", name: "名称", close: "最近价", roe: "ROE", net_margin: "净利润率",
     assets_turn: "总资产周转率", equity_multiplier: "权益乘数", gross_margin: "毛利率",
+    free_cashflow: "自由现金流",
     debt_to_assets: "资产负债率", current_ratio: "流动比率", total_cur_assets: "流动资产",
     money_cap: "现金", invturn_days: "存货周转天数", arturn_days: "应收周转天数",
     eps: "每股收益", operate_income: "营业收入", net_profit: "净利润", total_mv: "总市值",
@@ -1166,6 +1213,8 @@
     if (!isNaN(debt)) filters.debt_to_assets = { max: debt };
     const gm = parseFloat($("#hk_sc_f_gm").value);
     if (!isNaN(gm)) filters.gross_margin = { min: gm };
+    const fcf = parseFloat($("#hk_sc_f_fcf").value);
+    if (!isNaN(fcf)) filters.free_cashflow = { min: fcf };
     return {
       industry: $("#hk_sc_industry").value.trim(),
       years, sort_by: hkScreenSort.by, order: hkScreenSort.order,
@@ -1300,6 +1349,7 @@
         <td class="num">${it.assets_turn == null ? "—" : Number(it.assets_turn).toFixed(2)}</td>
         <td class="num">${it.equity_multiplier == null ? "—" : Number(it.equity_multiplier).toFixed(2)}</td>
         <td class="num ${cls(it.gross_margin || 0)}">${fmtPctVal(it.gross_margin)}</td>
+        <td class="num">${fmtYi(it.free_cashflow)}</td>
         <td class="num">${fmtPctVal(it.debt_to_assets)}</td>
         <td class="num">${it.current_ratio == null ? "—" : Number(it.current_ratio).toFixed(2)}</td>
         <td class="num">${fmtYi(it.total_cur_assets)}</td>
@@ -2116,6 +2166,9 @@
       };
       addBtn.onclick = doAdd;
       codeInp.onkeydown = (e) => { if (e.key === "Enter") doAdd(); };
+      // 该策略的公司列表 → Alpha158 回测
+      const a158Btn = $("#custom-st-a158-btn");
+      if (a158Btn) a158Btn.onclick = () => runAlpha158WithStrategy(d.items || [], (it && it.name) || "我的策略");
       res.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (e) {
       $("#custom-st-sub").textContent = e.message || "加载失败";
@@ -2177,6 +2230,9 @@
     }).join("");
     document.querySelector("#strategy-table tbody").innerHTML = rows ||
       `<tr><td colspan="${cols.length}" class="empty">暂无符合条件的标的</td></tr>`;
+    // 该策略筛选出的公司 → Alpha158 回测
+    const a158Btn = $("#strategy-a158-btn");
+    if (a158Btn) a158Btn.onclick = () => runAlpha158WithStrategy(d.items || [], (s && s.name) || "精选策略");
     $("#strategy-result").scrollIntoView({ behavior: "smooth", block: "start" });
   }
   // ---------- 精选思想 (投资大师/方法 skill, 可增删改查) ----------
@@ -2617,6 +2673,299 @@
     document.addEventListener("touchcancel", endPull, { passive: true });
   })();
 
+  // ---------- Alpha158 回测 ----------
+  let a158PoolItems = [];
+  let a158StockSort = { key: "total_return", order: "desc" };
+  // 从「策略 Hub」导入的股票池 (非空时优先于我的自选股, 可在池内复位)
+  let a158PoolOverride = null;
+
+  async function loadAlpha158Pool() {
+    if (!window.CaiBaoAuth || !CaiBaoAuth.isLoggedIn()) return;
+    if (a158PoolOverride) {
+      a158PoolItems = a158PoolOverride.items;
+      renderAlpha158Pool();
+      return;
+    }
+    try {
+      const res = await fetch("/api/my_stocks");
+      if (!res.ok) throw new Error("获取我的股票失败");
+      const data = await res.json();
+      a158PoolItems = data.items || [];
+      renderAlpha158Pool();
+    } catch (err) {
+      a158PoolBox.innerHTML = `<span class="alpha-pool-loading">${err.message || "加载失败"}</span>`;
+    }
+  }
+
+  // 策略 Hub 筛选结果 → Alpha158 股票池 (仅保留 A 股, 港股/ETF 不支持)
+  function runAlpha158WithStrategy(stocks, title) {
+    const aShares = (stocks || []).filter((s) => /\.(SH|SZ)$/i.test(s.ts_code || ""));
+    if (!aShares.length) {
+      alert("该策略结果中没有 A 股 (港股/ETF 暂不支持 Alpha158 回测)");
+      return;
+    }
+    a158PoolOverride = { items: aShares, title: title || "策略" };
+    a158PoolItems = aShares;
+    renderAlpha158Pool();
+    const tab = document.querySelector('.tab[data-tab="backtest"]');
+    if (tab) tab.click();   // 切到回测 tab
+    const seg = document.querySelector('#seg-backtest .seg-btn[data-panel="alpha158"]');
+    if (seg) seg.click();   // 切到 Alpha158 子面板 (触发 loadAlpha158Pool, override 保留策略池)
+    const hint = $("#a158-hint");
+    if (hint) hint.textContent = `已从「${a158PoolOverride.title}」导入 ${aShares.length} 只 A 股 · 可调整参数后点击「运行 Alpha158 回测」`;
+    const sec = document.getElementById("bt-alpha158");
+    if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function renderAlpha158Pool() {
+    const poolLabel = $("#a158-pool-label");
+    if (a158PoolOverride) {
+      // 策略导入的股票池: 只含 A 股
+      if (poolLabel) poolLabel.textContent = `股票池 (${a158PoolOverride.title || "策略"})`;
+      const stocks = a158PoolOverride.items;
+      let html = `<div class="alpha-pool-source">已导入策略公司 ${stocks.length} 只 · ` +
+        `<button type="button" class="strat-op" id="a158-pool-reset">用回我的自选股</button></div>`;
+      html += stocks.map((it) => `
+        <label class="alpha-pool-item" title="${it.ts_code}">
+          <input type="checkbox" value="${it.ts_code}" checked />
+          <span>${it.name || it.ts_code}</span><em>${it.ts_code}</em>
+        </label>`).join("");
+      a158PoolBox.innerHTML = html;
+      const reset = $("#a158-pool-reset");
+      if (reset) reset.onclick = () => { a158PoolOverride = null; loadAlpha158Pool(); };
+      return;
+    }
+    if (poolLabel) poolLabel.textContent = "股票池 (我的股票 A 股)";
+    const stocks = a158PoolItems.filter((it) => it.kind === "stock");
+    const others = a158PoolItems.filter((it) => it.kind !== "stock");
+    if (!a158PoolItems.length) {
+      a158PoolBox.innerHTML = `<span class="alpha-pool-loading">暂无自选股, 请先到股票详情页添加</span>`;
+      return;
+    }
+    let html = "";
+    if (stocks.length) {
+      html += stocks.map((it) => `
+        <label class="alpha-pool-item" title="${it.ts_code}">
+          <input type="checkbox" value="${it.ts_code}" checked />
+          <span>${it.name}</span><em>${it.ts_code}</em>
+        </label>`).join("");
+    }
+    if (others.length) {
+      html += `<div class="alpha-pool-unsupported">不支持: ${others.map((it) => `${it.name}(${it.kind})`).join("、")}</div>`;
+    }
+    a158PoolBox.innerHTML = html;
+  }
+
+  function _selectedAlphaSymbols() {
+    return Array.from(a158PoolBox.querySelectorAll("input[type=checkbox]:checked"))
+      .map((c) => c.value);
+  }
+
+  a158Form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const symbols = _selectedAlphaSymbols();
+    if (!symbols.length) {
+      a158Error.textContent = "请至少选择一只股票。";
+      a158Error.classList.remove("hidden");
+      return;
+    }
+    const payload = {
+      symbols,
+      data_start: $("#a158_data_start").value.trim() || "20160101",
+      test_start: $("#a158_test_start").value.trim() || "20190801",
+      test_end: $("#a158_test_end").value.trim() || "",
+      enter_threshold: parseFloat($("#a158_enter_thr").value) || 0,
+      exit_threshold: $("#a158_exit_thr").value === "" ? null : (parseFloat($("#a158_exit_thr").value) || 0),
+      min_holding: parseInt($("#a158_min_holding").value, 10) || 20,
+      initial_capital: parseFloat($("#a158_capital").value) || 100000,
+    };
+    a158Error.classList.add("hidden");
+    a158Result.classList.add("hidden");
+    a158Btn.disabled = true;
+    a158Loading.classList.remove("hidden");
+    $("#a158-hint").textContent = `${symbols.length} 只股票 · ${payload.test_start} ~ ${payload.test_end || "最新"} · 买>${payload.enter_threshold} 卖<${payload.exit_threshold ?? payload.enter_threshold} 持${payload.min_holding}天`;
+    try {
+      const res = await fetch("/api/alpha158/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Alpha158 回测失败");
+      if (data.ok === false) throw new Error(data.error || "Alpha158 回测失败 (无可用股票)");
+      renderAlpha158(data);
+    } catch (err) {
+      a158Error.textContent = err.message || "请求失败, 请检查后端服务。";
+      a158Error.classList.remove("hidden");
+    } finally {
+      a158Loading.classList.add("hidden");
+      a158Btn.disabled = false;
+    }
+  });
+
+  function renderAlpha158(data) {
+    const { portfolio, stocks = [], params = {}, skipped = [] } = data;
+    const okStocks = stocks.filter((s) => s.ok);
+    if (!okStocks.length) {
+      // 全部失败: 明确提示而非静默全 0
+      a158Result.classList.remove("hidden");
+      const skippedTxt = skipped.length ? `跳过: ${skipped.map((s) => `${s.ts_code}${s.name ? "(" + s.name + ")" : ""}(${s.reason || "无数据"})`).join("、")}` : "";
+      $("#a158-result-sub").textContent = `${params.test_start || "—"} ~ ${params.test_end || "最新"} · 无可用回测结果`;
+      $("#a158-metrics").innerHTML = `
+        <div class="metric">
+          <div class="m-label">回测结果</div>
+          <div class="m-value" style="font-size:16px;color:#9ca3af">无股票可回测</div>
+          <div class="m-sub">${skippedTxt || "股票池数据不足或训练样本过少, 请调整参数后重试"}</div>
+        </div>`;
+      $("#a158-table tbody").innerHTML = `<tr><td colspan="11" style="text-align:center;color:#9ca3af;padding:24px">无回测结果</td></tr>`;
+      a158Result.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    a158Result.classList.remove("hidden");
+
+    const skippedTxt = skipped.length ? ` · 跳过 ${skipped.map((s) => s.ts_code).join("、")}` : "";
+    $("#a158-result-sub").textContent =
+      `${params.test_start || "—"} ~ ${params.test_end || "最新"} · 股票池 ${okStocks.length} 只 · ` +
+      `买>${params.enter_threshold} 卖<${params.exit_threshold ?? params.enter_threshold} 持${params.min_holding}天` +
+      skippedTxt;
+
+    // 组合指标卡
+    const sm = (portfolio && portfolio.strategy_metrics) || {};
+    const bm = (portfolio && portfolio.buyhold_metrics) || {};
+    $("#a158-metrics").innerHTML = `
+      <div class="metric ${cls(sm.total_return || 0)}">
+        <div class="m-label">策略 · 总收益率</div>
+        <div class="m-value">${fmtPct(sm.total_return || 0)}</div>
+        <div class="m-sub">年化 ${fmtPct(sm.annual_return || 0)} · 期末 ¥${fmtNum(sm.final_value || 0)}</div>
+      </div>
+      <div class="metric ${cls(sm.max_drawdown || 0)}">
+        <div class="m-label">策略 · 最大回撤</div>
+        <div class="m-value">${(sm.max_drawdown || 0).toFixed(2)}%</div>
+        <div class="m-sub">夏普 ${(sm.sharpe || 0).toFixed(2)} · 卡玛 ${(sm.calmar || 0).toFixed(2)}</div>
+      </div>
+      <div class="metric ${cls(bm.total_return || 0)}">
+        <div class="m-label">买入持有 · 总收益率</div>
+        <div class="m-value">${fmtPct(bm.total_return || 0)}</div>
+        <div class="m-sub">年化 ${fmtPct(bm.annual_return || 0)} · 夏普 ${(bm.sharpe || 0).toFixed(2)}</div>
+      </div>
+      <div class="metric ${cls((sm.total_return || 0) - (bm.total_return || 0))}">
+        <div class="m-label">超额收益 (策略-买入持有)</div>
+        <div class="m-value">${fmtPct((sm.total_return || 0) - (bm.total_return || 0))}</div>
+        <div class="m-sub">回撤 ${(sm.max_drawdown || 0).toFixed(2)}% vs ${(bm.max_drawdown || 0).toFixed(2)}%</div>
+      </div>`;
+
+    // 组合曲线 + 回撤
+    renderAlpha158Chart(portfolio);
+    renderAlpha158Dd(portfolio);
+
+    // 个股表
+    a158StockItems = okStocks;
+    _renderAlpha158Table();
+    a158Result.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  let a158StockItems = [];
+
+  function _alphaVal(it, key) {
+    if (key === "name" || key === "ts_code") return it[key];
+    const m = it.metrics || {};
+    return m[key];
+  }
+
+  function _renderAlpha158Table() {
+    const arr = a158StockItems.slice();
+    const k = a158StockSort.key;
+    const dir = a158StockSort.order === "asc" ? 1 : -1;
+    arr.sort((a, b) => {
+      const va = _alphaVal(a, k), vb = _alphaVal(b, k);
+      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+      return String(va == null ? "" : va).localeCompare(String(vb == null ? "" : vb), "zh") * dir;
+    });
+    const body = arr.map((it) => {
+      const m = it.metrics || {};
+      return `<tr>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name || it.ts_code}</a></td>
+        <td>${it.ts_code}</td>
+        <td class="num ${cls(m.total_return || 0)}">${fmtPct(m.total_return || 0)}</td>
+        <td class="num ${cls(m.annual_return || 0)}">${fmtPct(m.annual_return || 0)}</td>
+        <td class="num ${cls(-(m.max_drawdown || 0))}">${(m.max_drawdown || 0).toFixed(2)}%</td>
+        <td class="num">${(m.sharpe || 0).toFixed(2)}</td>
+        <td class="num">${(m.calmar || 0).toFixed(2)}</td>
+        <td class="num">${m.n_trades || 0}</td>
+        <td class="num">${(m.total_cost || 0).toFixed(2)}%</td>
+        <td class="num">${((m.exposure || 0) * 100).toFixed(0)}%</td>
+        <td>${it.start || ""}~${it.end || ""}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="11" style="text-align:center;color:#9ca3af;padding:24px">无可回测的股票</td></tr>`;
+    $("#a158-table tbody").innerHTML = body;
+    updateAlpha158SortArrows();
+  }
+
+  function updateAlpha158SortArrows() {
+    document.querySelectorAll("#a158-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === a158StockSort.key) {
+        arrow.textContent = a158StockSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
+    });
+  }
+
+  document.querySelectorAll("#a158-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (a158StockSort.key === by) {
+        a158StockSort.order = a158StockSort.order === "desc" ? "asc" : "desc";
+      } else {
+        a158StockSort.key = by;
+        a158StockSort.order = "desc";
+      }
+      _renderAlpha158Table();
+    });
+  });
+
+  function renderAlpha158Chart(pf) {
+    const el = $("#a158-chart");
+    if (!pf || !pf.dates || !pf.dates.length) return;
+    if (!alphaChart) alphaChart = echarts.init(el);
+    const dates = pf.dates.map(fmtDate);
+    alphaChart.setOption({
+      animationDuration: 400,
+      tooltip: { trigger: "axis", valueFormatter: (v) => (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%" },
+      legend: { top: 4, textStyle: { fontSize: 13 } },
+      grid: { left: 14, right: 20, top: 40, bottom: 36, containLabel: true },
+      xAxis: { type: "category", data: dates, boundaryGap: false, axisLabel: { color: "#6b7280", fontSize: 11 }, axisLine: { lineStyle: { color: "#e5e7eb" } } },
+      yAxis: { type: "value", axisLabel: { color: "#6b7280", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#f1f5f9" } } },
+      dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
+      series: [
+        { name: "Alpha158 策略", type: "line", data: pf.strategy, showSymbol: false, smooth: true, lineStyle: { width: 2.4, color: "#e65050" }, itemStyle: { color: "#e65050" }, areaStyle: { opacity: 0.07 } },
+        { name: "买入持有", type: "line", data: pf.buyhold, showSymbol: false, smooth: true, lineStyle: { width: 2.2, color: "#4f46e5" }, itemStyle: { color: "#4f46e5" }, areaStyle: { opacity: 0.04 } },
+      ],
+    }, true);
+    requestAnimationFrame(() => alphaChart && alphaChart.resize());
+  }
+
+  function renderAlpha158Dd(pf) {
+    const el = $("#a158-dd-chart");
+    if (!pf || !pf.drawdown || !pf.drawdown.length) return;
+    if (!alphaDdChart) alphaDdChart = echarts.init(el);
+    const dates = pf.dates.map(fmtDate);
+    alphaDdChart.setOption({
+      animationDuration: 400,
+      tooltip: { trigger: "axis", valueFormatter: (v) => Number(v).toFixed(2) + "%" },
+      grid: { left: 14, right: 20, top: 30, bottom: 36, containLabel: true },
+      xAxis: { type: "category", data: dates, boundaryGap: false, axisLabel: { color: "#6b7280", fontSize: 11 }, axisLine: { lineStyle: { color: "#e5e7eb" } } },
+      yAxis: { type: "value", axisLabel: { color: "#6b7280", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#f1f5f9" } } },
+      dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
+      series: [{ name: "回撤", type: "line", data: pf.drawdown, showSymbol: false, smooth: true, lineStyle: { width: 1.6, color: "#ea580c" }, itemStyle: { color: "#ea580c" }, areaStyle: { color: "rgba(234,88,12,0.25)" } }],
+    }, true);
+    requestAnimationFrame(() => alphaDdChart && alphaDdChart.resize());
+  }
+
   // 窗口尺寸变化时, 防抖自适应图表
   let resizeTimer = null;
   window.addEventListener("resize", () => {
@@ -2625,13 +2974,15 @@
       if (chart) chart.resize();
       if (quoteChart) quoteChart.resize();
       if (bandChart) bandChart.resize();
+      if (alphaChart) alphaChart.resize();
+      if (alphaDdChart) alphaDdChart.resize();
     }, 150);
   });
 
   // ---------- 用户认证: 未登录跳转独立登录页, 登录后展示 Tab 并加载自选股 ----------
   if (window.CaiBaoAuth) {
     CaiBaoAuth.onAuthChange(() => {
-      if (CaiBaoAuth.isLoggedIn()) { loadMyStocks(); loadStrategies(); loadIdeas(); }
+      if (CaiBaoAuth.isLoggedIn()) { loadMyStocks(); loadStrategies(); loadIdeas(); loadAlpha158Pool(); }
       else location.replace("/static/login.html");
     });
     CaiBaoAuth.init().then(() => {
@@ -2640,6 +2991,7 @@
         loadMyStocks();
         loadStrategies();
         loadIdeas();
+        loadAlpha158Pool();
       } else {
         location.replace("/static/login.html");          // 未登录跳登录页 (不显示 Tab)
       }

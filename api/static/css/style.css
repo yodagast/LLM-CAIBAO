@@ -418,7 +418,38 @@ body.auth-loading .container { visibility: hidden; }
 /* ---------- 结果 ---------- */
 .result-head { display: flex; align-items: baseline; gap: 14px; margin: 8px 0 16px; flex-wrap: wrap; }
 .result-head h2 { font-size: 20px; }
-
+/* 我的股票: 搜索并加入自选股 */
+.stock-search { position: relative; display: flex; align-items: center; gap: 8px; }
+.stock-search input {
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; width: 250px; background: #fafbfd; color: var(--text); outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.stock-search input:focus {
+  border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, .12);
+}
+.search-panel {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 50;
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, .14); min-width: 340px; max-height: 340px;
+  overflow: auto; padding: 6px;
+}
+.search-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border-radius: 8px; cursor: pointer;
+}
+.search-item:hover { background: var(--primary-light); }
+.search-item .si-name { font-weight: 600; color: var(--text); flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-item .si-code { color: var(--text-soft); font-size: 12px; flex: 1; }
+.search-item .si-kind { color: var(--text-soft); font-size: 11px; flex: 0 0 auto; }
+.search-item .si-add { white-space: nowrap; padding: 4px 10px; font-size: 12px; flex: 0 0 auto; }
+.search-item .si-add.added { background: #26a69a; border-color: #26a69a; color: #fff; }
+.search-empty { padding: 12px; color: var(--text-soft); font-size: 13px; text-align: center; }
+@media (max-width: 560px) {
+  .stock-search { width: 100%; }
+  .stock-search input { width: 100%; flex: 1; }
+  .search-panel { min-width: 260px; }
+}
 .metric-cards {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

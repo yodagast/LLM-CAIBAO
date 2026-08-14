@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=51" />
+  <link rel="stylesheet" href="/static/css/style.css?v=52" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -38,6 +38,13 @@
 
       <section class="result" id="my-result">
         <div class="result-head">
+          <div class="stock-search" id="my-search-wrap">
+            <input type="text" id="my-search-input" placeholder="按名称/代码搜索并加入自选股, 如 招商银行 / 600036 / 513050" autocomplete="off" />
+            <button type="button" class="btn-primary" id="my-search-btn">
+              <span class="btn-icon">🔍</span> 搜索
+            </button>
+            <div class="search-panel hidden" id="my-search-panel"></div>
+          </div>
           <button type="button" class="btn-primary my-refresh-btn" id="my-refresh-btn">
             <span class="btn-icon">↻</span> 刷新
           </button>
@@ -1284,6 +1291,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=74"></script>
+  <script src="/static/js/app.js?v=76"></script>
 </body>
 </html>

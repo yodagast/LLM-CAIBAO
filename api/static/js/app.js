@@ -2680,6 +2680,93 @@
 
   myRefreshBtn.addEventListener("click", loadMyStocks);
 
+  // ---------- 我的股票: 按名称/代码搜索并加入自选股 ----------
+  const mySearchInput = document.getElementById("my-search-input");
+  const mySearchBtn = document.getElementById("my-search-btn");
+  const mySearchPanel = document.getElementById("my-search-panel");
+  const _esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+
+  function _kindLabel(kind) {
+    if (kind === "fund") return "ETF/基金";
+    if (kind === "hk") return "港股";
+    return "股票";
+  }
+
+  let mySearchTimer = null;
+  async function doMyStockSearch() {
+    if (!mySearchInput || !mySearchPanel) return;
+    if (!window.CaiBaoAuth || !CaiBaoAuth.isLoggedIn()) return;  // 联想时未登录静默
+    const kw = mySearchInput.value.trim();
+    if (!kw) { mySearchPanel.classList.add("hidden"); return; }
+    mySearchPanel.classList.remove("hidden");
+    mySearchPanel.innerHTML = '<div class="search-empty">搜索中…</div>';
+    try {
+      const r = await fetch(`/api/stock/search?keyword=${encodeURIComponent(kw)}&limit=20`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "搜索失败");
+      const items = data.items || [];
+      if (!items.length) {
+        mySearchPanel.innerHTML = '<div class="search-empty">未找到匹配的股票/ETF</div>';
+        return;
+      }
+      mySearchPanel.innerHTML = items.map((it) => `
+        <div class="search-item" data-code="${_esc(it.ts_code)}">
+          <span class="si-name">${_esc(it.name)}</span>
+          <span class="si-code">${_esc(it.ts_code)}</span>
+          <span class="si-kind">${_kindLabel(it.kind)}</span>
+          <button type="button" class="btn-ghost btn-sm si-add" data-code="${_esc(it.ts_code)}">＋ 加入</button>
+        </div>`).join("");
+      mySearchPanel.querySelectorAll(".si-add").forEach((btn) => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await addMyStockFromSearch(btn.dataset.code, btn);
+        });
+      });
+    } catch (err) {
+      mySearchPanel.innerHTML = `<div class="search-empty">搜索失败: ${_esc(err.message || err)}</div>`;
+    }
+  }
+
+  async function addMyStockFromSearch(ts_code, btn) {
+    try {
+      const r = await fetch("/api/my_stocks/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ts_code }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "添加失败");
+      if (btn) {
+        btn.textContent = d.ok === false ? "已在列表" : "✓ 已加入";
+        btn.classList.add("added");
+        btn.disabled = true;
+      }
+      loadMyStocks();
+    } catch (err) {
+      alert(err.message || "添加失败");
+    }
+  }
+
+  if (mySearchBtn) mySearchBtn.addEventListener("click", () => {
+    if (window.CaiBaoAuth && !CaiBaoAuth.isLoggedIn()) { if (CaiBaoAuth.requireLogin) CaiBaoAuth.requireLogin(); return; }
+    doMyStockSearch();
+  });
+  if (mySearchInput) {
+    mySearchInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doMyStockSearch(); });
+    // 输入即联想 (300ms debounce, 实时推荐候选)
+    mySearchInput.addEventListener("input", () => {
+      clearTimeout(mySearchTimer);
+      mySearchTimer = setTimeout(doMyStockSearch, 300);
+    });
+    // 点击搜索组件外部时收起结果面板
+    document.addEventListener("click", (e) => {
+      const wrap = document.getElementById("my-search-wrap");
+      if (wrap && !wrap.contains(e.target)) mySearchPanel.classList.add("hidden");
+    });
+  }
+
   // 我的股票 tab: 右上角「回测」下拉 (选择不同回测方法, 对当前自选股执行)
   (function initMyBacktestMenu() {
     const myBtBtn = document.getElementById("my-backtest-btn");

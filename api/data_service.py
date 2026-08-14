@@ -1312,20 +1312,81 @@ async def _latest_basic_map(pro) -> dict[str, dict]:
     return m
 
 
+async def _pg_latest_maps(symbols: list[str]) -> tuple[dict, dict]:
+    """从本地 pg 批量读最新行情/估值 (自选股快照优先本地, 减少 tushare 全市场调用)。
+
+    返回 ({ts_code: {close, pre_close, pct_chg}}, {ts_code: {pb, pe, pe_ttm, total_share,
+    float_share, total_mv, circ_mv, dv_ratio, dv_ttm}})。仅含 pg 已有数据的股票 (未回填的不在结果)。
+    """
+    from . import pg_service
+    if not symbols:
+        return {}, {}
+    dmap: dict = {}
+    bmap: dict = {}
+    try:
+        for r in await pg_service.latest_daily_bars_batch(list(symbols)):
+            dmap[r["symbol"]] = {
+                "close": _to_float(r.get("close")),
+                "pre_close": _to_float(r.get("pre_close")),
+                "pct_chg": _to_float(r.get("pct_chg")),
+            }
+        for r in await pg_service.latest_daily_basic_batch(list(symbols)):
+            bmap[r["symbol"]] = {
+                "pb": _to_float(r.get("pb")), "pe": _to_float(r.get("pe")),
+                "pe_ttm": _to_float(r.get("pe_ttm")),
+                "total_share": _to_float(r.get("total_share")),
+                "float_share": _to_float(r.get("float_share")),
+                "total_mv": _to_float(r.get("total_mv")),
+                "circ_mv": _to_float(r.get("circ_mv")),
+                "dv_ratio": _to_float(r.get("dv_ratio")),
+                "dv_ttm": _to_float(r.get("dv_ttm")),
+            }
+    except Exception:
+        pass
+    return dmap, bmap
+
+
+async def _backfill_silently(targets: list[dict]) -> None:
+    """后台静默回填目标股票到本地 pg (日线/估值/分红), 失败不抛错 (仅优化, 不影响请求)。"""
+    try:
+        await backfill_daily_bars(targets, years=10, concurrency=2)
+    except Exception:
+        pass
+
+
 async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str, dict]:
-    """批量股票快照 (我的股票列表用): A股最新行情/估值用 trade_date 批量接口 (一次全市场),
-    52 周高低 + 每股分红逐只 (带缓存, 并发上限控 tushare 限频); 港股/基金回退逐只 get_stock_snapshot。
+    """批量股票快照 (我的股票列表用): A股最新行情/估值优先从本地 pg (stock_daily_bars/basic) 读,
+    pg 未回填的再回退 tushare trade_date 批量接口 (一次全市场); 52 周高低 + 每股分红逐只
+    (走 pg + 缓存, 并发上限控 tushare 限频); 港股/基金回退逐只 get_stock_snapshot。
 
     相比逐只 get_stock_snapshot (每只 3 次 tushare 调用: daily/daily_basic/dividend),
-    批量接口把 N 次 daily_basic 与最新行情降为 2 次全市场调用, 大幅降低自选股列表
-    首次加载耗时与 tushare 限频压力。返回 {ts_code: snap | None}, snap 结构同 get_stock_snapshot。
+    本地 pg 覆盖后冷加载不再打 tushare 全市场 daily/daily_basic (仅首次 stock_basic/fund_basic)。
+    返回 {ts_code: snap | None}, snap 结构同 get_stock_snapshot。
     """
     a_codes = [c for c in ts_codes if str(c).endswith((".SH", ".SZ"))]
     rest = [c for c in ts_codes if c not in a_codes]
     out: dict[str, dict] = {}
     pro = _init_pro()
-    dmap = await _latest_daily_map(pro)
-    bmap = await _latest_basic_map(pro)
+    # 优先本地 pg 读最新行情/估值 (目标列表已回填, 避免 tushare 全市场 daily/daily_basic 调用)
+    dmap, bmap = await _pg_latest_maps(a_codes)
+    missing = [c for c in a_codes if c not in dmap]
+    if missing:
+        # pg 未回填的股票 → 用 tushare 全市场批量接口补 (15min 缓存)
+        full_d = await _latest_daily_map(pro)
+        full_b = await _latest_basic_map(pro)
+        for c in missing:
+            if c not in dmap and full_d.get(c):
+                dmap[c] = full_d[c]
+            if c not in bmap and full_b.get(c):
+                bmap[c] = full_b[c]
+        # 后台回填 pg 缺失的股票 (下次加载走 pg, 不再打 tushare 全市场)
+        try:
+            targets = [{"ts_code": c, "kind": _classify_ts_code(c)}
+                       for c in missing if not c.endswith(".HK")]
+            if targets:
+                asyncio.create_task(_backfill_silently(targets))
+        except Exception:
+            pass
     end_date = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=int(days * 1.6) + 30)).strftime("%Y%m%d")
     sem = asyncio.Semaphore(8)

@@ -1127,6 +1127,14 @@ async def my_stocks_add(req: MyStockRequest, request: Request) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
     inserted = await pg_service.add_my_stock(user["id"], info["ts_code"], info["name"])
+    # 新加自选股 → 后台回填该股日线/估值/分红到本地 pg (下次加载走 pg, 首页提速)
+    if inserted and not str(info["ts_code"]).endswith(".HK"):
+        kind = info.get("kind") or ("fund" if _is_fund_ts(info["ts_code"]) else "stock")
+        try:
+            asyncio.create_task(data_service.backfill_daily_bars(
+                [{"ts_code": info["ts_code"], "kind": kind}], years=10, concurrency=1))
+        except Exception:
+            pass
     return {"ok": True, "ts_code": info["ts_code"], "name": info["name"],
             "added": inserted, "already": not inserted}
 

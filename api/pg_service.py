@@ -1143,8 +1143,43 @@ async def daily_basic_stats(symbol: str) -> dict | None:
             "max_date": str(r["mx"])}
 
 
+async def latest_daily_bars_batch(symbols: list[str]) -> list[dict]:
+    """批量查询每组 symbol 最新交易日的日线 (DISTINCT ON), 供自选股快照从本地 pg 读最新行情。
+
+    返回 [{symbol, trade_date, close, pre_close, pct_chg}]。
+    """
+    if not symbols:
+        return []
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT ON (symbol) symbol, trade_date, close, pre_close, pct_chg "
+            "FROM stock_daily_bars WHERE symbol = ANY($1::text[]) "
+            "ORDER BY symbol, trade_date DESC", list(symbols))
+    return [dict(r) for r in rows]
+
+
+async def latest_daily_basic_batch(symbols: list[str]) -> list[dict]:
+    """批量查询每组 symbol 最新交易日的估值/换手率 (DISTINCT ON), 供自选股快照从本地 pg 读估值。
+
+    返回 [{symbol, trade_date, pb, pe, pe_ttm, total_share, float_share,
+          total_mv, circ_mv, dv_ratio, dv_ttm, turnover_rate}]。
+    """
+    if not symbols:
+        return []
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT ON (symbol) symbol, trade_date, pb, pe, pe_ttm, total_share, "
+            "float_share, total_mv, circ_mv, dv_ratio, dv_ttm, turnover_rate "
+            "FROM stock_daily_basic WHERE symbol = ANY($1::text[]) "
+            "ORDER BY symbol, trade_date DESC", list(symbols))
+    return [dict(r) for r in rows]
+
+
 async def query_daily_basic(symbol: str, start_date: str = "", end_date: str = "") -> list[dict]:
     """查询某 symbol 估值/换手率 (升序)。start/end 支持 YYYYMMDD 或 YYYY-MM-DD。"""
+
     def _d(s: str):
         s = s.strip().replace("-", "")
         return datetime.strptime(s[:8], "%Y%m%d").date() if len(s) >= 8 else None

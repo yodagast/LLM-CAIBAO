@@ -1667,14 +1667,15 @@ async def backfill_daily_bars(targets: list[dict], years: int = 10,
 
 
 async def backfill_missing_financial(targets: list[dict], years: list[int] | None = None) -> dict:
-    """为目标 A股 中缺少财务数据 (financial_data) 的股票补齐年度财务数据。
+    """为目标 A股 增量补齐财务数据 (financial_data): 检查本地已入库年份, 只补缺失年份。
 
     targets: [{"ts_code":..., "kind":...}]。ETF/港股跳过。
+    当年 (当前年) 年报通常未披露, 不强制补齐 (避免每夜空转)。
     返回 {"ok": 补齐数, "skip": 跳过数, "errors": [...]}。
     """
     from . import pg_service
+    cur = datetime.now().year
     if not years:
-        cur = datetime.now().year
         years = list(range(cur - 8, cur + 1))
     summary = {"ok": 0, "skip": 0, "errors": []}
     for t in targets:
@@ -1684,11 +1685,14 @@ async def backfill_missing_financial(targets: list[dict], years: list[int] | Non
             summary["skip"] += 1
             continue
         try:
-            if await pg_service.has_any_financial(ts_code):
+            have = set(await pg_service.financial_years(ts_code))
+            # 缺失年份 = 目标年份中未入库且非当年的 (当年年报未披露, 不强制)
+            missing = [y for y in years if y != cur and y not in have]
+            if not missing:
                 summary["skip"] += 1
                 continue
             from . import caibao_service
-            n = await caibao_service.sync_stock_financial(ts_code, years)
+            n = await caibao_service.sync_stock_financial(ts_code, missing)
             if n:
                 summary["ok"] += 1
             else:

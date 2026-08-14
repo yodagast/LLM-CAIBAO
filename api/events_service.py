@@ -226,7 +226,12 @@ async def process_job(ts_code: str, name: str = "") -> dict:
             ts_code, status="processing", total_est=_EVENTS_TOTAL_EST, last_error=None)
         snippets = await _search_web(name, ts_code)
         logger.info("[events] %s %s 搜索到 %d 条片段, 开始分批生成", ts_code, name, len(snippets))
+        # 以已有大事标题为初始去重集 → 增量更新只补新事件, 不重复生成
         prev_titles: set[str] = set()
+        try:
+            prev_titles = set(await pg_service.query_event_titles(ts_code))
+        except Exception:
+            pass
         done = 0
         batch_errors: list[str] = []
         for batch_no in range(1, _EVENTS_BATCHES + 1):
@@ -346,4 +351,30 @@ async def sync_events_batch(codes: list[str], force: bool = False,
                 summary["empty"] += 1
 
     await asyncio.gather(*(_one(c) for c in todo))
+    return summary
+
+
+async def sync_events_update_batch(codes: list[str], concurrency: int = 2) -> dict:
+    """增量更新公司大事: 对已选出的候选直接 process_job (不删除已有, 基于已有标题去重补充)。
+
+    配合 pg_service.stock_events_update_candidates 使用 (每日增量 <20 件 / 月度 ≥20 件)。
+    返回汇总。
+    """
+    if not codes:
+        return {"total": 0, "ok": 0, "empty": 0, "error": 0, "errors": []}
+    sem = asyncio.Semaphore(concurrency)
+    summary = {"total": len(codes), "ok": 0, "empty": 0, "error": 0, "errors": []}
+
+    async def _one(code: str):
+        async with sem:
+            r = await process_job(code)
+            if r["status"] == "ok":
+                summary["ok"] += 1
+            elif r["status"] == "error":
+                summary["error"] += 1
+                summary["errors"].append({"code": code, "msg": r["message"]})
+            else:
+                summary["empty"] += 1
+
+    await asyncio.gather(*(_one(c) for c in codes))
     return summary

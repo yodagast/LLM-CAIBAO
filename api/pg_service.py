@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import asyncpg
@@ -1873,12 +1873,61 @@ async def stock_codes_missing_events(codes: list[str]) -> list[str]:
     return [c for c in codes if c not in have]
 
 
+async def query_event_titles(ts_code: str) -> list[str]:
+    """查询某股票已入库大事的标题 (供增量生成去重)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT title FROM stock_events WHERE ts_code = $1", ts_code)
+    return [str(r["title"]) for r in rows]
+
+
+async def stock_events_update_candidates(codes: list[str], min_count: int = 20,
+                                         monthly_days: int = 30) -> list[str]:
+    """返回需要更新大事的 ts_code (增量/月度策略):
+
+      - 无大事记录          → 需要 (首次生成)
+      - 不足 min_count 条    → 需要 (增量补充)
+      - 达到 min_count 条    → 仅当最近更新超过 monthly_days 天才需要 (月度更新)
+      其余 (≥min_count 且近期更新过) 跳过。
+    """
+    if not codes:
+        return []
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ts_code, count(*) n, max(updated_at) latest "
+            "FROM stock_events WHERE ts_code = ANY($1::text[]) "
+            "GROUP BY ts_code", list(codes))
+    have = {str(r["ts_code"]): {"n": int(r["n"]), "latest": r["latest"]} for r in rows}
+    cutoff = datetime.now() - timedelta(days=int(monthly_days))
+    out = []
+    for c in codes:
+        info = have.get(c)
+        if info is None:
+            out.append(c)                      # 无大事 → 首次
+        elif info["n"] < min_count:
+            out.append(c)                      # 不足阈值 → 增量
+        elif info["latest"] is not None and info["latest"] < cutoff:
+            out.append(c)                      # 达到阈值但超月度周期 → 月度
+    return out
+
+
 async def has_any_financial(ts_code: str) -> bool:
     """该股票是否已有任一财年财务数据 (financial_data)。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         return await conn.fetchval(
             "SELECT 1 FROM financial_data WHERE ts_code=$1 LIMIT 1", ts_code) is not None
+
+
+async def financial_years(ts_code: str) -> list[int]:
+    """查询该股票 financial_data 中已入库的年份列表。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT year FROM financial_data WHERE ts_code = $1", ts_code)
+    return [int(r["year"]) for r in rows]
 
 
 # ---------------------------------------------------------------------------

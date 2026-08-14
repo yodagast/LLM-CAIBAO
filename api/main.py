@@ -23,6 +23,7 @@ from . import daily_recommend_service, etf_service, fundamental_service, hk_data
 from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvol_service
 from . import invest_ideas_service, strategy_service
 from . import alpha158_service
+from . import portfolio_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -252,6 +253,19 @@ class Alpha158Request(BaseModel):
     initial_capital: float = Field(100000.0, gt=0, description="初始资金")
 
 
+class PortfolioRequest(BaseModel):
+    """组合回测请求 (买入持有 + 区间交易, 区间交易自动估算最优买卖/止损价)。"""
+    symbols: list[str] = Field(default_factory=list,
+                               description="股票代码列表(空=我的股票)")
+    start_date: str = Field("20170101", description="回测起始日期 YYYYMMDD")
+    end_date: str = Field("", description="回测结束日期 YYYYMMDD, 空=最新")
+    initial_capital: float = Field(100000.0, gt=0, description="组合初始资金(等权分配到各股票)")
+    min_sharpe: float = Field(1.0, ge=0, le=10, description="区间交易目标夏普下限")
+    objective: str = Field("balanced",
+                           description="区间交易优化目标: return/annual/sharpe/drawdown/calmar/balanced")
+    max_trades: int = Field(100, ge=1, le=2000, description="区间交易次数上限(每笔=买入→卖出)")
+
+
 class DailyRecRequest(BaseModel):
     """每日公司推荐扫描请求。"""
     ts_codes: str = Field("", description="指定代码(逗号分隔), 空=按行业或全市场")
@@ -302,7 +316,10 @@ class EtfScreenRequest(BaseModel):
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    # 禁止缓存 index.html: 它引用带版本号的静态资源 (style.css?v=N / app.js?v=N),
+    # 若被浏览器缓存会一直请求旧版本号资源 (表现为 304 / 前端不更新)。
+    return FileResponse(STATIC_DIR / "index.html",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +560,44 @@ async def alpha158_backtest(req: Alpha158Request, request: Request) -> dict:
         for sk in result.get("skipped", []):
             info = await data_service.resolve_code(sk["ts_code"])
             sk["name"] = info["name"]
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/api/portfolio/backtest")
+async def portfolio_backtest(req: PortfolioRequest, request: Request) -> dict:
+    """组合回测: 逐股 买入持有 + 区间交易(自动估算最优买入/卖出/止损价), 等权聚合。
+
+    股票池默认取当前用户 我的股票; 也可显式 symbols。区间交易参数由 band_service
+    网格搜索自动估算 (夏普≥min_sharpe 且收益最优)。
+    """
+    user = await _require_user(request)
+    symbols = [s.strip().upper() for s in req.symbols if s and s.strip()]
+    if not symbols:
+        stocks = await pg_service.list_my_stocks(user["id"])
+        symbols = [s["ts_code"] for s in stocks]
+        if not symbols:
+            raise HTTPException(status_code=400,
+                                detail="我的股票为空, 请先添加或显式传入 symbols")
+    params = {
+        "start_date": req.start_date,
+        "end_date": req.end_date,
+        "initial_capital": req.initial_capital,
+        "min_sharpe": req.min_sharpe,
+        "objective": req.objective,
+        "max_trades": req.max_trades,
+    }
+    try:
+        result = await portfolio_service.backtest_portfolio(symbols, params)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"组合回测失败: {e}")
+    # 补充股票名称 (resolve_code 有 TTL 缓存)
+    try:
+        for st in result.get("stocks", []):
+            if st.get("ok"):
+                info = await data_service.resolve_code(st["ts_code"])
+                st["name"] = info["name"]
     except Exception:
         pass
     return result
@@ -972,7 +1027,8 @@ async def my_stocks_remove(req: MyStockRequest, request: Request) -> dict:
 async def my_stocks_list(request: Request) -> dict:
     """我的股票列表: 最新收盘/涨跌幅/PE/总市值/股息率/每股分红/52周高低 快照 (需登录)。
 
-    并发加载全部自选股快照 (asyncio.gather), 避免逐只串行打 tushare 导致 N 只耗时叠加。
+    用批量快照 (data_service.get_snapshots_batch): A股最新行情/估值走 trade_date 批量接口
+    (一次全市场), 52周高低/分红逐只带缓存, 避免逐只打 tushare 导致 N 只耗时叠加与限频。
     """
     user = await _require_user(request)
     stocks = await pg_service.list_my_stocks(user["id"])
@@ -981,10 +1037,16 @@ async def my_stocks_list(request: Request) -> dict:
     except Exception:
         basic_df = None
 
-    async def load_one(s: dict):
+    snaps = await data_service.get_snapshots_batch([s["ts_code"] for s in stocks])
+
+    items = []
+    for s in stocks:
+        snap = snaps.get(s["ts_code"])
+        if not snap:
+            continue
         try:
             info = await data_service.resolve_code(s["ts_code"])
-            snap = await data_service.get_stock_snapshot(info["ts_code"], kind=info["kind"])
+            snap = dict(snap)
             snap["name"] = info["name"]
             snap["kind"] = info["kind"]
             snap["added_at"] = s["added_at"]
@@ -993,12 +1055,9 @@ async def my_stocks_list(request: Request) -> dict:
                 hit = basic_df[basic_df["ts_code"] == info["ts_code"]]
                 if not hit.empty:
                     snap["industry"] = str(hit.iloc[0].get("industry") or "")
-            return snap
+            items.append(snap)
         except Exception:
-            return None
-
-    results = await asyncio.gather(*(load_one(s) for s in stocks))
-    items = [r for r in results if r is not None]
+            continue
     return {"count": len(items), "items": items}
 
 

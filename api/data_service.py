@@ -364,7 +364,8 @@ async def search_industries(keyword: str = "", limit: int = 20) -> list[dict]:
 # 日线数据 (带缓存)
 # ---------------------------------------------------------------------------
 
-_DAILY_CACHE: dict[str, pd.DataFrame] = {}
+_DAILY_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_TTL_DAILY = 1800  # 日线 30 分钟 (低频变化; 无 TTL 会永久缓存占内存且数据陈旧)
 
 # 详情页缓存 (避免每次重复拉取): daily_basic / dividend / stock_basic
 _DAILY_BASIC_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
@@ -472,14 +473,15 @@ async def get_daily(ts_code: str, kind: str = "stock",
     end_date = end_date or datetime.now().strftime("%Y%m%d")
     adj_key = str(adj).strip().lower()
     cache_key = f"{ts_code}:{kind}:{start_date}:{end_date}:{adj_key}"
-    if cache_key in _DAILY_CACHE:
-        return _DAILY_CACHE[cache_key]
+    hit = _DAILY_CACHE.get(cache_key)
+    if hit and (time.time() - hit[0]) < _TTL_DAILY:
+        return hit[1]
 
     # 港股走腾讯日线
     if kind == "hk" or str(ts_code).endswith(".HK"):
         df = await _get_hk_daily(ts_code, start_date, end_date, adj_key)
         df = df.sort_values("trade_date").reset_index(drop=True)
-        _DAILY_CACHE[cache_key] = df
+        _DAILY_CACHE[cache_key] = (time.time(), df)
         return df
 
     pro = _init_pro()
@@ -504,7 +506,7 @@ async def get_daily(ts_code: str, kind: str = "stock",
         df = df.copy()
         df["close"] = _adj_close(df)
         df["pre_close"] = df["close"].shift(1).fillna(df["close"])
-    _DAILY_CACHE[cache_key] = df
+    _DAILY_CACHE[cache_key] = (time.time(), df)
     return df
 
 
@@ -518,7 +520,7 @@ async def get_quote(ts_code: str, kind: str = "stock", days: int = 120) -> pd.Da
 
 
 async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
-                    start_date: str = "", end_date: str = "", hist_years: int = 20) -> list[dict]:
+                    start_date: str = "", end_date: str = "", hist_years: int = 10) -> list[dict]:
     """获取 K 线 bars (周期: D日/W周/M月; 复权: qfq前复权/hfq后复权/空不复权)。
 
     基于 tushare pro_bar 接口 (异步)。返回升序 bars (含 open/high/low/close/pre_close/change/pct_chg/vol/amount/amplitude)。
@@ -532,9 +534,16 @@ async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str
     start = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
     adj_param = adj.strip() or None
     pro = _init_pro()
+    # 并发: pro_bar 与 daily_basic(换手率) 相互独立 (切换周期/复权时避免串行叠加延迟)
+    bar_task = asyncio.create_task(pro.pro_bar(ts_code=ts_code, freq=freq.upper(),
+                                               adj=adj_param, start_date=start, end_date=end))
+    basic_task = None
+    if freq.upper() == "D" and kind != "fund":
+        basic_task = asyncio.create_task(
+            pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end,
+                            fields="trade_date,turnover_rate"))
     try:
-        df = await pro.pro_bar(ts_code=ts_code, freq=freq.upper(), adj=adj_param,
-                               start_date=start, end_date=end)
+        df = await bar_task
     except Exception as e:
         raise ValueError(f"获取 {ts_code} {freq}线{adj or '不复权'}数据失败: {e}")
     if df is None or df.empty:
@@ -543,10 +552,9 @@ async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str
 
     # 日线附带回换手率 (换手率不随复权改变, 仅日线粒度有)
     turnover_map = {}
-    if freq.upper() == "D" and kind != "fund":
+    if basic_task is not None:
         try:
-            tb = await pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end,
-                                       fields="trade_date,turnover_rate")
+            tb = await basic_task
             if tb is not None and not tb.empty:
                 turnover_map = {
                     str(r["trade_date"]): _to_float(r.get("turnover_rate"))
@@ -581,7 +589,7 @@ async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str
 
 async def _hk_kline(ts_code: str, freq: str = "D", adj: str = "",
                     start_date: str = "", end_date: str = "",
-                    hist_years: int = 20) -> list[dict]:
+                    hist_years: int = 10) -> list[dict]:
     """港股 K 线 (腾讯日线, 不复权); D 直接返回, W/M 由日线聚合。"""
     from . import hk_data_service
     df = await hk_data_service._tencent_kline_df(ts_code)
@@ -640,8 +648,10 @@ async def _hk_kline(ts_code: str, freq: str = "D", adj: str = "",
 
 
 async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
-                           hist_years: int = 20, date: str = "") -> dict:
+                           hist_years: int = 10, date: str = "") -> dict:
     """股票详情聚合: 最多 hist_years 年 K 线 + 52 周高低 + PB/PE/股本/市值 + 分红/股息率。
+
+    hist_years 默认 10 年 (tushare 拉取耗时随年数近似线性, 20 年约 7s / 10 年约 2.3s)。
 
     date: 指定交易日 (YYYYMMDD) 查看该日行情快照, 空=最新交易日。
     港股 (kind=hk / .HK) 走 _get_hk_stock_detail (东财指标 + 腾讯日线, 金额单位万港元)。
@@ -652,7 +662,11 @@ async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     end_date = datetime.now().strftime("%Y%m%d")
     # K 线历史: 最多 hist_years 年 (约 250 交易日/年)
     start = (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
-    df = await get_daily(ts_code, kind, start_date=start, end_date=end_date)
+    # 并发拉取: 日线 / daily_basic / 分红 相互独立; 串行会叠加 tushare 延迟 (详情页冷加载 3~6s)
+    daily_task = asyncio.create_task(get_daily(ts_code, kind, start_date=start, end_date=end_date))
+    basic_task = asyncio.create_task(_get_daily_basic(pro, ts_code, start, end_date))
+    div_task = asyncio.create_task(_dividend_latest(pro, ts_code))
+    df = await daily_task
 
     # 选中目标交易日 (指定日期或最新)
     if date:
@@ -702,7 +716,7 @@ async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     pb = pe = pe_ttm = total_share = float_share = total_mv = circ_mv = dv_ratio = None
     turnover_map = {}
     try:
-        b = await _get_daily_basic(pro, ts_code, start, end_date)
+        b = await basic_task
         if b is not None and not b.empty:
             b = b.sort_values("trade_date").reset_index(drop=True)
             turnover_map = dict(
@@ -724,7 +738,10 @@ async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     quote["turnover_rate"] = turnover_map.get(last_date)
 
     # 分红: 最新分红年度全部已实施每股现金红利之和 (一年多次分红求和)
-    div = await _dividend_latest(pro, ts_code)
+    try:
+        div = await div_task
+    except Exception:
+        div = None
     div_per_share = div["cash_div"] if div else None
     dividend_end = div["end_date"] if div else ""
 
@@ -782,7 +799,7 @@ async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
 
 
 async def _get_hk_stock_detail(ts_code: str, days: int = 250,
-                               hist_years: int = 20, date: str = "") -> dict:
+                               hist_years: int = 10, date: str = "") -> dict:
     """港股个股详情 (东财财务指标/分红 + 腾讯日线, 金额单位: 万港元)。
 
     返回与 A 股 get_stock_detail 同结构 (pb/pe_ttm/total_share万股/total_mv万港元/
@@ -988,6 +1005,143 @@ async def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250)
     # 缓存副本, 返回独立对象 (调用方会补 name/industry 等字段, 不改缓存)
     _SNAPSHOT_CACHE[cache_key] = (time.time(), dict(result))
     return result
+
+
+# ---------------------------------------------------------------------------
+# 自选股批量快照 (加速: trade_date 批量接口取最新行情/估值, 52周高低/分红逐只带缓存)
+# ---------------------------------------------------------------------------
+
+# 全市场最新交易日行情/指标 (trade_date 批量, 15 分钟缓存)
+_LATEST_DAILY_CACHE: dict[str, tuple[float, dict]] = {}
+_LATEST_BASIC_CACHE: dict[str, tuple[float, dict]] = {}
+_LATEST_TTL = 15 * 60
+
+
+async def _latest_trade_date(pro) -> str:
+    """探测最近交易日 (用 000001 日线最新 trade_date)。"""
+    try:
+        probe = await pro.daily(ts_code="000001.SZ", fields="trade_date,close")
+        if probe is not None and not probe.empty:
+            return str(probe.sort_values("trade_date").iloc[-1]["trade_date"])
+    except Exception:
+        pass
+    return datetime.now().strftime("%Y%m%d")
+
+
+async def _latest_daily_map(pro) -> dict[str, dict]:
+    """全市场最新交易日 daily → {ts_code: {close, pre_close, pct_chg}} (15min 缓存)。
+
+    一次调用替代 N 只自选股逐只拉日线, 是自选股列表加速的关键。
+    """
+    now = time.time()
+    hit = _LATEST_DAILY_CACHE.get("all")
+    if hit and now - hit[0] < _LATEST_TTL:
+        return hit[1]
+    m: dict[str, dict] = {}
+    try:
+        td = await _latest_trade_date(pro)
+        df = await pro.daily(trade_date=td, fields="ts_code,close,pre_close,pct_chg")
+        if df is not None and not df.empty:
+            for _, r in df.iterrows():
+                m[str(r["ts_code"])] = {
+                    "close": _to_float(r.get("close")),
+                    "pre_close": _to_float(r.get("pre_close")),
+                    "pct_chg": _to_float(r.get("pct_chg")),
+                }
+    except Exception:
+        pass
+    _LATEST_DAILY_CACHE["all"] = (now, m)
+    return m
+
+
+async def _latest_basic_map(pro) -> dict[str, dict]:
+    """全市场最新 daily_basic → {ts_code: {pb, pe, pe_ttm, total_mv, circ_mv, dv_ttm}} (15min 缓存)。"""
+    now = time.time()
+    hit = _LATEST_BASIC_CACHE.get("all")
+    if hit and now - hit[0] < _LATEST_TTL:
+        return hit[1]
+    m: dict[str, dict] = {}
+    try:
+        td = await _latest_trade_date(pro)
+        df = await pro.daily_basic(trade_date=td, fields="ts_code,pb,pe,pe_ttm,total_mv,circ_mv,dv_ttm")
+        if df is not None and not df.empty:
+            for _, r in df.iterrows():
+                m[str(r["ts_code"])] = {
+                    "pb": _to_float(r.get("pb")),
+                    "pe": _to_float(r.get("pe")),
+                    "pe_ttm": _to_float(r.get("pe_ttm")),
+                    "total_mv": _to_float(r.get("total_mv")),
+                    "circ_mv": _to_float(r.get("circ_mv")),
+                    "dv_ttm": _to_float(r.get("dv_ttm")),
+                }
+    except Exception:
+        pass
+    _LATEST_BASIC_CACHE["all"] = (now, m)
+    return m
+
+
+async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str, dict]:
+    """批量股票快照 (我的股票列表用): A股最新行情/估值用 trade_date 批量接口 (一次全市场),
+    52 周高低 + 每股分红逐只 (带缓存, 并发上限控 tushare 限频); 港股/基金回退逐只 get_stock_snapshot。
+
+    相比逐只 get_stock_snapshot (每只 3 次 tushare 调用: daily/daily_basic/dividend),
+    批量接口把 N 次 daily_basic 与最新行情降为 2 次全市场调用, 大幅降低自选股列表
+    首次加载耗时与 tushare 限频压力。返回 {ts_code: snap | None}, snap 结构同 get_stock_snapshot。
+    """
+    a_codes = [c for c in ts_codes if str(c).endswith((".SH", ".SZ"))]
+    rest = [c for c in ts_codes if c not in a_codes]
+    out: dict[str, dict] = {}
+    pro = _init_pro()
+    dmap = await _latest_daily_map(pro)
+    bmap = await _latest_basic_map(pro)
+    end_date = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=int(days * 1.6) + 30)).strftime("%Y%m%d")
+    sem = asyncio.Semaphore(8)
+
+    async def _one(code: str) -> dict | None:
+        async with sem:
+            try:
+                df = await get_daily(code, "stock", start_date=start, end_date=end_date)
+                last = df.iloc[-1]
+                recent = df.tail(days)
+                d = dmap.get(code) or {}
+                b = bmap.get(code) or {}
+                last_close = float(d["close"]) if d.get("close") is not None else float(last["close"])
+                div = await _dividend_latest(pro, code)
+                div_per_share = div["cash_div"] if div else None
+                dv_ttm = b.get("dv_ttm")
+                dividend_yield = dv_ttm if dv_ttm is not None else (
+                    div_per_share / last_close * 100.0 if (div_per_share and last_close) else None)
+                return {
+                    "ts_code": code,
+                    "last_close": last_close,
+                    "last_date": str(last["trade_date"]),
+                    "pct_chg": d.get("pct_chg") if d.get("pct_chg") is not None else _to_float(last.get("pct_chg")),
+                    "pb": b.get("pb"),
+                    "pe": b.get("pe"),
+                    "pe_ttm": b.get("pe_ttm"),
+                    "total_mv": b.get("total_mv"),
+                    "circ_mv": b.get("circ_mv"),
+                    "dv_ratio": dv_ttm,
+                    "div_per_share": div_per_share,
+                    "dividend_yield": dividend_yield,
+                    "week52_high": float(recent["high"].max()),
+                    "week52_low": float(recent["low"].min()),
+                }
+            except Exception:
+                return None
+
+    a_results = await asyncio.gather(*(_one(c) for c in a_codes))
+    for code, snap in zip(a_codes, a_results):
+        out[code] = snap
+
+    for code in rest:
+        try:
+            info = await resolve_code(code)
+            out[code] = await get_stock_snapshot(info["ts_code"], kind=info["kind"])
+        except Exception:
+            out[code] = None
+    return out
 
 
 # ---------------------------------------------------------------------------

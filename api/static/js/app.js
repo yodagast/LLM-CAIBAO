@@ -73,11 +73,20 @@
   const a158Result = $("#a158-result");
   const a158PoolBox = $("#a158-pool");
 
+  // 组合回测元素
+  const ptfForm = $("#ptf-form");
+  const ptfBtn = $("#ptf-btn");
+  const ptfLoading = $("#ptf-loading");
+  const ptfError = $("#ptf-error");
+  const ptfResult = $("#ptf-result");
+  const ptfPoolBox = $("#ptf-pool");
+
   let chart = null;
   let quoteChart = null;
   let bandChart = null;
   let alphaChart = null;
   let alphaDdChart = null;
+  let ptfChart = null;
   let searchTimer = null;
 
   // ---------- 工具 ----------
@@ -327,6 +336,7 @@
         if (bandChart) bandChart.resize();
         if (alphaChart) alphaChart.resize();
         if (alphaDdChart) alphaDdChart.resize();
+        if (ptfChart) ptfChart.resize();
       }, 80);
     });
   });
@@ -339,6 +349,7 @@
         p.classList.toggle("hidden", p.dataset.panel !== btn.dataset.panel);
       });
       if (btn.dataset.panel === "alpha158") loadAlpha158Pool();
+      if (btn.dataset.panel === "ptf") loadPtfPool();
       // 隐藏面板宽度为 0, 切换后重算图表尺寸
       setTimeout(() => {
         if (chart) chart.resize();
@@ -346,6 +357,7 @@
         if (bandChart) bandChart.resize();
         if (alphaChart) alphaChart.resize();
         if (alphaDdChart) alphaDdChart.resize();
+        if (ptfChart) ptfChart.resize();
       }, 80);
     });
   });
@@ -2169,6 +2181,9 @@
       // 该策略的公司列表 → Alpha158 回测
       const a158Btn = $("#custom-st-a158-btn");
       if (a158Btn) a158Btn.onclick = () => runAlpha158WithStrategy(d.items || [], (it && it.name) || "我的策略");
+      // 该策略的公司列表 → 组合回测 (买入持有 + 区间交易)
+      const ptfBtn2 = $("#custom-st-ptf-btn");
+      if (ptfBtn2) ptfBtn2.onclick = () => runPortfolioWithStrategy(d.items || [], (it && it.name) || "我的策略");
       res.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (e) {
       $("#custom-st-sub").textContent = e.message || "加载失败";
@@ -2233,6 +2248,9 @@
     // 该策略筛选出的公司 → Alpha158 回测
     const a158Btn = $("#strategy-a158-btn");
     if (a158Btn) a158Btn.onclick = () => runAlpha158WithStrategy(d.items || [], (s && s.name) || "精选策略");
+    // 该策略筛选出的公司 → 组合回测 (买入持有 + 区间交易)
+    const ptfBtn2 = $("#strategy-ptf-btn");
+    if (ptfBtn2) ptfBtn2.onclick = () => runPortfolioWithStrategy(d.items || [], (s && s.name) || "精选策略");
     $("#strategy-result").scrollIntoView({ behavior: "smooth", block: "start" });
   }
   // ---------- 精选思想 (投资大师/方法 skill, 可增删改查) ----------
@@ -2611,6 +2629,32 @@
 
   myRefreshBtn.addEventListener("click", loadMyStocks);
 
+  // 我的股票 tab: 右上角「回测」下拉 (选择不同回测方法, 对当前自选股执行)
+  (function initMyBacktestMenu() {
+    const myBtBtn = document.getElementById("my-backtest-btn");
+    const myBtMenu = document.getElementById("my-backtest-menu");
+    if (!myBtBtn || !myBtMenu) return;
+    myBtBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      myBtMenu.classList.toggle("hidden");
+    });
+    document.addEventListener("click", (e) => {
+      if (!myBtBtn.contains(e.target) && !myBtMenu.contains(e.target)) {
+        myBtMenu.classList.add("hidden");
+      }
+    });
+    myBtMenu.querySelectorAll("button[data-method]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        myBtMenu.classList.add("hidden");
+        const method = btn.dataset.method;
+        const stocks = (myItems || []).map((it) => ({ ts_code: it.ts_code, name: it.name }));
+        if (!stocks.length) { alert("暂无自选股, 请先添加"); return; }
+        if (method === "alpha158") runAlpha158WithStrategy(stocks, "我的股票");
+        else if (method === "ptf") runPortfolioWithStrategy(stocks, "我的股票");
+      });
+    });
+  })();
+
   // ---------- 移动端下拉刷新 (我的股票) ----------
   (function initMyPullRefresh() {
     // 仅支持触摸的移动端启用
@@ -2966,6 +3010,235 @@
     requestAnimationFrame(() => alphaDdChart && alphaDdChart.resize());
   }
 
+  // ---------- 组合回测 (买入持有 + 区间交易, 区间交易自动估算最优买卖/止损价) ----------
+  let ptfPoolItems = [];
+  let ptfPoolOverride = null;
+  let ptfStockItems = [];
+  let ptfSort = { key: "band_ret", order: "desc" };
+
+  async function loadPtfPool() {
+    if (!window.CaiBaoAuth || !CaiBaoAuth.isLoggedIn()) return;
+    if (ptfPoolOverride) { ptfPoolItems = ptfPoolOverride.items; renderPtfPool(); return; }
+    try {
+      const res = await fetch("/api/my_stocks");
+      if (!res.ok) throw new Error("获取我的股票失败");
+      const data = await res.json();
+      ptfPoolItems = data.items || [];
+      renderPtfPool();
+    } catch (err) {
+      ptfPoolBox.innerHTML = `<span class="alpha-pool-loading">${err.message || "加载失败"}</span>`;
+    }
+  }
+
+  // 策略 Hub 结果 → 组合回测股票池 (支持 A股/港股/ETF, 区间交易参数自动估算)
+  function runPortfolioWithStrategy(stocks, title) {
+    const list = (stocks || []).filter((s) => s && s.ts_code);
+    if (!list.length) { alert("该策略结果中没有公司可回测"); return; }
+    ptfPoolOverride = { items: list, title: title || "策略" };
+    ptfPoolItems = list;
+    renderPtfPool();
+    const tab = document.querySelector('.tab[data-tab="backtest"]');
+    if (tab) tab.click();
+    const seg = document.querySelector('#seg-backtest .seg-btn[data-panel="ptf"]');
+    if (seg) seg.click();   // 切到组合回测面板 (loadPtfPool 因 override 存在而保留策略池)
+    const hint = $("#ptf-hint");
+    if (hint) hint.textContent = `已从「${ptfPoolOverride.title}」导入 ${list.length} 只 · 可调整参数后点击「运行组合回测」`;
+    const sec = document.getElementById("tab-backtest");
+    if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function renderPtfPool() {
+    const label = $("#ptf-pool-label");
+    if (ptfPoolOverride) {
+      if (label) label.textContent = `股票池 (${ptfPoolOverride.title || "策略"})`;
+      let html = `<div class="alpha-pool-source">已导入策略公司 ${ptfPoolOverride.items.length} 只 · ` +
+        `<button type="button" class="strat-op" id="ptf-pool-reset">用回我的自选股</button></div>`;
+      html += ptfPoolOverride.items.map((it) => `
+        <label class="alpha-pool-item" title="${it.ts_code}">
+          <input type="checkbox" value="${it.ts_code}" checked />
+          <span>${it.name || it.ts_code}</span><em>${it.ts_code}</em>
+        </label>`).join("");
+      ptfPoolBox.innerHTML = html;
+      const reset = $("#ptf-pool-reset");
+      if (reset) reset.onclick = () => { ptfPoolOverride = null; loadPtfPool(); };
+      return;
+    }
+    if (label) label.textContent = "股票池 (我的股票)";
+    if (!ptfPoolItems.length) {
+      ptfPoolBox.innerHTML = `<span class="alpha-pool-loading">暂无自选股, 请先添加或在策略 Hub 点「组合回测」导入</span>`;
+      return;
+    }
+    ptfPoolBox.innerHTML = ptfPoolItems.map((it) => `
+      <label class="alpha-pool-item" title="${it.ts_code}">
+        <input type="checkbox" value="${it.ts_code}" checked />
+        <span>${it.name || it.ts_code}</span><em>${it.ts_code}</em>
+      </label>`).join("");
+  }
+
+  ptfForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const symbols = Array.from(ptfPoolBox.querySelectorAll("input[type=checkbox]:checked"))
+      .map((c) => c.value);
+    if (!symbols.length) {
+      ptfError.textContent = "请至少选择一只股票。";
+      ptfError.classList.remove("hidden");
+      return;
+    }
+    const objMap = { balanced: "综合平衡", return: "收益优先", annual: "年化优先", sharpe: "夏普优先", drawdown: "回撤最小", calmar: "卡玛优先" };
+    const objective = $("#ptf_objective").value;
+    const payload = {
+      symbols,
+      start_date: $("#ptf_start").value.trim() || "20170101",
+      end_date: $("#ptf_end").value.trim() || "",
+      initial_capital: parseFloat($("#ptf_capital").value) || 100000,
+      min_sharpe: parseFloat($("#ptf_min_sharpe").value) || 0,
+      objective,
+      max_trades: parseInt($("#ptf_max_trades").value, 10) || 100,
+    };
+    ptfError.classList.add("hidden");
+    ptfResult.classList.add("hidden");
+    ptfBtn.disabled = true;
+    ptfLoading.classList.remove("hidden");
+    $("#ptf-hint").textContent =
+      `${symbols.length} 只 · ${payload.start_date} ~ ${payload.end_date || "最新"} · 夏普≥${payload.min_sharpe} · ${objMap[objective] || objective} · 交易≤${payload.max_trades}`;
+    try {
+      const res = await fetch("/api/portfolio/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "组合回测失败");
+      renderPtf(data);
+    } catch (err) {
+      ptfError.textContent = err.message || "请求失败, 请检查后端服务。";
+      ptfError.classList.remove("hidden");
+    } finally {
+      ptfLoading.classList.add("hidden");
+      ptfBtn.disabled = false;
+    }
+  });
+
+  function renderPtf(data) {
+    const { portfolio, stocks = [] } = data;
+    const okStocks = stocks.filter((s) => s && s.ok);
+    ptfResult.classList.remove("hidden");
+    if (!okStocks.length) {
+      $("#ptf-result-sub").textContent = "无可用回测结果";
+      $("#ptf-metrics").innerHTML = `
+        <div class="metric"><div class="m-label">回测结果</div>
+          <div class="m-value" style="font-size:16px;color:#9ca3af">无股票可回测</div>
+          <div class="m-sub">${(stocks || []).map((s) => `${s.name}(${s.reason || "失败"})`).join("；") || "请检查股票数据"}</div></div>`;
+      $("#ptf-table tbody").innerHTML = `<tr><td colspan="11" style="text-align:center;color:#9ca3af;padding:24px">无回测结果</td></tr>`;
+      ptfResult.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    const pf = portfolio || {};
+    const bm = pf.band_metrics || {};
+    const hm = pf.buyhold_metrics || {};
+    $("#ptf-result-sub").textContent =
+      `${(data.params && data.params.start_date) || "—"} ~ ${(data.params && data.params.end_date) || "最新"} · ${okStocks.length} 只 · 等权 · 夏普≥${(data.params && data.params.min_sharpe) != null ? data.params.min_sharpe : "—"}`;
+    $("#ptf-metrics").innerHTML = `
+      <div class="metric ${cls(bm.total_return || 0)}"><div class="m-label">区间交易 · 总收益率</div>
+        <div class="m-value">${fmtPct(bm.total_return || 0)}</div>
+        <div class="m-sub">年化 ${fmtPct(bm.annual_return || 0)} · 期末 ¥${fmtNum(bm.final_value || 0)}</div></div>
+      <div class="metric ${cls(bm.max_drawdown || 0)}"><div class="m-label">区间交易 · 最大回撤</div>
+        <div class="m-value">${(bm.max_drawdown || 0).toFixed(2)}%</div>
+        <div class="m-sub">夏普 ${(bm.sharpe || 0).toFixed(2)} · 卡玛 ${(bm.calmar || 0).toFixed(2)}</div></div>
+      <div class="metric ${cls(hm.total_return || 0)}"><div class="m-label">买入持有 · 总收益率</div>
+        <div class="m-value">${fmtPct(hm.total_return || 0)}</div>
+        <div class="m-sub">年化 ${fmtPct(hm.annual_return || 0)} · 夏普 ${(hm.sharpe || 0).toFixed(2)}</div></div>
+      <div class="metric ${cls((bm.total_return || 0) - (hm.total_return || 0))}"><div class="m-label">超额收益 (区间-持有)</div>
+        <div class="m-value">${fmtPct((bm.total_return || 0) - (hm.total_return || 0))}</div>
+        <div class="m-sub">回撤 ${(bm.max_drawdown || 0).toFixed(2)}% vs ${(hm.max_drawdown || 0).toFixed(2)}%</div></div>`;
+
+    renderPtfChart(pf);
+    ptfStockItems = okStocks;
+    _renderPtfTable();
+    ptfResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function _ptfVal(it, key) {
+    const b = it.band || {}, p = it.params || {}, bh = it.buyhold || {};
+    switch (key) {
+      case "name": return it.name;
+      case "ts_code": return it.ts_code;
+      case "buy_price": return p.buy_price;
+      case "sell_price": return p.sell_price;
+      case "stop_price": return p.stop_price;
+      case "band_ret": return b.total_return;
+      case "band_sharpe": return b.sharpe;
+      case "band_dd": return b.max_drawdown;
+      case "trades": return it.trades_count;
+      case "bh_ret": return bh.total_return;
+      default: return null;
+    }
+  }
+
+  function _renderPtfTable() {
+    const arr = ptfStockItems.slice();
+    const k = ptfSort.key;
+    const dir = ptfSort.order === "asc" ? 1 : -1;
+    arr.sort((a, b) => {
+      const va = _ptfVal(a, k), vb = _ptfVal(b, k);
+      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+      return String(va == null ? "" : va).localeCompare(String(vb == null ? "" : vb), "zh") * dir;
+    });
+    const body = arr.map((it) => {
+      const p = it.params || {}, b = it.band || {}, bh = it.buyhold || {};
+      return `<tr>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name || it.ts_code}</a></td>
+        <td>${it.ts_code}</td>
+        <td class="num">${p.buy_price == null ? "—" : Number(p.buy_price).toFixed(2)}</td>
+        <td class="num">${p.sell_price == null ? "—" : Number(p.sell_price).toFixed(2)}</td>
+        <td class="num">${p.stop_price == null ? "—" : Number(p.stop_price).toFixed(2)}</td>
+        <td class="num ${cls(b.total_return || 0)}">${fmtPct(b.total_return || 0)}</td>
+        <td class="num">${(b.sharpe || 0).toFixed(2)}</td>
+        <td class="num ${cls(-(b.max_drawdown || 0))}">${(b.max_drawdown || 0).toFixed(2)}%</td>
+        <td class="num">${it.trades_count || 0}</td>
+        <td class="num ${cls(bh.total_return || 0)}">${fmtPct(bh.total_return || 0)}</td>
+        <td>${it.range ? (it.range.start + "~" + it.range.end) : "—"}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="11" style="text-align:center;color:#9ca3af;padding:24px">无可回测的股票</td></tr>`;
+    $("#ptf-table tbody").innerHTML = body;
+    document.querySelectorAll("#ptf-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      arrow.textContent = (th.dataset.sort === ptfSort.key) ? (ptfSort.order === "desc" ? " ▼" : " ▲") : "";
+      th.classList.toggle("sorted", th.dataset.sort === ptfSort.key);
+    });
+  }
+
+  document.querySelectorAll("#ptf-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (ptfSort.key === by) ptfSort.order = ptfSort.order === "desc" ? "asc" : "desc";
+      else { ptfSort.key = by; ptfSort.order = "desc"; }
+      _renderPtfTable();
+    });
+  });
+
+  function renderPtfChart(pf) {
+    const el = $("#ptf-chart");
+    if (!pf || !pf.dates || !pf.dates.length) return;
+    if (!ptfChart) ptfChart = echarts.init(el);
+    const dates = pf.dates.map(fmtDate);
+    ptfChart.setOption({
+      animationDuration: 400,
+      tooltip: { trigger: "axis", valueFormatter: (v) => (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%" },
+      legend: { top: 4, textStyle: { fontSize: 13 } },
+      grid: { left: 14, right: 20, top: 40, bottom: 36, containLabel: true },
+      xAxis: { type: "category", data: dates, boundaryGap: false, axisLabel: { color: "#6b7280", fontSize: 11 }, axisLine: { lineStyle: { color: "#e5e7eb" } } },
+      yAxis: { type: "value", axisLabel: { color: "#6b7280", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#f1f5f9" } } },
+      dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
+      series: [
+        { name: "区间交易", type: "line", data: pf.band, showSymbol: false, smooth: true, lineStyle: { width: 2.4, color: "#e65050" }, itemStyle: { color: "#e65050" }, areaStyle: { opacity: 0.07 } },
+        { name: "买入持有", type: "line", data: pf.buyhold, showSymbol: false, smooth: true, lineStyle: { width: 2.2, color: "#4f46e5" }, itemStyle: { color: "#4f46e5" }, areaStyle: { opacity: 0.04 } },
+      ],
+    }, true);
+    requestAnimationFrame(() => ptfChart && ptfChart.resize());
+  }
+
   // 窗口尺寸变化时, 防抖自适应图表
   let resizeTimer = null;
   window.addEventListener("resize", () => {
@@ -2976,6 +3249,7 @@
       if (bandChart) bandChart.resize();
       if (alphaChart) alphaChart.resize();
       if (alphaDdChart) alphaDdChart.resize();
+      if (ptfChart) ptfChart.resize();
     }, 150);
   });
 

@@ -19,7 +19,6 @@
     <nav class="tabs">
       <div class="tabs-scroll">
         <button type="button" class="tab active" data-tab="my">我的股票</button>
-        <button type="button" class="tab" data-tab="etf">ETF筛选</button>
         <button type="button" class="tab" data-tab="screener">选股</button>
         <button type="button" class="tab" data-tab="strategies">策略Hub</button>
         <button type="button" class="tab" data-tab="caibao">财报挖掘</button>
@@ -185,6 +184,7 @@
         <div class="seg-group" id="seg-mkt">
           <button type="button" class="seg-btn active" data-mkt="a">A股</button>
           <button type="button" class="seg-btn" data-mkt="hk">港股</button>
+          <button type="button" class="seg-btn" data-mkt="etf">ETF</button>
         </div>
         <div class="seg-group" id="seg-strat">
           <button type="button" class="seg-btn active" data-strat="rlv">红利低波</button>
@@ -192,6 +192,9 @@
         </div>
         <button type="button" class="btn-ghost btn-sm" id="screener-save-btn" title="把当前筛选结果保存为策略Hub中的自定义策略">＋ 存入策略Hub</button>
       </div>
+
+      <!-- ETF 筛选 (内容由 app.js 从原 #tab-etf 注入) -->
+      <div data-view="etf" class="hidden"></div>
 
       <!-- A股 × 红利低波 -->
       <div data-view="a-rlv">
@@ -1281,6 +1284,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=73"></script>
+  <script src="/static/js/app.js?v=74"></script>
 </body>
 </html>

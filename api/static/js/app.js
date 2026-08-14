@@ -362,14 +362,28 @@
     });
   });
 
-  // ---------- 选股 tab: 市场(A股/港股) × 策略(红利低波/基本面) 切换 ----------
+  // ---------- 选股 tab: 市场(A股/港股/ETF) × 策略(红利低波/基本面) 切换 ----------
   const screenerState = { mkt: "a", strat: "rlv" };
+  // ETF 筛选并入本 tab: 把原 #tab-etf 的内容注入 data-view="etf" 并移除旧 section
+  (function moveEtfIntoScreener() {
+    const src = document.getElementById("tab-etf");
+    const dst = document.querySelector('#tab-screener [data-view="etf"]');
+    if (src && dst) {
+      while (src.firstChild) dst.appendChild(src.firstChild);
+      src.remove();
+    }
+  })();
   function setScreenerView(mkt, strat) {
     screenerState.mkt = mkt; screenerState.strat = strat;
     document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mkt === mkt));
     document.querySelectorAll("#seg-strat .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.strat === strat));
+    const isEtf = mkt === "etf";
+    // ETF 模式: 隐藏 红利低波/基本面 策略段 与 顶部存入按钮 (ETF 结果区自带保存按钮)
+    document.getElementById("seg-strat")?.classList.toggle("hidden", isEtf);
+    document.getElementById("screener-save-btn")?.classList.toggle("hidden", isEtf);
     document.querySelectorAll('#tab-screener [data-view]').forEach((v) => {
-      v.classList.toggle("hidden", v.dataset.view !== mkt + "-" + strat);
+      const target = isEtf ? "etf" : mkt + "-" + strat;
+      v.classList.toggle("hidden", v.dataset.view !== target);
     });
   }
   document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) =>

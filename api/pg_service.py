@@ -1879,3 +1879,119 @@ async def has_any_financial(ts_code: str) -> bool:
     async with pool.acquire() as conn:
         return await conn.fetchval(
             "SELECT 1 FROM financial_data WHERE ts_code=$1 LIMIT 1", ts_code) is not None
+
+
+# ---------------------------------------------------------------------------
+# 公司大事任务队列 stock_events_jobs (持久化, 替代进程内 asyncio.create_task)
+# 解决: 服务器多进程/重启时后台任务丢失; 任务存 pg, 由 worker 循环抢占处理。
+# ---------------------------------------------------------------------------
+
+STOCK_EVENTS_JOBS_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS stock_events_jobs (
+    id          BIGSERIAL PRIMARY KEY,
+    ts_code     VARCHAR(16) NOT NULL UNIQUE,
+    name        VARCHAR(64) DEFAULT '',
+    status      VARCHAR(16) DEFAULT 'pending',   -- pending / processing / done / error
+    done_count  INTEGER DEFAULT 0,               -- 已入库条数 (分批生成进度)
+    total_est   INTEGER DEFAULT 0,               -- 预估总条数
+    last_error  TEXT DEFAULT '',
+    created_at  TIMESTAMP DEFAULT now(),
+    updated_at  TIMESTAMP DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sej_status ON stock_events_jobs (status, id);
+"""
+
+
+async def init_stock_events_jobs_schema() -> None:
+    """创建公司大事任务队列表 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(STOCK_EVENTS_JOBS_SCHEMA_DDL)
+
+
+async def enqueue_stock_events_job(ts_code: str, name: str = "", force: bool = False) -> bool:
+    """入队生成任务 (ts_code 唯一)。force=True 时重置状态为 pending 并清空错误。
+
+    返回是否为新插入/重置 (供调用方判断是否需要重新触发)。
+    """
+    if force:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "UPDATE stock_events_jobs SET status='pending', done_count=0, "
+                "total_est=0, last_error='', updated_at=now() WHERE ts_code=$1 RETURNING id",
+                ts_code)
+            if rows:
+                return True
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO stock_events_jobs (ts_code, name, status) VALUES ($1, $2, 'pending') "
+            "ON CONFLICT (ts_code) DO NOTHING RETURNING id", ts_code, name)
+    return row is not None
+
+
+async def get_stock_events_job(ts_code: str) -> dict | None:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT ts_code, status, done_count, total_est, last_error, updated_at "
+            "FROM stock_events_jobs WHERE ts_code = $1", ts_code)
+    return dict(r) if r else None
+
+
+async def claim_stock_events_job(stale_minutes: int = 5) -> dict | None:
+    """抢占一个待处理任务 (多 worker 并发安全, FOR UPDATE SKIP LOCKED)。
+
+    同时把卡死超过 stale_minutes 的 processing 任务重置为 pending (进程崩溃恢复)。
+    返回任务 {ts_code, name} 或 None。
+    """
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        # 恢复卡死任务
+        await conn.execute(
+            "UPDATE stock_events_jobs SET status='pending', updated_at=now() "
+            "WHERE status='processing' AND updated_at < now() - make_interval(mins => $1)",
+            stale_minutes)
+        r = await conn.fetchrow(
+            "UPDATE stock_events_jobs SET status='processing', updated_at=now() "
+            "WHERE id = (SELECT id FROM stock_events_jobs WHERE status='pending' "
+            "             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
+            "RETURNING ts_code, name")
+    return dict(r) if r else None
+
+
+async def update_stock_events_job(ts_code: str, status: str | None = None,
+                                  done_count: int | None = None,
+                                  total_est: int | None = None,
+                                  last_error: str = "") -> None:
+    """更新任务状态/进度/错误。last_error 传 None 表示不改, 传字符串表示覆盖。"""
+    sets = ["updated_at = now()"]
+    params: list = []
+    if status is not None:
+        params.append(status)
+        sets.append(f"status = ${len(params)}")
+    if done_count is not None:
+        params.append(done_count)
+        sets.append(f"done_count = ${len(params)}")
+    if total_est is not None:
+        params.append(total_est)
+        sets.append(f"total_est = ${len(params)}")
+    if last_error is not None:
+        params.append(last_error)
+        sets.append(f"last_error = ${len(params)}")
+    if not sets:
+        return
+    params.append(ts_code)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE stock_events_jobs SET {', '.join(sets)} "
+            f"WHERE ts_code = ${len(params)}", *params)
+
+
+async def pending_stock_events_job_count() -> int:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(
+            "SELECT count(*) FROM stock_events_jobs WHERE status = 'pending'"))

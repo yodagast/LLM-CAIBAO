@@ -1,38 +1,48 @@
-"""公司大事服务: 网络搜索 (Bing News RSS, 免 API Key) + DeepSeek 总结 → pgsql stock_events。
+"""公司大事服务: 网络搜索 (DuckDuckGo/Bing, 免 API Key) + DeepSeek 分批总结 → pgsql stock_events。
 
-流程:
-  1. _search_web  : 用 Bing News RSS 搜索 "<公司名> 大事", 取新闻片段 (标题/日期/摘要)
-  2. _summarize   : 把片段交给 DeepSeek (LLM) 总结成结构化时间线 JSON [{date, title, summary}]
-  3. sync_events  : 解析后 upsert 到 stock_events 表 (按 (ts_code, title) 去重)
-  4. GET 接口读库, POST 接口触发 (重新)生成
+设计 (2026-08-14 改造, 解决服务器无法显示/生成不可靠):
+  - **持久化任务队列**: 生成任务写入 pg `stock_events_jobs`, 由 `worker_loop` (服务器后台) 或
+    脚本 `scripts/sync_stock_events.py` 抢占处理 (FOR UPDATE SKIP LOCKED, 多进程安全)。
+    任务存 pg, 服务器多进程/重启不丢失; 崩溃卡死的 processing 任务超时后自动重置重跑。
+  - **分批生成 + 进度**: 一次搜索后把 12~20 条大事拆成 _EVENTS_BATCHES 批, 每批调一次 DeepSeek
+    (max_tokens 降到 ~6000, 推理更快), 每批完成立即 upsert 入库并更新 job.done_count。
+    前端轮询 GET 可看到"已生成 N 条"渐进增长, 而非一直转圈。
+  - **错误可见**: 失败写日志 + job.last_error, GET 返回给前端展示, 不再静默重试。
 
-DeepSeek 配置从根目录 .env 读取 (DEEPSEEK_API_KEY / LLM_BASE_URL / LLM_MODEL),
-未配置时仅做网络搜索不入库总结 (或抛错由上层回退)。
+DeepSeek 配置从根目录 .env 读取 (DEEPSEEK_API_KEY / LLM_BASE_URL / LLM_MODEL)。
+关键: deepseek-v4-flash 为推理模型, max_tokens 须足够 (每批 6000) 否则 content 为空。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
-import xml.etree.ElementTree as ET  # noqa: F401  (保留备用)
 from datetime import datetime
 
 import httpx
 
 from . import pg_service
 
-# 正在生成中的 ts_code (防止 GET 自动触发与 POST 手动触发重复/并发)
-_INFLIGHT: set[str] = set()
+logger = logging.getLogger(__name__)
+
+# 分批生成参数: 每批最多 5 条, 共 4 批 ≈ 16~20 条
+_EVENTS_BATCH = 5        # 每批最多条数
+_EVENTS_BATCHES = 4      # 批数
+_EVENTS_TOTAL_EST = 18   # 预估总条数 (进度展示用)
 
 # 全局 httpx 客户端 (异步复用连接)
 _client: httpx.AsyncClient | None = None
+
+# 服务器后台 worker 任务引用 (main startup 启动, 防 GC; 多进程各跑一个, 靠 pg 抢占幂等)
+worker_task: asyncio.Task | None = None
 
 
 def _http_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(timeout=20.0, follow_redirects=True)
+        _client = httpx.AsyncClient(timeout=15.0, follow_redirects=True)
     return _client
 
 
@@ -160,8 +170,9 @@ def _extract_json_array(text: str) -> list[dict]:
     return out
 
 
-async def _summarize(name: str, code: str, snippets: list[dict]) -> list[dict]:
-    """调用 DeepSeek 把新闻片段总结成公司大事时间线 JSON。"""
+async def _summarize_batch(name: str, code: str, snippets: list[dict],
+                           batch_no: int, prev_titles: list[str]) -> list[dict]:
+    """调用 DeepSeek 生成一批 (≤_EVENTS_BATCH 条) 公司大事 (去重已生成标题)。"""
     from .caibao_service import _call_llm  # 复用 LLM 客户端/配置加载
     sys_prompt = (
         "你是专业的上市公司大事记编辑。用户会给你一家公司的新闻片段(可能来自搜索引擎), "
@@ -169,72 +180,146 @@ async def _summarize(name: str, code: str, snippets: list[dict]) -> list[dict]:
         "高管变动/股权变动/监管事件/重要公告等), 排除广告与无关内容。"
         "严格只输出 JSON 数组, 不要任何其他文字/解释/Markdown 围栏, 格式: "
         '[{"date":"YYYY-MM","title":"一句话标题","summary":"1~2 句摘要"}], '
-        "date 未知时用空字符串 \"\"。按 date 升序, 取 12~20 条, 标题要具体。"
+        f"date 未知时用空字符串 \"\"。本次是第 {batch_no} 批, 只输出 {_EVENTS_BATCH} 条, "
+        "必须与下方'已生成标题'不重复, 优先挑选还没覆盖的重要事件。"
     )
     segs = "\n".join(
         f"- [{s.get('date') or '??'}] {s.get('title')}  {s.get('desc') or ''}"
         for s in snippets[:18]
     )
+    prev_txt = "\n".join(f"- {t}" for t in prev_titles[:30]) or "(无)"
     user = (
         f"公司: {name} ({code})\n\n"
         f"## 搜索到的新闻片段 (可能为空/不完整)\n{segs or '(无搜索结果, 请基于公开常识生成该公司近10年重大事件)'}\n\n"
-        "请输出上述格式的 JSON 数组。"
+        f"## 已生成标题 (勿重复)\n{prev_txt}\n\n"
+        f"请输出第 {batch_no} 批 {_EVENTS_BATCH} 条事件的 JSON 数组。"
     )
     try:
         # deepseek-v4-flash 为推理模型, 需足够 max_tokens 让推理完成后再输出内容 (否则 content 为空)
-        text = await _call_llm(sys_prompt, user, max_tokens=16000)
+        text = await _call_llm(sys_prompt, user, max_tokens=8000)
     except Exception as e:
         raise RuntimeError(f"DeepSeek 总结公司大事失败: {e}")
     events = _extract_json_array(text)
     if not events:
-        # 容错: LLM 可能输出 Markdown 列表而非 JSON
-        raise RuntimeError("DeepSeek 未返回合法 JSON 数组")
+        raise RuntimeError(f"DeepSeek 第{batch_no}批未返回合法 JSON 数组")
     return events
 
 
 def is_generating(ts_code: str) -> bool:
-    return ts_code in _INFLIGHT
+    """是否正在生成 (兼容旧调用, 实际由 main 读 job 状态判断)。"""
+    return False
+
+
+async def process_job(ts_code: str, name: str = "") -> dict:
+    """处理一个生成任务: 网络搜索 + 分批 DeepSeek + 逐批入库 + 更新 job 进度。
+
+    返回 {"status": "ok"|"empty"|"error", "count": n, "message": str}。
+    """
+    if not name:
+        try:
+            from . import data_service
+            name = (await data_service.resolve_code(ts_code)).get("name", "")
+        except Exception:
+            name = ts_code.split(".")[0]
+    try:
+        await pg_service.update_stock_events_job(
+            ts_code, status="processing", total_est=_EVENTS_TOTAL_EST, last_error=None)
+        snippets = await _search_web(name, ts_code)
+        logger.info("[events] %s %s 搜索到 %d 条片段, 开始分批生成", ts_code, name, len(snippets))
+        prev_titles: set[str] = set()
+        done = 0
+        for batch_no in range(1, _EVENTS_BATCHES + 1):
+            events: list[dict] = []
+            try:
+                events = await _summarize_batch(name, ts_code, snippets,
+                                                batch_no, sorted(prev_titles))
+            except RuntimeError as e1:
+                # 搜索片段异常/无结果时降级: 让 LLM 基于常识生成
+                logger.warning("[events] %s 第%d批失败(%s), 降级基于常识重试",
+                               ts_code, batch_no, e1)
+                try:
+                    events = await _summarize_batch(name, ts_code, [], batch_no,
+                                                    sorted(prev_titles))
+                except RuntimeError as e2:
+                    # 单批失败不致命: 跳过该批继续后续 (部分成功也算完成)
+                    logger.warning("[events] %s 第%d批降级也失败(%s), 跳过该批",
+                                   ts_code, batch_no, e2)
+                    continue
+            if not events:
+                continue
+            new = [e for e in events if e["title"] not in prev_titles][:_EVENTS_BATCH]
+            if not new:
+                continue
+            prev_titles.update(e["title"] for e in new)
+            n = await pg_service.upsert_stock_events(ts_code, name, new)
+            done += n
+            await pg_service.update_stock_events_job(ts_code, done_count=done)
+            logger.info("[events] %s 第%d批入库 %d 条 (累计 %d)", ts_code, batch_no, n, done)
+        if done == 0:
+            await pg_service.update_stock_events_job(
+                ts_code, status="error", last_error="未生成到有效事件")
+            return {"status": "empty", "count": 0, "message": "未生成到有效事件"}
+        await pg_service.update_stock_events_job(ts_code, status="done", done_count=done)
+        logger.info("[events] %s %s 完成, 共 %d 条", ts_code, name, done)
+        return {"status": "ok", "count": done, "message": f"已生成 {done} 条大事"}
+    except Exception as e:
+        logger.exception("[events] %s 生成失败: %s", ts_code, e)
+        try:
+            await pg_service.update_stock_events_job(
+                ts_code, status="error", last_error=str(e)[:500])
+        except Exception:
+            pass
+        return {"status": "error", "count": 0, "message": str(e)}
+
+
+async def worker_loop(interval: float = 2.0) -> None:
+    """服务器后台任务循环: 抢占 pending job 并处理 (多进程靠 pg 抢占保证幂等)。
+
+    由 main startup 以 asyncio.create_task 启动; 即使某 worker 崩溃, job 仍在 pg,
+    其他 worker / 重启后会重新抢占处理。
+    """
+    logger.info("[events] worker 循环启动")
+    while True:
+        try:
+            job = await pg_service.claim_stock_events_job()
+            if job is None:
+                await asyncio.sleep(interval)
+                continue
+            await process_job(job["ts_code"], job.get("name") or "")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[events] worker 循环异常")
+            await asyncio.sleep(interval)
+
+
+async def enqueue_events(ts_code: str, name: str = "", force: bool = False) -> bool:
+    """把 ts_code 加入持久化任务队列 (由 worker 处理)。force=True 重置重跑。"""
+    return await pg_service.enqueue_stock_events_job(ts_code, name, force=force)
+
+
+async def enqueue_events_batch(codes: list[str], force: bool = False) -> dict:
+    """批量入队 (服务器 POST /batch_sync 用), 返回 {"queued", "total"}。"""
+    queued = 0
+    for c in codes:
+        try:
+            if await pg_service.enqueue_stock_events_job(c, "", force=force):
+                queued += 1
+        except Exception:
+            pass
+    return {"queued": queued, "total": len(codes)}
 
 
 async def sync_events(ts_code: str, name: str = "", force: bool = False) -> dict:
-    """为单只股票生成/刷新公司大事 (网络搜索 + DeepSeek 总结 + 入库)。
-
-    返回 {"status": "ok"|"empty"|"running"|"error", "count": n, "message": str}。
-    """
-    if ts_code in _INFLIGHT:
-        return {"status": "running", "count": 0, "message": "该股票正在生成中"}
-    _INFLIGHT.add(ts_code)
-    try:
-        if not name:
-            try:
-                from . import data_service
-                name = (await data_service.resolve_code(ts_code)).get("name", "")
-            except Exception:
-                name = ts_code.split(".")[0]
-        if force:
-            await pg_service.delete_stock_events(ts_code)
-        snippets = await _search_web(name, ts_code)
-        try:
-            events = await _summarize(name, ts_code, snippets)
-        except RuntimeError:
-            # 网络搜索无结果时, 让 LLM 基于常识生成 (降级, 标注来源仍为 llm)
-            events = await _summarize(name, ts_code, [])
-        if not events:
-            return {"status": "empty", "count": 0, "message": "未生成到有效事件"}
-        n = await pg_service.upsert_stock_events(ts_code, name, events)
-        return {"status": "ok", "count": n, "message": f"已生成 {n} 条大事"}
-    except Exception as e:
-        return {"status": "error", "count": 0, "message": str(e)}
-    finally:
-        _INFLIGHT.discard(ts_code)
+    """直接处理单只 (不经过队列; 供脚本/测试调用)。force=True 先清空已有大事。"""
+    if force:
+        await pg_service.delete_stock_events(ts_code)
+    return await process_job(ts_code, name)
 
 
 async def sync_events_batch(codes: list[str], force: bool = False,
                             limit: int = 0, concurrency: int = 2) -> dict:
-    """批量同步公司大事 (跳过已有, 除非 force), 返回汇总。
-
-    concurrency: DeepSeek 并发上限 (防超频/超时)。limit: 本次最多处理数 (0=不限)。
-    """
+    """批量直接处理 (脚本 sync_stock_events.py 用), 跳过已有 (除非 force), 返回汇总。"""
     if force:
         todo = list(codes)
     else:

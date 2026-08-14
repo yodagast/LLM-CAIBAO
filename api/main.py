@@ -54,6 +54,13 @@ async def _startup() -> None:
         await pg_service.init_custom_strategy_schema()
         await pg_service.init_invest_ideas_schema()
         await pg_service.init_stock_events_schema()
+        await pg_service.init_stock_events_jobs_schema()
+        # 启动公司大事生成 worker (持久化任务队列, 多进程靠 pg 抢占安全)
+        try:
+            if events_service.worker_task is None or events_service.worker_task.done():
+                events_service.worker_task = asyncio.create_task(events_service.worker_loop())
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -466,8 +473,8 @@ async def stock_kline(code: str, freq: str = Query("D", description="周期: D�
 async def stock_events(code: str) -> dict:
     """公司大事列表 (来自本地 pgsql stock_events)。
 
-    已生成则直接返回; 未生成时后台自动触发一次生成 (网络搜索 + DeepSeek 总结),
-    返回 generating=true 供前端轮询。ETF/港股返回空 (不生成)。
+    未生成时把任务写入持久化队列 (stock_events_jobs), 由后台 worker 处理;
+    返回 generating/done/total/last_error 供前端展示进度与错误。ETF/港股不生成。
     """
     try:
         info = await data_service.resolve_code(code)
@@ -481,17 +488,37 @@ async def stock_events(code: str) -> dict:
         items = await pg_service.get_stock_events(ts)
     except Exception:
         items = []
-    generating = events_service.is_generating(ts)
-    # 未生成且不是基金/港股 → 后台自动生成一次
-    if not items and not generating and info.get("kind") != "fund" and not ts.endswith(".HK"):
-        generating = True
-        asyncio.create_task(events_service.sync_events(ts, info.get("name", "")))
-    return {"ts_code": ts, "name": info.get("name", ""), "items": items, "generating": generating}
+    job = None
+    generating = False
+    if info.get("kind") != "fund" and not ts.endswith(".HK"):
+        try:
+            job = await pg_service.get_stock_events_job(ts)
+        except Exception:
+            job = None
+        if not items:
+            # 无任务 或 已结束(error/empty) → 重新入队
+            if job is None or job["status"] in ("done", "error"):
+                await events_service.enqueue_events(ts, info.get("name", ""))
+                try:
+                    job = await pg_service.get_stock_events_job(ts)
+                except Exception:
+                    job = None
+        if job:
+            generating = job["status"] in ("pending", "processing")
+    return {
+        "ts_code": ts,
+        "name": info.get("name", ""),
+        "items": items,
+        "generating": generating,
+        "done": (job["done_count"] if job else 0) or len(items),
+        "total": (job["total_est"] if job else 0) or 0,
+        "last_error": (job["last_error"] if job else "") or "",
+    }
 
 
 @app.post("/api/stock/events/{code}/sync")
 async def stock_events_sync(code: str, force: bool = True) -> dict:
-    """重新生成某股票的公司大事 (网络搜索 + DeepSeek 总结 + 入库, 后台执行)。"""
+    """重新生成某股票的公司大事 (写入持久化队列, 后台 worker 处理)。"""
     try:
         info = await data_service.resolve_code(code)
     except ValueError as e:
@@ -499,23 +526,22 @@ async def stock_events_sync(code: str, force: bool = True) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
     ts = info["ts_code"]
-    asyncio.create_task(events_service.sync_events(ts, info.get("name", ""), force=force))
-    return {"status": "started", "ts_code": ts}
+    await events_service.enqueue_events(ts, info.get("name", ""), force=force)
+    return {"status": "queued", "ts_code": ts}
 
 
 @app.post("/api/stock/events/batch_sync")
 async def stock_events_batch_sync(force: bool = False, limit: int = 0) -> dict:
-    """批量生成目标股票列表 (我的股票 ∪ 策略Hub股票) 的公司大事 (后台执行)。
-
-    用于每日定时任务/手动触发; 默认只处理缺失大事的股票, force=1 全量重新生成。
-    """
+    """批量入队目标股票列表 (我的股票 ∪ 策略Hub股票) 的公司大事生成 (后台 worker 处理)。"""
     try:
         codes = await pg_service.target_sync_codes()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取目标列表失败: {e}")
     stock_codes = [c for c in codes if not c.endswith(".HK") and not _is_fund_ts(c)]
-    asyncio.create_task(events_service.sync_events_batch(stock_codes, force=force, limit=int(limit)))
-    return {"status": "started", "total": len(stock_codes)}
+    if limit and limit > 0:
+        stock_codes = stock_codes[:int(limit)]
+    res = await events_service.enqueue_events_batch(stock_codes, force=force)
+    return {"status": "queued", **res}
 
 
 @app.post("/api/backtest")

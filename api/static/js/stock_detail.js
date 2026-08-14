@@ -378,21 +378,35 @@
     const items = data.items || [];
     const syncBtn = $("#events-sync-btn");
     if (data.generating) {
+      // 生成中: 展示进度 (分批生成, done 条已入库, 陆续更新)
       listEl.className = "events-empty";
-      listEl.innerHTML = '<span class="spin"></span>正在生成公司大事 (网络搜索 + AI 总结), 约需 10~30 秒, 请稍候…';
-      if (statusEl) statusEl.textContent = "首次访问, 自动生成中…";
+      const done = data.done || 0;
+      const total = data.total || 0;
+      const prog = total ? `已生成 ${done} / ${total} 条` : `已生成 ${done} 条`;
+      listEl.innerHTML = `<span class="spin"></span>正在生成公司大事 (网络搜索 + AI 分批总结)…<br/>${prog}${done ? " · 已生成部分会陆续显示" : ""}`;
+      if (statusEl) statusEl.textContent = "生成中, 请稍候…";
       if (syncBtn) syncBtn.disabled = true;
       return;
     }
     if (syncBtn) syncBtn.disabled = false;
     if (!items.length) {
+      // 无结果: 有错误则展示错误 (服务器可定位), 否则提示可重新生成
+      if (data.last_error) {
+        listEl.className = "events-error";
+        listEl.textContent = "生成失败: " + data.last_error + " (可点击右上角「重新生成」重试)";
+        if (statusEl) statusEl.textContent = "";
+        return;
+      }
       listEl.className = "events-empty";
       listEl.textContent = "暂无公司大事, 可点击右上角「重新生成」拉取并总结。";
       if (statusEl) statusEl.textContent = "";
       return;
     }
     listEl.className = "";
-    if (statusEl) statusEl.textContent = `共 ${items.length} 条 · AI 总结 (网络搜索) · 按时间倒序`;
+    if (statusEl) {
+      statusEl.textContent = `共 ${items.length} 条 · AI 总结 (网络搜索) · 按时间倒序` +
+        (data.last_error ? ` · <span style="color:var(--red)">上次生成异常: ${escapeHtml(data.last_error)}</span>` : "");
+    }
     listEl.innerHTML = `<ul class="timeline">` + items.map((it) => `
       <li>
         <div class="ev-date">${it.event_date || "日期未知"}</div>

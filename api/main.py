@@ -24,6 +24,7 @@ from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvo
 from . import invest_ideas_service, strategy_service
 from . import alpha158_service
 from . import portfolio_service
+from . import events_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -46,10 +47,13 @@ async def _startup() -> None:
         await pg_service.init_hk_rlv_schema()
         await pg_service.init_hk_fundamental_schema()
         await pg_service.init_alpha158_schema()
+        await pg_service.init_daily_basic_schema()
+        await pg_service.init_dividend_schema()
         await pg_service.init_etf_schema()
         await pg_service.init_auth_schema()
         await pg_service.init_custom_strategy_schema()
         await pg_service.init_invest_ideas_schema()
+        await pg_service.init_stock_events_schema()
     except Exception:
         pass
 
@@ -90,6 +94,11 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(key=SESSION_COOKIE, path="/")
+
+
+def _is_fund_ts(ts_code: str) -> bool:
+    """判断 ts_code 是否为基金/ETF (前缀判断)。"""
+    return ts_code.split(".")[0].startswith(data_service.FUND_PREFIXES)
 
 # 静态资源 (前端页面)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -451,6 +460,62 @@ async def stock_kline(code: str, freq: str = Query("D", description="周期: D�
         raise HTTPException(status_code=500, detail=f"获取 K 线失败: {e}")
 
     return {"info": info, "freq": freq, "adj": adj, "count": len(bars), "bars": bars}
+
+
+@app.get("/api/stock/events/{code}")
+async def stock_events(code: str) -> dict:
+    """公司大事列表 (来自本地 pgsql stock_events)。
+
+    已生成则直接返回; 未生成时后台自动触发一次生成 (网络搜索 + DeepSeek 总结),
+    返回 generating=true 供前端轮询。ETF/港股返回空 (不生成)。
+    """
+    try:
+        info = await data_service.resolve_code(code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
+
+    ts = info["ts_code"]
+    try:
+        items = await pg_service.get_stock_events(ts)
+    except Exception:
+        items = []
+    generating = events_service.is_generating(ts)
+    # 未生成且不是基金/港股 → 后台自动生成一次
+    if not items and not generating and info.get("kind") != "fund" and not ts.endswith(".HK"):
+        generating = True
+        asyncio.create_task(events_service.sync_events(ts, info.get("name", "")))
+    return {"ts_code": ts, "name": info.get("name", ""), "items": items, "generating": generating}
+
+
+@app.post("/api/stock/events/{code}/sync")
+async def stock_events_sync(code: str, force: bool = True) -> dict:
+    """重新生成某股票的公司大事 (网络搜索 + DeepSeek 总结 + 入库, 后台执行)。"""
+    try:
+        info = await data_service.resolve_code(code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解析股票代码失败: {e}")
+    ts = info["ts_code"]
+    asyncio.create_task(events_service.sync_events(ts, info.get("name", ""), force=force))
+    return {"status": "started", "ts_code": ts}
+
+
+@app.post("/api/stock/events/batch_sync")
+async def stock_events_batch_sync(force: bool = False, limit: int = 0) -> dict:
+    """批量生成目标股票列表 (我的股票 ∪ 策略Hub股票) 的公司大事 (后台执行)。
+
+    用于每日定时任务/手动触发; 默认只处理缺失大事的股票, force=1 全量重新生成。
+    """
+    try:
+        codes = await pg_service.target_sync_codes()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取目标列表失败: {e}")
+    stock_codes = [c for c in codes if not c.endswith(".HK") and not _is_fund_ts(c)]
+    asyncio.create_task(events_service.sync_events_batch(stock_codes, force=force, limit=int(limit)))
+    return {"status": "started", "total": len(stock_codes)}
 
 
 @app.post("/api/backtest")

@@ -392,14 +392,89 @@ def _cache_put(cache: dict, key: str, value) -> None:
     cache[key] = (time.time(), value)
 
 
+async def _pg_daily_basic_df(ts_code: str, start_date: str, end_date: str) -> pd.DataFrame | None:
+    """从本地 stock_daily_basic 读取估值/换手率; 覆盖足够时返回 DataFrame, 否则 None。
+
+    返回 df 列: trade_date(YYYYMMDD) / close / pb / pe / pe_ttm / total_share /
+    float_share / total_mv / circ_mv / dv_ratio / dv_ttm / turnover_rate。
+    """
+    from . import pg_service
+    symbol = str(ts_code)  # 完整 ts_code (带后缀), 与 stock_daily_bars 一致
+    try:
+        stats = await pg_service.daily_basic_stats(symbol)
+    except Exception:
+        return None
+    if not stats or stats["n"] < 30:
+        return None
+    s = (start_date or "20000101")[:8]
+    e = (end_date or datetime.now().strftime("%Y%m%d"))[:8]
+    mn = stats["min_date"].replace("-", "")[:8]
+    mx = stats["max_date"].replace("-", "")[:8]
+    if mn > _add_days(s, 400):
+        return None
+    if mx < _add_days(e, -45):
+        return None
+    try:
+        rows = await pg_service.query_daily_basic(symbol, s, e)
+    except Exception:
+        return None
+    if not rows or len(rows) < 20:
+        return None
+    df = pd.DataFrame(rows)
+    df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "")
+    for c in ("close", "pb", "pe", "pe_ttm", "total_share", "float_share",
+              "total_mv", "circ_mv", "dv_ratio", "dv_ttm", "turnover_rate"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df.attrs["data_source"] = "pg"
+    return df
+
+
+async def _backfill_daily_basic_one(ts_code: str, df: pd.DataFrame) -> None:
+    """把 tushare daily_basic 回填到本地 stock_daily_basic (幂等 upsert)。"""
+    from . import pg_service
+    symbol = str(ts_code)  # 完整 ts_code (带后缀)
+    rows = []
+    for _, r in df.iterrows():
+        td = str(r["trade_date"])
+        try:
+            d = datetime.strptime(td[:8], "%Y%m%d").date()
+        except (ValueError, TypeError):
+            continue
+        rows.append((symbol, d, _to_float(r.get("close")), _to_float(r.get("pb")),
+                     _to_float(r.get("pe")), _to_float(r.get("pe_ttm")),
+                     _to_float(r.get("total_share")), _to_float(r.get("float_share")),
+                     _to_float(r.get("total_mv")), _to_float(r.get("circ_mv")),
+                     _to_float(r.get("dv_ratio")), _to_float(r.get("dv_ttm")),
+                     _to_float(r.get("turnover_rate"))))
+    if rows:
+        await pg_service.upsert_daily_basic_rows(rows)
+
+
 async def _get_daily_basic(pro, ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """daily_basic 全历史窗口带缓存 (15 分钟 TTL), 避免详情页每次重复拉取。"""
+    """daily_basic 全历史窗口: 优先本地 pgsql (stock_daily_basic), 缺失时 tushare 并回填。
+
+    带 15 分钟内存缓存。本地已有估值/换手率时不再打 tushare (详情页提速关键)。
+    """
     hit = _cache_get(_DAILY_BASIC_CACHE, ts_code, _TTL_DAILY_BASIC)
     if hit is not None:
         return hit
+    try:
+        pg_df = await _pg_daily_basic_df(ts_code, start_date, end_date)
+        if pg_df is not None and not pg_df.empty:
+            _cache_put(_DAILY_BASIC_CACHE, ts_code, pg_df)
+            return pg_df
+    except Exception:
+        pass
     b = await pro.daily_basic(
         ts_code=ts_code, start_date=start_date, end_date=end_date,
         fields="trade_date,close,pb,pe,pe_ttm,total_share,float_share,total_mv,circ_mv,dv_ratio,dv_ttm,turnover_rate")
+    if b is not None and not b.empty:
+        # 回填本地 pg (后台异步, 不阻塞本次响应)
+        try:
+            asyncio.create_task(_backfill_daily_basic_one(ts_code, b))
+        except Exception:
+            pass
     _cache_put(_DAILY_BASIC_CACHE, ts_code, b)
     return b
 
@@ -462,12 +537,76 @@ async def _get_hk_daily(ts_code: str, start_date: str, end_date: str,
     return out
 
 
+def _add_days(ymd: str, days: int) -> str:
+    """YYYYMMDD 加/减 N 天 (用于覆盖性判断)。"""
+    try:
+        return (datetime.strptime(ymd[:8], "%Y%m%d") + timedelta(days=days)).strftime("%Y%m%d")
+    except (ValueError, TypeError):
+        return ymd
+
+
+async def _pg_daily_df(symbol: str, start_date: str, end_date: str, adj_key: str) -> pd.DataFrame | None:
+    """从本地 pgsql stock_daily_bars 读取日线; 覆盖足够时返回 DataFrame (含 turnover_rate), 否则 None。
+
+    这是「前端优先从 pgsql 加载」的核心: 本地已有数据时不再打 tushare。
+    symbol 为完整 ts_code (如 600036.SH), 与 alpha158 写入约定一致。
+    adj_key: "" 原始价 / "qfq" 前复权 / "hfq" 后复权 (用 adj_factor 重建)。
+    返回 df 带 attrs["data_source"]="pg", 供接口透出数据源。
+    """
+    from . import pg_service
+    try:
+        stats = await pg_service.daily_bars_stats(symbol)
+    except Exception:
+        return None
+    if not stats or stats["n"] < 60:
+        return None
+    s = (start_date or "20000101")[:8]
+    e = (end_date or datetime.now().strftime("%Y%m%d"))[:8]
+    # 覆盖性: 本地最早日不晚于请求起始+400天, 最晚日不早于请求结束-45天
+    # (stats 中 min/max 为 date 类型, 转 str 形如 'YYYY-MM-DD', 先去横线)
+    mn = stats["min_date"].replace("-", "")[:8]
+    mx = stats["max_date"].replace("-", "")[:8]
+    if mn > _add_days(s, 400):
+        return None
+    if mx < _add_days(e, -45):
+        return None
+    try:
+        rows = await pg_service.query_daily_bars(symbol, s, e)
+    except Exception:
+        return None
+    if not rows or len(rows) < 30:
+        return None
+    df = pd.DataFrame(rows)
+    df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "")
+    for c in ("open", "high", "low", "close", "pre_close", "pct_chg", "vol", "amount",
+              "adj_factor", "turnover_rate"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.sort_values("trade_date").reset_index(drop=True)
+    if adj_key in ("qfq", "hfq"):
+        has_af = "adj_factor" in df.columns and df["adj_factor"].notna().any()
+        if has_af:
+            df["adj_factor"] = df["adj_factor"].ffill()
+            last_af = df["adj_factor"].iloc[-1]
+            factor = (df["adj_factor"] / last_af) if adj_key == "qfq" else df["adj_factor"]
+            for c in ("open", "high", "low", "close"):
+                df[c] = df[c] * factor
+            df["pre_close"] = df["close"].shift(1).fillna(df["close"])
+        elif adj_key == "qfq":
+            df["close"] = _adj_close(df)
+            df["pre_close"] = df["close"].shift(1).fillna(df["close"])
+    df.attrs["data_source"] = "pg"
+    return df
+
+
 async def get_daily(ts_code: str, kind: str = "stock",
                     start_date: str = "20170101", end_date: str = "",
                     adj: str = "") -> pd.DataFrame:
     """获取单只股票/ETF/港股 日线 (trade_date 升序), 带内存缓存。
 
-    adj: "" 不复权(原始价格) / "qfq" 前复权 (A股用 pct_chg 重建; 港股无可靠前复权, 返回原始价)。
+    优先从本地 pgsql (stock_daily_bars) 加载 (前端优先从库读取); 本地无数据时回退 tushare。
+    adj: "" 不复权(原始价格) / "qfq" 前复权 / "hfq" 后复权 (A股用复权因子或 pct_chg 重建;
+    港股无可靠前复权, 返回原始价)。
     回测/收益计算建议用 "qfq" (A股); 港股回测用原始价 (数据源限制)。
     """
     end_date = end_date or datetime.now().strftime("%Y%m%d")
@@ -483,6 +622,15 @@ async def get_daily(ts_code: str, kind: str = "stock",
         df = df.sort_values("trade_date").reset_index(drop=True)
         _DAILY_CACHE[cache_key] = (time.time(), df)
         return df
+
+    # 优先本地 pgsql (前端优先从库加载)
+    try:
+        pg_df = await _pg_daily_df(ts_code, start_date, end_date, adj_key)
+        if pg_df is not None and not pg_df.empty:
+            _DAILY_CACHE[cache_key] = (time.time(), pg_df)
+            return pg_df
+    except Exception:
+        pass
 
     pro = _init_pro()
     df = pd.DataFrame()
@@ -506,6 +654,7 @@ async def get_daily(ts_code: str, kind: str = "stock",
         df = df.copy()
         df["close"] = _adj_close(df)
         df["pre_close"] = df["close"].shift(1).fillna(df["close"])
+    df.attrs["data_source"] = "tushare"
     _DAILY_CACHE[cache_key] = (time.time(), df)
     return df
 
@@ -517,6 +666,76 @@ async def get_quote(ts_code: str, kind: str = "stock", days: int = 120) -> pd.Da
     start = (datetime.now() - timedelta(days=int(days * 2.5) + 30)).strftime("%Y%m%d")
     df = await get_daily(ts_code, kind, start_date=start, end_date=end_date)
     return df.tail(days).reset_index(drop=True)
+
+
+def _df_to_bars(df: pd.DataFrame) -> list[dict]:
+    """把日线 df (trade_date/OHLC/pre_close/pct_chg/vol/amount/turnover_rate) 转成 K线 bars。"""
+    bars = []
+    for _, row in df.iterrows():
+        td = str(row["trade_date"])
+        pre = _to_float(row.get("pre_close"))
+        hi = float(row["high"])
+        lo = float(row["low"])
+        amp = ((hi - lo) / pre * 100.0) if (pre and pre > 0) else None
+        bars.append({
+            "date": td,
+            "open": float(row["open"]),
+            "high": hi,
+            "low": lo,
+            "close": float(row["close"]),
+            "pre_close": pre,
+            "change": _to_float(row.get("change")),
+            "pct_chg": float(row.get("pct_chg", 0.0) or 0.0),
+            "vol": float(row.get("vol", 0.0) or 0.0),
+            "amount": _to_float(row.get("amount")),
+            "amplitude": amp,
+            "turnover_rate": _to_float(row.get("turnover_rate")),
+        })
+    return bars
+
+
+def _df_to_agg_bars(df: pd.DataFrame, freq: str) -> list[dict]:
+    """把日线 df 聚合成 周线(W)/月线(M) bars (同 _hk_kline 聚合口径, 支持复权后价格)。"""
+    d = df.copy()
+    d["_dt"] = pd.to_datetime(d["trade_date"], format="%Y%m%d")
+    rule = "W" if freq.upper() == "W" else "ME"
+    g = d.set_index("_dt").resample(rule)
+    agg = pd.DataFrame({
+        "trade_date": g["trade_date"].last().values,
+        "open": g["open"].first().values,
+        "high": g["high"].max().values,
+        "low": g["low"].min().values,
+        "close": g["close"].last().values,
+        "vol": g["vol"].sum().values,
+        "amount": g["amount"].sum().values,
+        "pre_close": g["pre_close"].last().values,
+    }).dropna(subset=["close"])
+    bars = []
+    prev = None
+    for _, row in agg.iterrows():
+        td = str(row["trade_date"])
+        close = float(row["close"])
+        pre = prev if prev is not None else close
+        hi = float(row["high"])
+        lo = float(row["low"])
+        amp = ((hi - lo) / pre * 100.0) if pre and pre > 0 else None
+        pct = (close / pre - 1) * 100.0 if pre and pre > 0 else 0.0
+        bars.append({
+            "date": td,
+            "open": float(row["open"]),
+            "high": hi,
+            "low": lo,
+            "close": close,
+            "pre_close": pre,
+            "change": close - pre,
+            "pct_chg": round(pct, 4),
+            "vol": float(row.get("vol") or 0),
+            "amount": _to_float(row.get("amount")),
+            "amplitude": amp,
+            "turnover_rate": None,
+        })
+        prev = close
+    return bars
 
 
 async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
@@ -532,6 +751,17 @@ async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str
 
     end = end_date or datetime.now().strftime("%Y%m%d")
     start = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
+
+    # 优先本地 pgsql: D/W/M 全部基于本地日线构建 (W/M 由日线 resample 聚合, 不再打 tushare)
+    try:
+        pg_df = await _pg_daily_df(ts_code, start, end, (adj or "").strip().lower())
+        if pg_df is not None and not pg_df.empty:
+            if freq.upper() == "D":
+                return _df_to_bars(pg_df)
+            return _df_to_agg_bars(pg_df, freq.upper())
+    except Exception:
+        pass
+
     adj_param = adj.strip() or None
     pro = _init_pro()
     # 并发: pro_bar 与 daily_basic(换手率) 相互独立 (切换周期/复权时避免串行叠加延迟)
@@ -782,6 +1012,7 @@ async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
         "week52_low": week52_low,
         "hist_years": hist_years,
         "bars_count": len(bars),
+        "data_source": df.attrs.get("data_source", "tushare"),
         "quote": quote,
         "pb": pb,
         "pe": pe,
@@ -897,6 +1128,7 @@ async def _get_hk_stock_detail(ts_code: str, days: int = 250,
         "week52_low": week52_low,
         "hist_years": hist_years,
         "bars_count": len(bars),
+        "data_source": "hk" if str(ts_code).endswith(".HK") else "tushare",
         "quote": quote,
         "pb": pb,
         "pe": pe,
@@ -1221,27 +1453,13 @@ async def _annual_div_per_share(pro, ts_code: str, year: int) -> float | None:
     return mx if mx > 0 else None
 
 
-async def _dividend_latest(pro, ts_code: str) -> dict | None:
-    """获取单只股票最近分红年度每股现金红利之和 (带 1h TTL 缓存)。"""
-    hit = _DIVIDEND_CACHE.get(ts_code)
-    if hit and (time.time() - hit[0]) < _TTL_DIVIDEND:
-        return hit[1]
-    result = await _dividend_latest_uncached(pro, ts_code)
-    _DIVIDEND_CACHE[ts_code] = (time.time(), result)
-    return result
-
-
-async def _dividend_latest_uncached(pro, ts_code: str) -> dict | None:
-    """(无缓存) 获取单只股票最近一个分红年度全部已实施每股现金红利之和 (元)。
+def _calc_latest_dividend(dv: pd.DataFrame) -> dict | None:
+    """从分红明细 df (含 end_date/div_proc/cash_div) 计算最近分红年度每股现金红利之和 (元)。
 
     按 end_date 年份聚合'实施'记录求和 (解决一年多次分红低估), 取最近有实施记录
     的年份; 若无实施记录则退回全部记录中 cash_div 最大那条。
     返回 {"end_date": "YYYY1231", "cash_div": 全年每股现金红利}。
     """
-    try:
-        dv = await pro.dividend(ts_code=ts_code)
-    except Exception:
-        return None
     if dv is None or dv.empty:
         return None
     dv = dv.copy()
@@ -1264,3 +1482,218 @@ async def _dividend_latest_uncached(pro, ts_code: str) -> dict | None:
     best = dv.loc[dv["_cash"].idxmax()]
     val = float(best["_cash"])
     return {"end_date": str(best.get("end_date") or ""), "cash_div": val if val > 0 else None}
+
+
+async def _backfill_dividend_one(ts_code: str, dv: pd.DataFrame) -> None:
+    """把 tushare dividend 明细回填到本地 stock_dividends (幂等 upsert)。"""
+    from . import pg_service
+    symbol = str(ts_code)  # 完整 ts_code (带后缀)
+    rows = []
+    for _, r in dv.iterrows():
+        rows.append((symbol, str(r.get("end_date") or "")[:10], str(r.get("div_proc") or "")[:16],
+                     _to_float(r.get("cash_div")), _to_float(r.get("stk_div")),
+                     _to_float(r.get("stk_bo_rate")), str(r.get("ann_date") or "")[:10],
+                     str(r.get("record_date") or "")[:10], str(r.get("ex_date") or "")[:10],
+                     str(r.get("pay_date") or "")[:10]))
+    if rows:
+        await pg_service.upsert_dividend_rows(rows)
+
+
+async def _dividend_latest(pro, ts_code: str) -> dict | None:
+    """获取单只股票最近分红年度每股现金红利之和 (带 1h TTL 缓存)。"""
+    hit = _DIVIDEND_CACHE.get(ts_code)
+    if hit and (time.time() - hit[0]) < _TTL_DIVIDEND:
+        return hit[1]
+    result = await _dividend_latest_uncached(pro, ts_code)
+    _DIVIDEND_CACHE[ts_code] = (time.time(), result)
+    return result
+
+
+async def _dividend_latest_uncached(pro, ts_code: str) -> dict | None:
+    """(无缓存) 获取最近分红年度每股现金红利之和: 优先本地 pg stock_dividends, 否则 tushare 并回填。"""
+    from . import pg_service
+    symbol = str(ts_code)  # 完整 ts_code (带后缀)
+    try:
+        rows = await pg_service.query_dividends(symbol)
+    except Exception:
+        rows = []
+    if rows:
+        return _calc_latest_dividend(pd.DataFrame(rows))
+    try:
+        dv = await pro.dividend(ts_code=ts_code)
+    except Exception:
+        return None
+    if dv is None or dv.empty:
+        return None
+    # 回填本地 pg (后台异步, 不阻塞本次响应)
+    try:
+        asyncio.create_task(_backfill_dividend_one(ts_code, dv))
+    except Exception:
+        pass
+    return _calc_latest_dividend(dv)
+
+
+# ---------------------------------------------------------------------------
+# 本地日线/财务 持久化回填 (目标列表: 我的股票 ∪ 策略Hub股票 ∪ ETF)
+# ---------------------------------------------------------------------------
+
+def _classify_ts_code(ts_code: str) -> str:
+    """判断 ts_code 类型: stock / fund (与 _is_fund_code 一致)。"""
+    return "fund" if _is_fund_code(str(ts_code)) else "stock"
+
+
+async def backfill_daily_bars(targets: list[dict], years: int = 10,
+                              concurrency: int = 4) -> dict:
+    """把目标股票/ETF 最近 N 年日线(原始价+复权因子+换手率)同步到本地 stock_daily_bars。
+
+    targets: [{"ts_code": "600036.SH", "kind": "stock"|"fund"}, ...]
+    返回 {"ok": 同步成功数, "skip": 跳过/失败数, "rows": 写入行数, "errors": [...]}。
+    供 scripts/sync_local_bars.py 与每日定时任务调用 (幂等 upsert, 可重复续跑)。
+    """
+    from . import pg_service
+    await pg_service.init_alpha158_schema()  # 确保日线表存在 (含 kind 列)
+    await pg_service.init_daily_basic_schema()  # 估值/换手率表
+    await pg_service.init_dividend_schema()     # 分红明细表
+    end_date = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=int(years * 365.25) + 10)).strftime("%Y%m%d")
+    sem = asyncio.Semaphore(concurrency)
+    summary = {"ok": 0, "skip": 0, "rows": 0, "errors": []}
+
+    def _d(v):
+        if v is None:
+            return None
+        s = str(v)[:10]
+        try:
+            return datetime.strptime(s, "%Y%m%d").date()
+        except ValueError:
+            return None
+
+    def _n(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if f != f else f
+        except (TypeError, ValueError):
+            return None
+
+    async def _one(t: dict):
+        ts_code = t["ts_code"]
+        kind = t.get("kind") or _classify_ts_code(ts_code)
+        symbol = str(ts_code)  # 与 alpha158 约定一致: symbol = 完整 ts_code (带后缀)
+        async with sem:
+            try:
+                pro = _init_pro()
+                df = await pro.daily(ts_code=ts_code, start_date=start, end_date=end_date)
+                if df is None or df.empty:
+                    if kind == "fund":
+                        df = await pro.fund_daily(ts_code=ts_code, start_date=start, end_date=end_date)
+                    else:
+                        df = await pro.fund_daily(ts_code=ts_code, start_date=start, end_date=end_date)
+                if df is None or df.empty:
+                    summary["skip"] += 1
+                    return
+                df = df.sort_values("trade_date").reset_index(drop=True)
+                # 复权因子 (ETF 同样支持 adj_factor; 失败则为空字典)
+                adj_map: dict = {}
+                try:
+                    af = await pro.adj_factor(ts_code=ts_code, start_date=start, end_date=end_date)
+                    if af is not None and not af.empty:
+                        adj_map = {str(r["trade_date"]): float(r["adj_factor"])
+                                   for _, r in af.iterrows()}
+                except Exception:
+                    adj_map = {}
+                # 估值/换手率 (daily_basic, ETF 可能无 → 空) + 一并入库 stock_daily_basic
+                tr_map: dict = {}
+                basic_rows: list = []
+                try:
+                    tb = await pro.daily_basic(
+                        ts_code=ts_code, start_date=start, end_date=end_date,
+                        fields="trade_date,close,pb,pe,pe_ttm,total_share,float_share,total_mv,circ_mv,dv_ratio,dv_ttm,turnover_rate")
+                    if tb is not None and not tb.empty:
+                        tr_map = {str(r["trade_date"]): _n(r.get("turnover_rate"))
+                                  for _, r in tb.iterrows()}
+                        for _, r in tb.iterrows():
+                            td = str(r["trade_date"])
+                            basic_rows.append((symbol, _d(td), _n(r.get("close")),
+                                               _n(r.get("pb")), _n(r.get("pe")),
+                                               _n(r.get("pe_ttm")),
+                                               _n(r.get("total_share")), _n(r.get("float_share")),
+                                               _n(r.get("total_mv")), _n(r.get("circ_mv")),
+                                               _n(r.get("dv_ratio")), _n(r.get("dv_ttm")),
+                                               _n(r.get("turnover_rate"))))
+                except Exception:
+                    tr_map = {}
+                # 分红明细 → 一并入库 stock_dividends
+                div_rows: list = []
+                try:
+                    dv = await pro.dividend(ts_code=ts_code)
+                    if dv is not None and not dv.empty:
+                        for _, r in dv.iterrows():
+                            div_rows.append((symbol, str(r.get("end_date") or "")[:10],
+                                             str(r.get("div_proc") or "")[:16],
+                                             _n(r.get("cash_div")), _n(r.get("stk_div")),
+                                             _n(r.get("stk_bo_rate")),
+                                             str(r.get("ann_date") or "")[:10],
+                                             str(r.get("record_date") or "")[:10],
+                                             str(r.get("ex_date") or "")[:10],
+                                             str(r.get("pay_date") or "")[:10]))
+                except Exception:
+                    div_rows = []
+
+                rows = []
+                for _, r in df.iterrows():
+                    td = str(r["trade_date"])
+                    vol = _n(r.get("vol"))
+                    amount = _n(r.get("amount"))
+                    vwap = (amount * 10.0 / vol) if (vol and amount and vol > 0) else None
+                    rows.append((symbol, kind, _d(td), _n(r.get("open")), _n(r.get("high")),
+                                 _n(r.get("low")), _n(r.get("close")), _n(r.get("pre_close")),
+                                 _n(r.get("pct_chg")), vol, amount, vwap,
+                                 adj_map.get(td), tr_map.get(td)))
+                n = await pg_service.upsert_daily_bars(rows)
+                if basic_rows:
+                    await pg_service.upsert_daily_basic_rows(basic_rows)
+                if div_rows:
+                    await pg_service.upsert_dividend_rows(div_rows)
+                summary["ok"] += 1
+                summary["rows"] += n
+            except Exception as e:
+                summary["skip"] += 1
+                summary["errors"].append({"ts_code": ts_code, "msg": str(e)[:120]})
+
+    await asyncio.gather(*(_one(t) for t in targets))
+    return summary
+
+
+async def backfill_missing_financial(targets: list[dict], years: list[int] | None = None) -> dict:
+    """为目标 A股 中缺少财务数据 (financial_data) 的股票补齐年度财务数据。
+
+    targets: [{"ts_code":..., "kind":...}]。ETF/港股跳过。
+    返回 {"ok": 补齐数, "skip": 跳过数, "errors": [...]}。
+    """
+    from . import pg_service
+    if not years:
+        cur = datetime.now().year
+        years = list(range(cur - 8, cur + 1))
+    summary = {"ok": 0, "skip": 0, "errors": []}
+    for t in targets:
+        ts_code = t["ts_code"]
+        kind = t.get("kind") or _classify_ts_code(ts_code)
+        if kind != "stock" or str(ts_code).endswith(".HK"):
+            summary["skip"] += 1
+            continue
+        try:
+            if await pg_service.has_any_financial(ts_code):
+                summary["skip"] += 1
+                continue
+            from . import caibao_service
+            n = await caibao_service.sync_stock_financial(ts_code, years)
+            if n:
+                summary["ok"] += 1
+            else:
+                summary["skip"] += 1
+        except Exception as e:
+            summary["skip"] += 1
+            summary["errors"].append({"ts_code": ts_code, "msg": str(e)[:120]})
+    return summary

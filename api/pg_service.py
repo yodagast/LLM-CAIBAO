@@ -1066,6 +1066,233 @@ async def init_alpha158_schema() -> None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(ALPHA158_SCHEMA_DDL)
+        # 迁移: 新增 kind 列 (stock 股票 / fund ETF), 供本地日线持久化区分数据源
+        await conn.execute("ALTER TABLE stock_daily_bars ADD COLUMN IF NOT EXISTS kind VARCHAR(8) DEFAULT 'stock';")
+        # 迁移: 新增 updated_at (upsert 通用 SQL 需要该列)
+        await conn.execute("ALTER TABLE stock_daily_bars ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now();")
+
+
+_DAILY_BARS_COLS = [
+    "symbol", "kind", "trade_date", "open", "high", "low", "close",
+    "pre_close", "pct_chg", "vol", "amount", "vwap", "adj_factor", "turnover_rate",
+]
+_DAILY_BARS_UPSERT_SQL = _upsert_sql("stock_daily_bars", _DAILY_BARS_COLS, ("symbol", "trade_date"))
+
+
+# ---------------------------------------------------------------------------
+# 本地估值/换手率表 stock_daily_basic (daily_basic 持久化, 详情页 PB/PE/市值/换手率)
+# ---------------------------------------------------------------------------
+
+DAILY_BASIC_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS stock_daily_basic (
+    id            BIGSERIAL PRIMARY KEY,
+    symbol        VARCHAR(16)  NOT NULL,
+    trade_date    DATE         NOT NULL,
+    close         NUMERIC(14,4),
+    pb            NUMERIC(14,4),
+    pe            NUMERIC(14,4),
+    pe_ttm        NUMERIC(14,4),
+    total_share   NUMERIC(20,4),   -- 总股本(万股)
+    float_share   NUMERIC(20,4),   -- 流通股本(万股)
+    total_mv      NUMERIC(24,4),   -- 总市值(万元)
+    circ_mv       NUMERIC(24,4),   -- 流通市值(万元)
+    dv_ratio      NUMERIC(10,4),   -- 股息率 %
+    dv_ttm        NUMERIC(10,4),   -- 股息率-TTM %
+    turnover_rate NUMERIC(10,4),   -- 换手率 %
+    updated_at    TIMESTAMP DEFAULT now(),
+    UNIQUE (symbol, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_sdb_symbol_date ON stock_daily_basic (symbol, trade_date);
+"""
+
+DAILY_BASIC_COLS = [
+    "symbol", "trade_date", "close", "pb", "pe", "pe_ttm", "total_share",
+    "float_share", "total_mv", "circ_mv", "dv_ratio", "dv_ttm", "turnover_rate",
+]
+_DAILY_BASIC_UPSERT_SQL = _upsert_sql("stock_daily_basic", DAILY_BASIC_COLS, ("symbol", "trade_date"))
+
+
+async def init_daily_basic_schema() -> None:
+    """创建 stock_daily_basic 表与索引 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(DAILY_BASIC_SCHEMA_DDL)
+
+
+async def upsert_daily_basic_rows(rows: list[tuple]) -> int:
+    """按 (symbol, trade_date) upsert 写入估值/换手率, 返回行数。"""
+    if not rows:
+        return 0
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_DAILY_BASIC_UPSERT_SQL, rows)
+    return len(rows)
+
+
+async def daily_basic_stats(symbol: str) -> dict | None:
+    """查询某 symbol 在 stock_daily_basic 的覆盖统计 {n, min_date, max_date}。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT count(*) n, min(trade_date) mn, max(trade_date) mx "
+            "FROM stock_daily_basic WHERE symbol = $1", symbol)
+    if not r or not r["n"]:
+        return None
+    return {"n": int(r["n"]),
+            "min_date": str(r["mn"]),
+            "max_date": str(r["mx"])}
+
+
+async def query_daily_basic(symbol: str, start_date: str = "", end_date: str = "") -> list[dict]:
+    """查询某 symbol 估值/换手率 (升序)。start/end 支持 YYYYMMDD 或 YYYY-MM-DD。"""
+    def _d(s: str):
+        s = s.strip().replace("-", "")
+        return datetime.strptime(s[:8], "%Y%m%d").date() if len(s) >= 8 else None
+
+    sql = "SELECT trade_date, close, pb, pe, pe_ttm, total_share, float_share, " \
+          "total_mv, circ_mv, dv_ratio, dv_ttm, turnover_rate " \
+          "FROM stock_daily_basic WHERE symbol = $1"
+    params: list = [symbol]
+    if start_date and _d(start_date):
+        sql += f" AND trade_date >= ${len(params) + 1}::date"
+        params.append(_d(start_date))
+    if end_date and _d(end_date):
+        sql += f" AND trade_date <= ${len(params) + 1}::date"
+        params.append(_d(end_date))
+    sql += " ORDER BY trade_date ASC"
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# 本地分红明细表 stock_dividends (dividend 持久化, 详情页每股分红/股息率)
+# ---------------------------------------------------------------------------
+
+DIVIDEND_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS stock_dividends (
+    id         BIGSERIAL PRIMARY KEY,
+    symbol     VARCHAR(16)  NOT NULL,
+    end_date   VARCHAR(16)  NOT NULL,     -- 分红年度/截止日 YYYYMMDD
+    div_proc   VARCHAR(16)  DEFAULT '',   -- 实施/预案/股东大会通过...
+    cash_div   NUMERIC(14,6),             -- 每股派息(元)
+    stk_div    NUMERIC(14,6),             -- 每股送股(股)
+    stk_bo_rate NUMERIC(14,6),            -- 每股转增(股)
+    ann_date   VARCHAR(16)  DEFAULT '',   -- 公告日
+    record_date VARCHAR(16) DEFAULT '',   -- 股权登记日
+    ex_date    VARCHAR(16)  DEFAULT '',
+    pay_date   VARCHAR(16)  DEFAULT '',
+    updated_at TIMESTAMP DEFAULT now(),
+    UNIQUE (symbol, end_date, div_proc)
+);
+CREATE INDEX IF NOT EXISTS idx_sd_symbol_date ON stock_dividends (symbol, end_date);
+"""
+
+DIVIDEND_COLS = ["symbol", "end_date", "div_proc", "cash_div", "stk_div",
+                 "stk_bo_rate", "ann_date", "record_date", "ex_date", "pay_date"]
+_DIVIDEND_UPSERT_SQL = _upsert_sql("stock_dividends", DIVIDEND_COLS, ("symbol", "end_date", "div_proc"))
+
+
+async def init_dividend_schema() -> None:
+    """创建 stock_dividends 表与索引 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(DIVIDEND_SCHEMA_DDL)
+
+
+async def upsert_dividend_rows(rows: list[tuple]) -> int:
+    """按 (symbol, end_date, div_proc) upsert 写入分红明细, 返回行数。"""
+    if not rows:
+        return 0
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_DIVIDEND_UPSERT_SQL, rows)
+    return len(rows)
+
+
+async def query_dividends(symbol: str) -> list[dict]:
+    """查询某 symbol 全部分红明细 (升序)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT end_date, div_proc, cash_div, stk_div, stk_bo_rate, "
+            "ann_date, record_date, ex_date, pay_date "
+            "FROM stock_dividends WHERE symbol = $1 ORDER BY end_date ASC, id ASC",
+            symbol)
+    return [dict(r) for r in rows]
+
+
+async def has_dividends(symbol: str) -> bool:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT 1 FROM stock_dividends WHERE symbol = $1 LIMIT 1", symbol) is not None
+
+
+async def upsert_daily_bars(rows: list[tuple]) -> int:
+    """按 (symbol, trade_date) upsert 写入日线 (含复权因子/换手率), 返回行数。
+
+    rows: [(symbol, kind, trade_date(date), open, high, low, close,
+            pre_close, pct_chg, vol, amount, vwap, adj_factor, turnover_rate), ...]
+    """
+    if not rows:
+        return 0
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_DAILY_BARS_UPSERT_SQL, rows)
+    return len(rows)
+
+
+async def daily_bars_stats(symbol: str) -> dict | None:
+    """查询某 symbol 在 stock_daily_bars 的覆盖统计 {n, min_date, max_date}。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT count(*) n, min(trade_date) mn, max(trade_date) mx "
+            "FROM stock_daily_bars WHERE symbol = $1", symbol)
+    if not r or not r["n"]:
+        return None
+    return {"n": int(r["n"]),
+            "min_date": str(r["mn"]),
+            "max_date": str(r["mx"])}
+
+
+async def query_daily_bars(symbol: str, start_date: str = "", end_date: str = "") -> list[dict]:
+    """查询某 symbol 日线 (升序), 返回 dict 列表 (含 adj_factor/turnover_rate)。
+
+    start_date/end_date 支持 YYYYMMDD 或 YYYY-MM-DD。
+    """
+    def _d(s: str):
+        s = s.strip().replace("-", "")
+        return datetime.strptime(s[:8], "%Y%m%d").date() if len(s) >= 8 else None
+
+    sql = "SELECT symbol, kind, trade_date, open, high, low, close, pre_close, " \
+          "pct_chg, vol, amount, vwap, adj_factor, turnover_rate " \
+          "FROM stock_daily_bars WHERE symbol = $1"
+    params: list = [symbol]
+    if start_date and _d(start_date):
+        sql += f" AND trade_date >= ${len(params) + 1}::date"
+        params.append(_d(start_date))
+    if end_date and _d(end_date):
+        sql += f" AND trade_date <= ${len(params) + 1}::date"
+        params.append(_d(end_date))
+    sql += " ORDER BY trade_date ASC"
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    return [dict(r) for r in rows]
+
+
+async def target_sync_codes() -> list[str]:
+    """目标股票列表: 我的股票(全部用户) ∪ 策略Hub策略股票 ∪ ETF 的 ts_code 去重。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ts_code FROM my_stocks "
+            "UNION SELECT ts_code FROM custom_strategy_stocks "
+            "UNION SELECT ts_code FROM etf_screen;")
+    return [str(r["ts_code"]) for r in rows]
 
 
 async def init_hk_fundamental_schema() -> None:
@@ -1557,3 +1784,98 @@ async def delete_invest_idea(sid: int, user_id: int) -> int:
         rows = await conn.fetch("DELETE FROM invest_ideas WHERE id = $1 AND user_id = $2 RETURNING id",
                                 sid, user_id)
     return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# 公司大事表 stock_events (网络搜索 + DeepSeek 总结, 前端详情页时间线展示)
+# ---------------------------------------------------------------------------
+
+STOCK_EVENTS_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS stock_events (
+    id          BIGSERIAL PRIMARY KEY,
+    ts_code     VARCHAR(16)  NOT NULL,
+    name        VARCHAR(64)  DEFAULT '',
+    event_date  VARCHAR(16)  DEFAULT '',   -- YYYY-MM (可空, 未知日期)
+    title       VARCHAR(255) NOT NULL,
+    summary     TEXT         DEFAULT '',
+    source      VARCHAR(16)  DEFAULT 'llm',
+    updated_at  TIMESTAMP    DEFAULT now(),
+    UNIQUE (ts_code, title)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_events_code_date
+    ON stock_events (ts_code, event_date);
+"""
+
+
+async def init_stock_events_schema() -> None:
+    """创建公司大事表 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(STOCK_EVENTS_SCHEMA_DDL)
+
+
+async def upsert_stock_events(ts_code: str, name: str, events: list[dict]) -> int:
+    """按 (ts_code, title) upsert 写入公司大事, 返回写入行数。
+
+    events: [{"date": "YYYY-MM" 或 "", "title": ..., "summary": ...}, ...]
+    """
+    if not events:
+        return 0
+    rows = [(ts_code, name, (e.get("date") or "")[:10], (e.get("title") or "")[:255],
+             e.get("summary") or "", "llm") for e in events]
+    sql = ("INSERT INTO stock_events (ts_code, name, event_date, title, summary, source) "
+           "VALUES ($1,$2,$3,$4,$5,$6) "
+           "ON CONFLICT (ts_code, title) DO UPDATE SET "
+           "name=EXCLUDED.name, event_date=EXCLUDED.event_date, "
+           "summary=EXCLUDED.summary, source=EXCLUDED.source, updated_at=now();")
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(sql, rows)
+    return len(rows)
+
+
+async def get_stock_events(ts_code: str) -> list[dict]:
+    """查询某股票的公司大事 (按日期降序, 无日期排后)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT event_date, title, summary, source, updated_at "
+            "FROM stock_events WHERE ts_code = $1 "
+            "ORDER BY (event_date = '' OR event_date IS NULL), event_date DESC, id DESC",
+            ts_code)
+    return [dict(r) for r in rows]
+
+
+async def count_stock_events(ts_code: str) -> int:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval("SELECT count(*) FROM stock_events WHERE ts_code = $1", ts_code))
+
+
+async def delete_stock_events(ts_code: str) -> int:
+    """删除某股票全部大事 (重新生成时先清空), 返回删除行数。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("DELETE FROM stock_events WHERE ts_code = $1 RETURNING id", ts_code)
+    return len(rows)
+
+
+async def stock_codes_missing_events(codes: list[str]) -> list[str]:
+    """返回列表中没有大事记录的 ts_code (供批量同步跳过已生成)。"""
+    if not codes:
+        return []
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT ts_code FROM stock_events WHERE ts_code = ANY($1::text[])",
+            list(codes))
+    have = {str(r["ts_code"]) for r in rows}
+    return [c for c in codes if c not in have]
+
+
+async def has_any_financial(ts_code: str) -> bool:
+    """该股票是否已有任一财年财务数据 (financial_data)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT 1 FROM financial_data WHERE ts_code=$1 LIMIT 1", ts_code) is not None

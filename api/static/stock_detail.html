@@ -68,6 +68,32 @@
       box-shadow: 0 1px 3px rgba(16, 24, 40, .10);
     }
     .kline-loading { margin-left: auto; }
+    /* 公司大事时间线 */
+    .events-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+    #events-status { font-size: 12px; color: var(--text-soft); }
+    .timeline { position: relative; padding-left: 22px; margin: 0; list-style: none; }
+    .timeline::before {
+      content: ""; position: absolute; left: 6px; top: 4px; bottom: 4px;
+      width: 2px; background: linear-gradient(#c7d2fe, #e0e7ff);
+    }
+    .timeline li { position: relative; padding: 0 0 18px 0; }
+    .timeline li::before {
+      content: ""; position: absolute; left: -22px; top: 4px;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--primary); border: 2px solid #fff;
+      box-shadow: 0 0 0 2px var(--primary-light);
+    }
+    .ev-date { font-size: 12px; color: var(--primary-dark); font-weight: 600; letter-spacing: .3px; }
+    .ev-title { font-size: 14px; font-weight: 600; color: var(--text); margin: 2px 0 3px; line-height: 1.45; }
+    .ev-summary { font-size: 13px; color: var(--text-soft); line-height: 1.6; }
+    .events-empty { color: var(--text-soft); font-size: 13px; padding: 12px 0; }
+    .events-error { color: var(--red); font-size: 13px; padding: 12px 0; }
+    .spin {
+      display: inline-block; width: 13px; height: 13px; vertical-align: -2px;
+      border: 2px solid var(--primary-light); border-top-color: var(--primary);
+      border-radius: 50%; animation: evspin .8s linear infinite; margin-right: 6px;
+    }
+    @keyframes evspin { to { transform: rotate(360deg); } }
     @media (max-width: 960px) { .detail-cards { grid-template-columns: repeat(2, 1fr); } }
     @media (max-width: 560px) {
       /* 手机端信息卡保持双列紧凑展示 (PB/PE/股息率/52周高低等) */
@@ -158,6 +184,17 @@
 
       <div class="card">
         <div class="card-title">
+          <h3>公司大事 <span class="hint">网络搜索 + AI 总结, 按时间倒序 (仅供参考)</span></h3>
+          <button type="button" class="btn-ghost" id="events-sync-btn">↻ 重新生成</button>
+        </div>
+        <div class="events-toolbar">
+          <span id="events-status" class="hint"></span>
+        </div>
+        <div id="events-list" class="events-empty">加载中…</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
           <h3>K 线 (默认近一年, 可缩放查看最多 20 年)</h3>
           <span class="hint">MA5 / MA20 · 成交量 · 滚轮/滑块缩放</span>
         </div>
@@ -186,6 +223,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/stock_detail.js?v=25"></script>
+  <script src="/static/js/stock_detail.js?v=26"></script>
 </body>
 </html>

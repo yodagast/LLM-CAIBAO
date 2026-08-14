@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=50" />
+  <link rel="stylesheet" href="/static/css/style.css?v=51" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -1229,11 +1229,58 @@
 
   </main>
 
+  <!-- 思想编辑模态框 (一个页面多字段输入, 替代多次 prompt) -->
+  <div class="modal-mask hidden" id="idea-modal">
+    <div class="modal modal-lg">
+      <h3 id="idea-modal-title">新建思想</h3>
+      <div class="modal-form">
+        <div class="field">
+          <label for="idea_f_name">人物/方法名 <em>*</em></label>
+          <input type="text" id="idea_f_name" placeholder="如 巴菲特 / 海龟交易法则 / 定投策略" />
+        </div>
+        <div class="field">
+          <label for="idea_f_school">流派</label>
+          <input type="text" id="idea_f_school" list="idea-schools" placeholder="选择或输入自定义流派" />
+          <datalist id="idea-schools">
+            <option value="价值投资"></option>
+            <option value="成长投资"></option>
+            <option value="趋势投资"></option>
+            <option value="逆向投资"></option>
+            <option value="量化投资"></option>
+            <option value="股息红利"></option>
+            <option value="ETF套利"></option>
+            <option value="行业轮动"></option>
+            <option value="宏观策略"></option>
+            <option value="资产配置"></option>
+            <option value="技术分析"></option>
+            <option value="事件驱动"></option>
+          </datalist>
+        </div>
+        <div class="field">
+          <label for="idea_f_tags">标签 (逗号分隔)</label>
+          <input type="text" id="idea_f_tags" placeholder="如 低估值, 长期持有" />
+        </div>
+        <div class="field">
+          <label for="idea_f_bio">简介</label>
+          <textarea id="idea_f_bio" rows="2" placeholder="人物/方法简介 (可选)"></textarea>
+        </div>
+        <div class="field">
+          <label for="idea_f_principles">核心理念 (每行一条)</label>
+          <textarea id="idea_f_principles" rows="5" placeholder="例如:&#10;别人贪婪时我恐惧&#10;以合理的价格买入优质公司"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-primary" id="idea-save-btn">保存</button>
+          <button type="button" class="btn-ghost" id="idea-cancel-btn">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <footer class="footer">
     <span>数据源 tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
   <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=71"></script>
+  <script src="/static/js/app.js?v=73"></script>
 </body>
 </html>

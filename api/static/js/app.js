@@ -2298,37 +2298,74 @@
         <button type="button" class="strat-op danger" data-op="del">删除</button>
       </div></div>`;
   }
-  async function createIdea() {
-    const name = prompt("人物/方法名:", "");
-    if (!name || !name.trim()) return;
-    const school = prompt("流派 (如 价值投资/趋势投资/量化投资/ETF套利/宏观策略):", "价值投资") || "";
-    const bio = prompt("简介 (可选):", "") || "";
-    const principles = prompt("核心理念 (每行一条, 用换行分隔):", "") || "";
-    try {
-      const r = await fetch("/api/ideas", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), school: school.trim(), bio, principles, tags: [] }) });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || "创建失败");
-      loadIdeas();
-    } catch (e) { alert(e.message || "创建失败"); }
+  // 思想编辑模态框 (一个页面多字段输入, 替代多次 prompt)
+  let editingIdeaId = null;
+  const ideaModal = $("#idea-modal");
+
+  function openIdeaModal(idea) {
+    editingIdeaId = idea ? idea.id : null;
+    $("#idea-modal-title").textContent = idea ? "编辑思想" : "新建思想";
+    $("#idea_f_name").value = idea ? (idea.name || "") : "";
+    $("#idea_f_school").value = idea ? (idea.school || "") : "";
+    $("#idea_f_tags").value = idea ? (idea.tags || []).join(", ") : "";
+    $("#idea_f_bio").value = idea ? (idea.bio || "") : "";
+    $("#idea_f_principles").value = idea ? (idea.principles || "") : "";
+    // 把已使用过的流派并入下拉候选 (含自定义), 避免重复
+    const dl = $("#idea-schools");
+    if (dl) {
+      const known = new Set(Array.from(dl.querySelectorAll("option")).map((o) => o.value));
+      ideaList.forEach((it) => {
+        const s = (it.school || "").trim();
+        if (s && !known.has(s)) {
+          const o = document.createElement("option");
+          o.value = s;
+          dl.appendChild(o);
+          known.add(s);
+        }
+      });
+    }
+    ideaModal.classList.remove("hidden");
+    $("#idea_f_name").focus();
   }
-  async function editIdea(id) {
+  function closeIdeaModal() {
+    if (ideaModal) ideaModal.classList.add("hidden");
+  }
+  async function saveIdea() {
+    const name = $("#idea_f_name").value.trim();
+    if (!name) { alert("请填写人物/方法名"); $("#idea_f_name").focus(); return; }
+    const payload = {
+      name,
+      school: $("#idea_f_school").value.trim(),
+      tags: $("#idea_f_tags").value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+      bio: $("#idea_f_bio").value.trim(),
+      principles: $("#idea_f_principles").value,
+    };
+    try {
+      const url = editingIdeaId ? "/api/ideas/" + editingIdeaId : "/api/ideas";
+      const method = editingIdeaId ? "PUT" : "POST";
+      const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || (editingIdeaId ? "更新失败" : "创建失败"));
+      closeIdeaModal();
+      loadIdeas();
+    } catch (e) { alert(e.message || "保存失败"); }
+  }
+  function createIdea() { openIdeaModal(null); }
+  function editIdea(id) {
     const it = ideaList.find((x) => x.id === id);
     if (!it) return;
-    const name = prompt("人物/方法名:", it.name);
-    if (name === null) return;
-    const school = prompt("流派:", it.school || "");
-    if (school === null) return;
-    const bio = prompt("简介:", it.bio || "");
-    if (bio === null) return;
-    const principles = prompt("核心理念 (每行一条):", it.principles || "");
-    if (principles === null) return;
-    try {
-      const r = await fetch("/api/ideas/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), school: school.trim(), bio, principles }) });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || "更新失败");
-      loadIdeas();
-    } catch (e) { alert(e.message || "更新失败"); }
+    openIdeaModal(it);
   }
+  const ideaSaveBtn = $("#idea-save-btn");
+  if (ideaSaveBtn) ideaSaveBtn.addEventListener("click", saveIdea);
+  const ideaCancelBtn = $("#idea-cancel-btn");
+  if (ideaCancelBtn) ideaCancelBtn.addEventListener("click", closeIdeaModal);
+  if (ideaModal) {
+    ideaModal.addEventListener("click", (e) => { if (e.target === ideaModal) closeIdeaModal(); });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && ideaModal && !ideaModal.classList.contains("hidden")) closeIdeaModal();
+  });
   async function deleteIdea(id) {
     if (!window.confirm("确定删除该思想？")) return;
     try {

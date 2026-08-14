@@ -293,6 +293,8 @@
       render(data);
       bindAddMyStock();
       bindKlineToolbar();
+      bindEventsSync();
+      loadEvents();   // 公司大事 (网络搜索 + AI 总结)
       if (isHk) klineAdj = "";   // 港股无可靠前复权, 默认不复权
       reloadKline();   // 初始按默认(日线+前复权)加载 K 线
       requestAnimationFrame(() => chart && chart.resize());
@@ -340,6 +342,76 @@
         klineAdj = btn.dataset.adj;
         reloadKline();
       });
+    });
+  }
+
+  // ---------- 公司大事 (网络搜索 + DeepSeek 总结, 本地 pgsql 时间线) ----------
+  let eventsPollTimer = null;
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  async function loadEvents() {
+    const listEl = $("#events-list");
+    const statusEl = $("#events-status");
+    if (!listEl || !curCode) return;
+    try {
+      const r = await fetch(`/api/stock/events/${encodeURIComponent(curCode)}`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "获取大事失败");
+      renderEvents(data, listEl, statusEl);
+      if (data.generating) {
+        clearTimeout(eventsPollTimer);
+        eventsPollTimer = setTimeout(loadEvents, 3500);
+      }
+    } catch (err) {
+      listEl.className = "events-error";
+      listEl.textContent = "加载公司大事失败: " + (err.message || "");
+      if (statusEl) statusEl.textContent = "";
+    }
+  }
+
+  function renderEvents(data, listEl, statusEl) {
+    const items = data.items || [];
+    const syncBtn = $("#events-sync-btn");
+    if (data.generating) {
+      listEl.className = "events-empty";
+      listEl.innerHTML = '<span class="spin"></span>正在生成公司大事 (网络搜索 + AI 总结), 约需 10~30 秒, 请稍候…';
+      if (statusEl) statusEl.textContent = "首次访问, 自动生成中…";
+      if (syncBtn) syncBtn.disabled = true;
+      return;
+    }
+    if (syncBtn) syncBtn.disabled = false;
+    if (!items.length) {
+      listEl.className = "events-empty";
+      listEl.textContent = "暂无公司大事, 可点击右上角「重新生成」拉取并总结。";
+      if (statusEl) statusEl.textContent = "";
+      return;
+    }
+    listEl.className = "";
+    if (statusEl) statusEl.textContent = `共 ${items.length} 条 · AI 总结 (网络搜索) · 按时间倒序`;
+    listEl.innerHTML = `<ul class="timeline">` + items.map((it) => `
+      <li>
+        <div class="ev-date">${it.event_date || "日期未知"}</div>
+        <div class="ev-title">${escapeHtml(it.title)}</div>
+        ${it.summary ? `<div class="ev-summary">${escapeHtml(it.summary)}</div>` : ""}
+      </li>`).join("") + `</ul>`;
+  }
+
+  function bindEventsSync() {
+    const btn = $("#events-sync-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const statusEl = $("#events-status");
+      if (statusEl) statusEl.textContent = "正在重新生成…";
+      try {
+        await fetch(`/api/stock/events/${encodeURIComponent(curCode)}/sync`, { method: "POST" });
+      } catch (e) { /* 忽略 */ }
+      loadEvents();
     });
   }
 

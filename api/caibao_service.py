@@ -696,11 +696,18 @@ def llm_available() -> bool:
 
 
 async def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 5000) -> str:
-    """调用 LLM (DeepSeek / OpenAI 兼容接口, 异步 httpx)。"""
+    """调用 LLM (DeepSeek / OpenAI 兼容接口, 异步 httpx)。
+
+    容错:
+      - 部分推理模型 (如 deepseek-reasoner) 不接受 temperature 参数, 收到 400 且含
+        'temperature' 时自动去掉该参数重试;
+      - content 为空时回退 reasoning_content (deepseek-v4-flash 等推理模型);
+      - 失败抛 RuntimeError 且保留状态码/响应信息, 便于线上定位 (401/403/无效key等)。
+    """
     _load_env()
     key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key:
-        raise RuntimeError("未配置 LLM API Key (DEEPSEEK_API_KEY / OPENAI_API_KEY)")
+        raise RuntimeError("未配置 LLM API Key (DEEPSEEK_API_KEY / OPENAI_API_KEY), 请检查 .env")
     if os.getenv("DEEPSEEK_API_KEY"):
         base = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
         model = os.getenv("LLM_MODEL", "deepseek-chat")
@@ -708,22 +715,32 @@ async def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 5000
         base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     client = await _http_client()
-    resp = await client.post(
-        f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.3,
-            "max_tokens": max_tokens,
-        },
-    )
-    resp.raise_for_status()
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.3,
+        "max_tokens": max_tokens,
+    }
+    resp = await client.post(f"{base}/chat/completions", headers=headers, json=payload)
+    if resp.status_code == 400 and "temperature" in resp.text.lower():
+        # 推理模型不支持 temperature → 去掉该参数重试
+        payload.pop("temperature", None)
+        resp = await client.post(f"{base}/chat/completions", headers=headers, json=payload)
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"LLM 调用失败 ({model}): {e}") from e
     data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    msg = data["choices"][0]["message"]
+    content = msg.get("content") or ""
+    if not content:
+        # 推理模型: content 可能为空, 回退 reasoning_content
+        content = msg.get("reasoning_content") or ""
+    return content
 
 
 def _skill_prompt() -> str:

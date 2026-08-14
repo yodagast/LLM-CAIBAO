@@ -469,6 +469,31 @@ async def stock_kline(code: str, freq: str = Query("D", description="周期: D�
     return {"info": info, "freq": freq, "adj": adj, "count": len(bars), "bars": bars}
 
 
+@app.get("/api/stock/events/diagnose")
+async def stock_events_diagnose() -> dict:
+    """诊断公司大事生成环境: LLM 配置是否就绪 (Key 脱敏), 供线上排查 '生成失败/未生成到有效事件'。
+
+    返回 {env: {DEEPSEEK_API_KEY(脱敏), OPENAI_API_KEY, LLM_BASE_URL, LLM_MODEL,
+                deepseek_ready, openai_ready, llm_ready}}。
+    """
+    import os
+    from .caibao_service import _load_env
+    _load_env()  # 确保从根 .env 加载 (与 LLM 调用一致)
+    out: dict = {}
+    for k in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "LLM_BASE_URL", "LLM_MODEL"):
+        v = os.getenv(k, "")
+        if not v:
+            out[k] = ""
+        elif "KEY" in k:
+            out[k] = f"{v[:6]}...{v[-4:]}" if len(v) > 12 else "***"
+        else:
+            out[k] = v
+    out["deepseek_ready"] = bool(os.getenv("DEEPSEEK_API_KEY"))
+    out["openai_ready"] = bool(os.getenv("OPENAI_API_KEY"))
+    out["llm_ready"] = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY"))
+    return {"env": out}
+
+
 @app.get("/api/stock/events/{code}")
 async def stock_events(code: str) -> dict:
     """公司大事列表 (来自本地 pgsql stock_events)。

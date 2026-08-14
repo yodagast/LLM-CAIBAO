@@ -228,6 +228,7 @@ async def process_job(ts_code: str, name: str = "") -> dict:
         logger.info("[events] %s %s 搜索到 %d 条片段, 开始分批生成", ts_code, name, len(snippets))
         prev_titles: set[str] = set()
         done = 0
+        batch_errors: list[str] = []
         for batch_no in range(1, _EVENTS_BATCHES + 1):
             events: list[dict] = []
             try:
@@ -241,11 +242,13 @@ async def process_job(ts_code: str, name: str = "") -> dict:
                     events = await _summarize_batch(name, ts_code, [], batch_no,
                                                     sorted(prev_titles))
                 except RuntimeError as e2:
-                    # 单批失败不致命: 跳过该批继续后续 (部分成功也算完成)
+                    # 单批失败不致命: 跳过该批继续后续 (部分成功也算完成), 但记录原因
                     logger.warning("[events] %s 第%d批降级也失败(%s), 跳过该批",
                                    ts_code, batch_no, e2)
+                    batch_errors.append(str(e2))
                     continue
             if not events:
+                batch_errors.append(f"第{batch_no}批返回空")
                 continue
             new = [e for e in events if e["title"] not in prev_titles][:_EVENTS_BATCH]
             if not new:
@@ -256,9 +259,11 @@ async def process_job(ts_code: str, name: str = "") -> dict:
             await pg_service.update_stock_events_job(ts_code, done_count=done)
             logger.info("[events] %s 第%d批入库 %d 条 (累计 %d)", ts_code, batch_no, n, done)
         if done == 0:
-            await pg_service.update_stock_events_job(
-                ts_code, status="error", last_error="未生成到有效事件")
-            return {"status": "empty", "count": 0, "message": "未生成到有效事件"}
+            # 全部批次失败: 暴露首个真实原因 (而非笼统提示), 便于线上定位
+            detail = batch_errors[0] if batch_errors else "全部批次均未产出有效事件"
+            msg = f"未生成到有效事件: {detail}"[:500]
+            await pg_service.update_stock_events_job(ts_code, status="error", last_error=msg)
+            return {"status": "empty", "count": 0, "message": msg}
         await pg_service.update_stock_events_job(ts_code, status="done", done_count=done)
         logger.info("[events] %s %s 完成, 共 %d 条", ts_code, name, done)
         return {"status": "ok", "count": done, "message": f"已生成 {done} 条大事"}

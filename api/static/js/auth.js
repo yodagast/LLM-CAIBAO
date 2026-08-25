@@ -11,7 +11,7 @@
   var mode = "login";   // login | register
   var changeCb = null;
   var loginPage = false;    // 是否在独立登录页
-  var loginNext = "/";      // 登录成功后的跳转地址
+  var loginNext = "/admin"; // 登录成功后的跳转地址 (后台)
 
   function $(s) { return document.querySelector(s); }
   function esc(s) {
@@ -124,7 +124,7 @@
       if (p) p.value = "";
       if (cf) cf.value = "";
       if (loginPage) {
-        location.href = loginNext || "/";
+        location.href = loginNext || "/admin";
         return;
       }
       renderZone();
@@ -166,7 +166,7 @@
   async function initLoginPage() {
     loginPage = true;
     var q = new URLSearchParams(location.search);
-    loginNext = q.get("next") || "/";
+    loginNext = q.get("next") || "/admin";
     if (q.get("mode") === "register") mode = "register";  // 右上角「注册」直达注册态
     await me();
     if (user) { location.href = loginNext; return; }
@@ -209,7 +209,7 @@
   // ---------- 用户个人中心页 (user.html) ----------
   async function initUserPage() {
     await me();
-    if (!user) { location.href = "/"; return; }
+    if (!user) { location.href = "/admin"; return; }
     renderUserPage();
   }
   function renderUserPage() {
@@ -221,7 +221,7 @@
       '<p class="user-meta">注册时间: ' + esc(user.created_at || "—") + "</p>" +
       '<p class="user-meta">绑定自选股将随账号删除</p>' +
       '<div class="user-actions">' +
-      '  <a class="btn-ghost" href="/">返回首页</a>' +
+      '  <a class="btn-ghost" href="/admin">返回后台</a>' +
       '  <button type="button" class="btn-danger" id="btn-delete-account">注销账号</button>' +
       "</div>";
     var del = $("#btn-delete-account");
@@ -238,7 +238,7 @@
         throw new Error(d.detail || "注销失败");
       }
       user = null;
-      location.href = "/";
+      location.href = "/admin";
     } catch (e) {
       window.alert(e.message || "注销失败");
       if (btn) btn.disabled = false;

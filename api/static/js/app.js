@@ -100,6 +100,10 @@
     if (!ymd || ymd.length !== 8) return ymd;
     return `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
   }
+  // 内联 SVG 图标 (引用 /static/img/icons.svg 的 symbol, 替代 emoji)
+  function svgIcon(id) {
+    return `<svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#${id}"/></svg>`;
+  }
   function cls(v) { return v >= 0 ? "pos" : "neg"; }
 
   // ---------- 健康检查 ----------
@@ -115,6 +119,154 @@
       el.classList.add("err");
       $("#health-text").textContent = "后端服务未启动";
     }
+  }
+
+  // ---------- 页面管理 (官网 愿景/使命/价值观/新闻 编辑) ----------
+  let sitePageData = null;   // 当前编辑器数据 {vision:{...}, mission:{...}, values:[...], news:[...]}
+
+  function sitePageSection(title, desc, bodyHtml) {
+    return (
+      '<section class="card sp-card">' +
+      '  <div class="card-title"><h3>' + title + "</h3>" +
+      '    <span class="hint">' + desc + "</span></div>" +
+      "  " + bodyHtml +
+      "</section>"
+    );
+  }
+  function spField(label, id, value, placeholder, isArea) {
+    const cls = isArea ? "sp-textarea" : "sp-input";
+    const tag = isArea ? "textarea" : "input";
+    const rowsAttr = isArea ? ' rows="4"' : "";
+    return (
+      '<div class="field">' +
+      '  <label for="' + id + '">' + label + "</label>" +
+      '  <' + tag + ' id="' + id + '" class="' + cls + '"' + rowsAttr +
+      '    placeholder="' + placeholder + '"' +
+      (isArea ? "" : ' value="' + String(value || "").replace(/"/g, "&quot;") + '"') +
+      ">" + (isArea ? String(value || "") : "") + "</" + tag + ">" +
+      "</div>"
+    );
+  }
+  function renderSitePageEditor() {
+    const box = $("#sitepage-editor");
+    if (!box || !sitePageData) return;
+    box.innerHTML =
+      sitePageSection("愿景 Vision", "官网首页「愿景」板块内容", `
+        <div class="grid">
+          ${spField("愿景标题", "sp-vision-title", sitePageData.vision.title, "如 创造时间和知识的复利")}
+          ${spField("愿景引语 (大标题)", "sp-vision-lede", sitePageData.vision.lede, "如 创造时间和知识的复利。")}
+        </div>
+        <div class="field">
+          <label for="sp-vision-body">愿景正文</label>
+          <textarea id="sp-vision-body" class="sp-textarea" rows="5" placeholder="愿景详细描述…">${String(sitePageData.vision.body || "").replace(/</g, "&lt;")}</textarea>
+        </div>`) +
+      sitePageSection("使命 Mission", "官网首页「使命」板块内容", `
+        <div class="grid">
+          ${spField("使命标题", "sp-mission-title", sitePageData.mission.title, "如 一视同仁，为客户创造合理的、可持续的、超过社会平均的收益")}
+          ${spField("使命引语 (大标题)", "sp-mission-lede", sitePageData.mission.lede, "如 一视同仁…")}
+        </div>
+        <div class="field">
+          <label for="sp-mission-body">使命正文</label>
+          <textarea id="sp-mission-body" class="sp-textarea" rows="5" placeholder="使命详细描述…">${String(sitePageData.mission.body || "").replace(/</g, "&lt;")}</textarea>
+        </div>`) +
+      sitePageSection("价值观 Values", "官网首页「价值观」板块, 每行一条, 格式: 名称 | 描述", `
+        <div class="field">
+          <label for="sp-values">价值观列表 (每行一条, 用 | 分隔名称与描述)</label>
+          <textarea id="sp-values" class="sp-textarea" rows="8" placeholder="本分 | 做对的事情、把事情做对、求责于己…&#10;客观 | 假设正确、逻辑正确、事实正确…">${(sitePageData.values || []).map(v => String(v.name || "") + " | " + String(v.desc || "")).join("\n").replace(/</g, "&lt;")}</textarea>
+        </div>`) +
+      sitePageSection("新闻浏览 News", "官网首页「新闻浏览」列表, 每行一条, 格式: 日期 | 标题 | 标签 (标签可空)", `
+        <div class="field">
+          <label for="sp-news">新闻列表 (每行一条, 用 | 分隔 日期 | 标题 | 标签)</label>
+          <textarea id="sp-news" class="sp-textarea" rows="8" placeholder="2026年8月 | 财宝资本研究平台全面上线智能选股回测系统 | 公司动态&#10;2026年7月 | 财宝资本发布年度价值投资研究展望 | 研究发布">${(sitePageData.news || []).map(n => [n.date, n.title, n.tag].filter(Boolean).join(" | ")).join("\n").replace(/</g, "&lt;")}</textarea>
+        </div>`);
+  }
+
+  // 从编辑表单收集为待保存结构
+  function collectSitePage() {
+    const v = (id) => (document.getElementById(id) ? document.getElementById(id).value.trim() : "");
+    const vision = {
+      title: v("sp-vision-title") || "愿景",
+      lede: v("sp-vision-lede"),
+      body: v("sp-vision-body"),
+    };
+    const mission = {
+      title: v("sp-mission-title") || "使命",
+      lede: v("sp-mission-lede"),
+      body: v("sp-mission-body"),
+    };
+    const values = v("sp-values").split("\n").map(l => l.trim()).filter(Boolean).map(line => {
+      const idx = line.indexOf("|");
+      if (idx > -1) return { name: line.slice(0, idx).trim(), desc: line.slice(idx + 1).trim() };
+      return { name: line, desc: "" };
+    });
+    const news = v("sp-news").split("\n").map(l => l.trim()).filter(Boolean).map(line => {
+      const parts = line.split("|").map(s => s.trim());
+      return { date: parts[0] || "", title: parts[1] || "", tag: parts[2] || "" };
+    });
+    return { vision, mission, values, news };
+  }
+
+  async function loadSitePageContent() {
+    const box = $("#sitepage-editor");
+    const errEl = $("#sitepage-error");
+    const hint = $("#sitepage-hint");
+    if (!box) return;
+    try {
+      const r = await fetch("/api/site/content");
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "读取失败");
+      const pages = data.items || {};
+      const parse = (s, fb) => { try { return JSON.parse(s || ""); } catch (e) { return fb; } };
+      const fbVision = { title: "愿景", lede: "", body: "" };
+      const fbMission = { title: "使命", lede: "", body: "" };
+      sitePageData = {
+        vision: parse((pages.vision || {}).content, fbVision),
+        mission: parse((pages.mission || {}).content, fbMission),
+        values: parse((pages.values || {}).content, []),
+        news: parse((pages.news || {}).content, []),
+      };
+      renderSitePageEditor();
+      if (errEl) errEl.classList.add("hidden");
+      if (hint) hint.textContent = "";
+    } catch (e) {
+      sitePageData = null;
+      if (box) box.innerHTML = "";
+      if (errEl) { errEl.textContent = "加载官网内容失败: " + (e.message || e); errEl.classList.remove("hidden"); }
+    }
+  }
+
+  async function saveSitePage() {
+    const data = collectSitePage();
+    const items = [
+      { key: "vision", title: data.vision.title, content: JSON.stringify(data.vision) },
+      { key: "mission", title: data.mission.title, content: JSON.stringify(data.mission) },
+      { key: "values", title: "价值观", content: JSON.stringify(data.values) },
+      { key: "news", title: "新闻浏览", content: JSON.stringify(data.news) },
+    ];
+    const btn = $("#sitepage-save-btn");
+    const hint = $("#sitepage-hint");
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch("/api/site/content", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "保存失败");
+      if (hint) hint.innerHTML = svgIcon("icon-check") + " 已保存, 官网已更新";
+    } catch (e) {
+      if (hint) hint.textContent = "保存失败: " + (e.message || e);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function initSitePageEditor() {
+    const saveBtn = $("#sitepage-save-btn");
+    const reloadBtn = $("#sitepage-reload-btn");
+    if (saveBtn) saveBtn.addEventListener("click", saveSitePage);
+    if (reloadBtn) reloadBtn.addEventListener("click", loadSitePageContent);
   }
 
   // ---------- 股票联想 (共享 datalist, 回测/区间估价/财报 三处复用) ----------
@@ -210,13 +362,13 @@
         const info = await r.json();
         tsTip.classList.add("ok");
         tsTip.classList.remove("err");
-        tsTip.textContent = `✓ ${info.name} · ${info.ts_code} · ${info.kind === "fund" ? "基金/ETF" : "股票"}`;
+        tsTip.innerHTML = `${svgIcon("icon-check")} ${info.name} · ${info.ts_code} · ${info.kind === "fund" ? "基金/ETF" : "股票"}`;
         loadQuote(info.ts_code);
       } else {
         const err = await r.json();
         tsTip.classList.add("err");
         tsTip.classList.remove("ok");
-        tsTip.textContent = `✗ ${err.detail || "未找到该代码"}`;
+        tsTip.innerHTML = `${svgIcon("icon-x")} ${err.detail || "未找到该代码"}`;
         hideQuote();
       }
     } catch (e) {
@@ -236,12 +388,12 @@
         const info = await r.json();
         bandTip.classList.add("ok");
         bandTip.classList.remove("err");
-        bandTip.textContent = `✓ ${info.name} · ${info.ts_code} · ${info.kind === "fund" ? "基金/ETF" : "股票"}`;
+        bandTip.innerHTML = `${svgIcon("icon-check")} ${info.name} · ${info.ts_code} · ${info.kind === "fund" ? "基金/ETF" : "股票"}`;
       } else {
         const err = await r.json();
         bandTip.classList.add("err");
         bandTip.classList.remove("ok");
-        bandTip.textContent = `✗ ${err.detail || "未找到该代码"}`;
+        bandTip.innerHTML = `${svgIcon("icon-x")} ${err.detail || "未找到该代码"}`;
       }
     } catch (e) { bandTip.textContent = ""; }
   });
@@ -258,12 +410,12 @@
         caibaoTip.classList.add("ok");
         caibaoTip.classList.remove("err");
         const isHkTip = String(info.ts_code).endsWith(".HK");
-        caibaoTip.textContent = `✓ ${info.name} · ${info.ts_code}` + (isHkTip ? " · 东财港股数据" : "");
+        caibaoTip.innerHTML = `${svgIcon("icon-check")} ${info.name} · ${info.ts_code}` + (isHkTip ? " · 东财港股数据" : "");
       } else {
         const err = await r.json();
         caibaoTip.classList.add("err");
         caibaoTip.classList.remove("ok");
-        caibaoTip.textContent = `✗ ${err.detail || "未找到该代码"}`;
+        caibaoTip.innerHTML = `${svgIcon("icon-x")} ${err.detail || "未找到该代码"}`;
       }
     } catch (e) { caibaoTip.textContent = ""; }
   });
@@ -324,6 +476,8 @@
       });
       // 切到策略Hub 时刷新策略列表 (自定义策略可能变化)
       if (btn.dataset.tab === "strategies") { loadStrategies(); loadIdeas(); }
+      // 切到页面管理 时加载官网内容
+      if (btn.dataset.tab === "sitepage") { loadSitePageContent(); }
       // 切到回测 tab 且 Alpha158 子面板可见时刷新股票池
       if (btn.dataset.tab === "backtest") {
         const ap = document.getElementById("bt-alpha158");
@@ -511,8 +665,8 @@
       const f = filters[k];
       const m = map[k] || {};
       const lb = FILTER_BADGE_LABELS[k] || k;
-      if (f.min !== undefined && f.min !== null && m.min) badges.push(`<span class="filter-badge" data-input="${m.min}">${lb} ≥ ${f.min} ✕</span>`);
-      if (f.max !== undefined && f.max !== null && m.max) badges.push(`<span class="filter-badge" data-input="${m.max}">${lb} ≤ ${f.max} ✕</span>`);
+      if (f.min !== undefined && f.min !== null && m.min) badges.push(`<span class="filter-badge" data-input="${m.min}">${lb} ≥ ${f.min} ${svgIcon("icon-x")}</span>`);
+      if (f.max !== undefined && f.max !== null && m.max) badges.push(`<span class="filter-badge" data-input="${m.max}">${lb} ≤ ${f.max} ${svgIcon("icon-x")}</span>`);
     }
     return badges.length ? `<span class="filter-badges">${badges.join("")}</span>` : "";
   }
@@ -670,8 +824,8 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "同步失败");
-      $("#screen-hint").textContent =
-        `✓ 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
+      $("#screen-hint").innerHTML =
+        `${svgIcon("icon-check")} 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
     } catch (err) {
       screenError.textContent = err.message || "同步失败";
       screenError.classList.remove("hidden");
@@ -904,8 +1058,8 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "同步失败");
-      $("#rlv-hint").textContent =
-        `✓ 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
+      $("#rlv-hint").innerHTML =
+        `${svgIcon("icon-check")} 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
     } catch (err) {
       rlvError.textContent = err.message || "同步失败";
       rlvError.classList.remove("hidden");
@@ -1160,8 +1314,8 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "同步失败");
-      $("#hk-rlv-hint").textContent =
-        `✓ 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
+      $("#hk-rlv-hint").innerHTML =
+        `${svgIcon("icon-check")} 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
     } catch (err) {
       $("#hk-rlv-error").textContent = err.message || "同步失败";
       $("#hk-rlv-error").classList.remove("hidden");
@@ -1335,8 +1489,8 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "同步失败");
-      $("#hk-screen-hint").textContent =
-        `✓ 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
+      $("#hk-screen-hint").innerHTML =
+        `${svgIcon("icon-check")} 强制同步完成: 入库 ${data.stored_total} 条 · ${(data.years || []).join(", ")} 年`;
     } catch (err) {
       $("#hk-screen-error").textContent = err.message || "同步失败";
       $("#hk-screen-error").classList.remove("hidden");
@@ -1572,7 +1726,7 @@
   function renderChart(data) {
     const el = $("#chart");
     if (!chart) chart = echarts.init(el);
-    const colors = ["#4f46e5", "#0891b2", "#ea580c", "#059669"];
+    const colors = ["#0f2540", "#0891b2", "#ea580c", "#059669"];
     const series = data.strategies.map((s, i) => ({
       name: s.name,
       type: "line",
@@ -1661,9 +1815,9 @@
 
     $("#band-result-title").innerHTML =
       `<a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(info.ts_code)}" title="查看详情">${info.name}</a> (${info.ts_code}) · 区间交易最优参数`;
-    const achievedTxt = search.achieved ? "✅ 夏普达标" : "⚠️ 未达目标夏普 (已取折中)";
+    const achievedTxt = search.achieved ? `${svgIcon("icon-check-circle")} 夏普达标` : `${svgIcon("icon-alert")} 未达目标夏普 (已取折中)`;
     const maxTradesTxt = search.max_trades ? ` · 最大交易 ≤ ${search.max_trades}` : "";
-    $("#band-result-sub").textContent =
+    $("#band-result-sub").innerHTML =
       `${fmtDate(range.start)} ~ ${fmtDate(range.end)} · ${range.bars} 个交易日 · ` +
       `目标 ${search.objective_label || "收益优先"} · ` +
       `搜索 ${search.tried} 组参数${maxTradesTxt} · 目标夏普 ≥ ${search.min_sharpe} · ${achievedTxt}`;
@@ -1804,7 +1958,7 @@
     const el = $("#band-chart");
     if (!bandChart) bandChart = echarts.init(el);
     const dates = band.dates.map(fmtDate);
-    const colors = ["#ea580c", "#4f46e5"];
+    const colors = ["#ea580c", "#0f2540"];
     bandChart.setOption({
       animationDuration: 500,
       tooltip: {
@@ -1908,9 +2062,9 @@
     caibaoResult.classList.remove("hidden");
     $("#caibao-title").textContent = `${data.info.name} (${data.info.ts_code}) · 财报分析`;
     const isHk = String(data.info.ts_code).endsWith(".HK");
-    $("#caibao-sub").textContent =
+    $("#caibao-sub").innerHTML =
       `${data.range.start}~${data.range.end} 年 · ` +
-      (data.llm_used ? "🤖 LLM 深度分析" : "📊 TUSHARE 财报数据分析") +
+      (data.llm_used ? `${svgIcon("icon-robot")} LLM 深度分析` : `${svgIcon("icon-chart-bar")} TUSHARE 财报数据分析`) +
       (isHk ? " · 东财港股数据" : "");
     $("#caibao-meta").textContent = data.llm_used
       ? "基于财报分析框架由大模型生成, 仅供参考"
@@ -2067,7 +2221,7 @@
       html += `<div class="strat-card strat-custom-empty">
         <div class="strat-name">新建自定义策略</div>
         <p class="strat-desc">在「选股」tab 筛选公司后点「＋ 存入策略Hub」即可保存为公司列表; 也可手动创建。</p>
-        <div class="strat-ops"><button type="button" class="strat-op" id="strat-create-btn">＋ 手动创建</button></div>
+        <div class="strat-ops"><button type="button" class="strat-op" id="strat-create-btn">${svgIcon("icon-plus")} 手动创建</button></div>
       </div>`;
     }
     html += `</div></div>`;
@@ -2529,8 +2683,8 @@
       if (!res.ok) throw new Error(data.detail || "筛选失败");
       const srcTag = data.source === "db" ? " · 读取初始化数据"
         : (data.cached ? " · 命中缓存" : " · 已刷新");
-      $("#etf-hint").textContent =
-        `✓ 筛选完成: 匹配 ${data.count} 只 (成功 ${data.ok} / 失败 ${data.fail}${srcTag})`;
+      $("#etf-hint").innerHTML =
+        `${svgIcon("icon-check")} 筛选完成: 匹配 ${data.count} 只 (成功 ${data.ok} / 失败 ${data.fail}${srcTag})`;
       renderEtf(data);
     } catch (err) {
       etfError.textContent = err.message || "请求失败, 请检查后端服务。";
@@ -2716,7 +2870,7 @@
           <span class="si-name">${_esc(it.name)}</span>
           <span class="si-code">${_esc(it.ts_code)}</span>
           <span class="si-kind">${_kindLabel(it.kind)}</span>
-          <button type="button" class="btn-ghost btn-sm si-add" data-code="${_esc(it.ts_code)}">＋ 加入</button>
+          <button type="button" class="btn-ghost btn-sm si-add" data-code="${_esc(it.ts_code)}">${svgIcon("icon-plus")} 加入</button>
         </div>`).join("");
       mySearchPanel.querySelectorAll(".si-add").forEach((btn) => {
         btn.addEventListener("click", async (e) => {
@@ -2739,7 +2893,7 @@
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || "添加失败");
       if (btn) {
-        btn.textContent = d.ok === false ? "已在列表" : "✓ 已加入";
+        btn.innerHTML = d.ok === false ? "已在列表" : `${svgIcon("icon-check")} 已加入`;
         btn.classList.add("added");
         btn.disabled = true;
       }
@@ -2807,7 +2961,7 @@
       if (indicator) return indicator;
       indicator = document.createElement("div");
       indicator.className = "pull-indicator";
-      indicator.innerHTML = '<span class="pi-arrow">↓</span><span class="pi-text">下拉刷新</span>';
+      indicator.innerHTML = `<span class="pi-arrow">${svgIcon("icon-arrow-down")}</span><span class="pi-text">下拉刷新</span>`;
       document.body.appendChild(indicator);
       return indicator;
     }
@@ -2816,10 +2970,10 @@
       const arrow = el.querySelector(".pi-arrow");
       const text = el.querySelector(".pi-text");
       if (state === "pull") {
-        arrow.textContent = "↓"; text.textContent = "下拉刷新";
+        arrow.innerHTML = svgIcon("icon-arrow-down"); text.textContent = "下拉刷新";
         el.style.opacity = String(0.4 + 0.6 * Math.min(pullDist / THRESHOLD, 1));
       } else if (state === "ready") {
-        arrow.textContent = "↑"; text.textContent = "释放刷新";
+        arrow.innerHTML = svgIcon("icon-arrow-up"); text.textContent = "释放刷新";
         el.style.opacity = "1";
       }
     }
@@ -3125,7 +3279,7 @@
       dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
       series: [
         { name: "Alpha158 策略", type: "line", data: pf.strategy, showSymbol: false, smooth: true, lineStyle: { width: 2.4, color: "#e65050" }, itemStyle: { color: "#e65050" }, areaStyle: { opacity: 0.07 } },
-        { name: "买入持有", type: "line", data: pf.buyhold, showSymbol: false, smooth: true, lineStyle: { width: 2.2, color: "#4f46e5" }, itemStyle: { color: "#4f46e5" }, areaStyle: { opacity: 0.04 } },
+        { name: "买入持有", type: "line", data: pf.buyhold, showSymbol: false, smooth: true, lineStyle: { width: 2.2, color: "#0f2540" }, itemStyle: { color: "#0f2540" }, areaStyle: { opacity: 0.04 } },
       ],
     }, true);
     requestAnimationFrame(() => alphaChart && alphaChart.resize());
@@ -3371,7 +3525,7 @@
       dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
       series: [
         { name: "区间交易", type: "line", data: pf.band, showSymbol: false, smooth: true, lineStyle: { width: 2.4, color: "#e65050" }, itemStyle: { color: "#e65050" }, areaStyle: { opacity: 0.07 } },
-        { name: "买入持有", type: "line", data: pf.buyhold, showSymbol: false, smooth: true, lineStyle: { width: 2.2, color: "#4f46e5" }, itemStyle: { color: "#4f46e5" }, areaStyle: { opacity: 0.04 } },
+        { name: "买入持有", type: "line", data: pf.buyhold, showSymbol: false, smooth: true, lineStyle: { width: 2.2, color: "#0f2540" }, itemStyle: { color: "#0f2540" }, areaStyle: { opacity: 0.04 } },
       ],
     }, true);
     requestAnimationFrame(() => ptfChart && ptfChart.resize());
@@ -3414,4 +3568,5 @@
   }
 
   checkHealth();
+  initSitePageEditor();   // 页面管理 (官网 愿景/使命/价值观/新闻 编辑)
 })();

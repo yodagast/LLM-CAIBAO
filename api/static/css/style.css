@@ -4,9 +4,9 @@
   --border: #e6e9f0;
   --text: #1f2937;
   --text-soft: #6b7280;
-  --primary: #4f46e5;
-  --primary-dark: #4338ca;
-  --primary-light: #eef2ff;
+  --primary: #0f2540;
+  --primary-dark: #1e3d63;
+  --primary-light: #e8eef5;
   --green: #16a34a;
   --red: #dc2626;
   --shadow: 0 1px 3px rgba(16, 24, 40, .06), 0 1px 2px rgba(16, 24, 40, .04);
@@ -29,7 +29,7 @@ body {
 
 /* ---------- 顶栏 ---------- */
 .topbar {
-  background: linear-gradient(120deg, #4f46e5, #7c3aed);
+  background: linear-gradient(120deg, #0f2540, #1e3d63);
   color: #fff;
   box-shadow: var(--shadow-lg);
   position: sticky;
@@ -176,7 +176,7 @@ body {
 .field textarea:focus {
   border-color: var(--primary);
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, .12);
+  box-shadow: 0 0 0 3px rgba(15, 37, 64, .12);
 }
 
 /* 未登录提示 (我的股票 tab) */
@@ -247,6 +247,16 @@ body.auth-loading .container { visibility: hidden; }
   background: var(--bg);
   position: relative;   /* 供账号下拉菜单定位 */
 }
+
+/* 后台返回官网链接 (Tab 栏左侧) */
+.tab-back {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 10px 12px; font-size: 13px; font-weight: 600;
+  color: var(--text-soft); white-space: nowrap; text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color .15s, border-color .15s;
+}
+.tab-back:hover { color: var(--primary); border-bottom-color: var(--primary); }
 
 /* 选股 tab: 市场(A股/港股) × 策略(红利低波/基本面) 分段控件 */
 .screener-nav {
@@ -320,7 +330,7 @@ body.auth-loading .container { visibility: hidden; }
 .field select:focus {
   border-color: var(--primary);
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, .12);
+  box-shadow: 0 0 0 3px rgba(15, 37, 64, .12);
 }
 .field-tip { font-size: 12px; color: var(--text-soft); min-height: 16px; }
 .field-tip.ok { color: var(--green); }
@@ -358,12 +368,20 @@ body.auth-loading .container { visibility: hidden; }
   background: var(--primary); color: #fff; border: none;
   padding: 11px 26px; border-radius: 10px; font-size: 15px; font-weight: 600;
   cursor: pointer; transition: background .15s, transform .05s;
-  box-shadow: 0 4px 12px rgba(79, 70, 229, .3);
+  box-shadow: 0 4px 12px rgba(15, 37, 64, .24);
 }
 .btn-primary:hover { background: var(--primary-dark); }
 .btn-primary:active { transform: translateY(1px); }
 .btn-primary:disabled { opacity: .6; cursor: not-allowed; }
 .btn-icon { font-size: 12px; }
+
+/* 内联 SVG 图标 (引用 /static/img/icons.svg 的 symbol) */
+.icon {
+  width: 1em; height: 1em; display: inline-block;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+  vertical-align: -0.125em; flex: 0 0 auto;
+}
 .btn-ghost {
   background: transparent; color: var(--text-soft); border: 1px solid var(--border);
   padding: 10px 20px; border-radius: 10px; font-size: 14px; cursor: pointer;
@@ -376,7 +394,7 @@ body.auth-loading .container { visibility: hidden; }
   width: 96px; padding: 5px 8px; border: 1px solid #e5e7eb; border-radius: 6px;
   font-size: 12px; background: #fff; color: var(--text);
 }
-.tf-item input:focus, .tf-item select:focus { outline: none; border-color: var(--primary, #4f46e5); }
+.tf-item input:focus, .tf-item select:focus { outline: none; border-color: var(--primary, #0f2540); }
 
 /* 财报分析报告样式 */
 .markdown-body { line-height: 1.7; font-size: 14px; color: var(--text); word-break: break-word; }
@@ -426,7 +444,7 @@ body.auth-loading .container { visibility: hidden; }
   transition: border-color .15s, box-shadow .15s;
 }
 .stock-search input:focus {
-  border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, .12);
+  border-color: var(--primary); box-shadow: 0 0 0 3px rgba(15, 37, 64, .12);
 }
 .search-panel {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 50;
@@ -469,7 +487,7 @@ body.auth-loading .container { visibility: hidden; }
 .metric .m-sub { font-size: 12px; color: var(--text-soft); margin-top: 2px; }
 .metric.up { border-top-color: var(--red); }    /* 涨/优 = 红 (红涨绿跌) */
 .metric.down { border-top-color: var(--green); } /* 跌/差 = 绿 (红涨绿跌) */
-.metric.accent1 { border-top-color: #4f46e5; }
+.metric.accent1 { border-top-color: #0f2540; }
 .metric.accent2 { border-top-color: #ea580c; }
 .metric.accent3 { border-top-color: #059669; }
 /* 财报挖掘: 指标卡趋势色 (红=优/涨, 绿=差/跌) */
@@ -547,7 +565,7 @@ body.auth-loading .container { visibility: hidden; }
 @media (max-width: 560px) { .strat-grid { grid-template-columns: 1fr; } }
 
 /* ---------- 我的策略 (自定义策略, 选股保存/手动创建) ---------- */
-.strat-custom { border-color: #c7d2fe; }
+.strat-custom { border-color: #b9c7d8; }
 .strat-src { font-size: 11px; color: var(--primary); font-weight: 600; }
 .strat-ops { display: flex; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; margin-top: auto; flex-wrap: wrap; }
 .strat-op {
@@ -575,7 +593,7 @@ body.auth-loading .container { visibility: hidden; }
 
 /* ---------- 精选思想 (投资大师/方法 skill) ---------- */
 .idea-card {
-  background: var(--card); border: 1px solid #e0e7ff; border-radius: 12px;
+  background: var(--card); border: 1px solid #d8e0ea; border-radius: 12px;
   padding: 16px 18px; box-shadow: var(--shadow); display: flex; flex-direction: column;
 }
 .idea-card:hover { border-color: var(--primary); }
@@ -588,7 +606,7 @@ body.auth-loading .container { visibility: hidden; }
 .idea-bio { font-size: 12px; color: var(--text-soft); line-height: 1.6; margin: 0 0 8px; }
 .idea-principles {
   margin: 0 0 10px; padding: 10px 14px 10px 30px;
-  background: #f5f3ff; border-radius: 10px; font-size: 12.5px; line-height: 1.7;
+  background: #eef2f7; border-radius: 10px; font-size: 12.5px; line-height: 1.7;
 }
 .idea-principles li { margin: 3px 0; }
 
@@ -622,14 +640,14 @@ td.pos { color: var(--red); }   /* 涨 = 红 (红涨绿跌) */
 td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
 .stock-link {
   color: var(--primary); text-decoration: none; font-weight: 600;
-  border-bottom: 1px dashed rgba(79, 70, 229, .5);
+  border-bottom: 1px dashed rgba(15, 37, 64, .5);
 }
 .stock-link:hover { color: var(--primary-dark); border-bottom-style: solid; }
 .tag {
   display: inline-block; padding: 3px 10px; border-radius: 999px;
   font-size: 12px; font-weight: 600;
 }
-.tag.bh { background: #eef2ff; color: #4338ca; }
+.tag.bh { background: #e8eef5; color: #0f2540; }
 .tag.lbh { background: #ecfeff; color: #0e7490; }
 .tag.band { background: #fff7ed; color: #c2410c; }
 .tag.low { background: #ecfdf5; color: #047857; }
@@ -732,16 +750,16 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
   cursor: pointer;
   transition: border-color .15s, box-shadow .15s;
 }
-.alpha-pool-item:hover { border-color: var(--primary, #4f46e5); }
-.alpha-pool-item input { accent-color: var(--primary, #4f46e5); cursor: pointer; }
+.alpha-pool-item:hover { border-color: var(--primary, #0f2540); }
+.alpha-pool-item input { accent-color: var(--primary, #0f2540); cursor: pointer; }
 .alpha-pool-item em {
   font-style: normal;
   color: #9ca3af;
   font-size: 11px;
 }
 .alpha-pool-item:has(input:checked) {
-  border-color: var(--primary, #4f46e5);
-  background: #eef2ff;
+  border-color: var(--primary, #0f2540);
+  background: #e8eef5;
 }
 .alpha-pool-unsupported {
   width: 100%;
@@ -790,6 +808,28 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
   cursor: pointer;
   transition: background .15s;
 }
-.bt-menu button:hover { background: #eef2ff; color: var(--primary, #4f46e5); }
+.bt-menu button:hover { background: #e8eef5; color: var(--primary, #0f2540); }
 .bt-menu .bt-menu-tip { font-style: normal; font-size: 11px; color: #9ca3af; }
 .alpha-pool-loading { color: #6b7280; font-size: 13px; }
+
+/* ---------- 页面管理 (官网 愿景/使命/价值观/新闻 编辑) ---------- */
+.sp-card {
+  margin-bottom: 16px; padding: 18px 20px;
+  border-top: 3px solid #d8e0ea;
+}
+.sp-card .card-title { margin-bottom: 14px; }
+.sp-card .field { margin-bottom: 12px; }
+.sp-input, .sp-textarea {
+  width: 100%; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; font-family: inherit;
+  background: #fff; color: var(--text); outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.sp-input:focus, .sp-textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(15, 37, 64, .12);
+}
+.sp-textarea { resize: vertical; min-height: 88px; line-height: 1.7; }
+#sitepage-actions { margin-top: 6px; }
+#sitepage-hint { align-self: center; }

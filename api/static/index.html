@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=52" />
+  <link rel="stylesheet" href="/static/css/style.css?v=54" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -18,12 +18,14 @@
     <!-- Tab 导航: 左侧可横向滑动, 右侧为登录/用户状态 -->
     <nav class="tabs">
       <div class="tabs-scroll">
+        <a class="tab-back" href="/" title="返回公司官网"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-globe"/></svg> 官网</a>
         <button type="button" class="tab active" data-tab="my">我的股票</button>
         <button type="button" class="tab" data-tab="screener">选股</button>
         <button type="button" class="tab" data-tab="strategies">策略Hub</button>
         <button type="button" class="tab" data-tab="caibao">财报挖掘</button>
         <button type="button" class="tab" data-tab="band">区间交易估价</button>
         <button type="button" class="tab" data-tab="backtest">回测策略</button>
+        <button type="button" class="tab" data-tab="sitepage"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-book"/></svg> 页面管理</button>
       </div>
       <div class="tabs-auth" id="auth-zone"></div>
     </nav>
@@ -41,20 +43,20 @@
           <div class="stock-search" id="my-search-wrap">
             <input type="text" id="my-search-input" placeholder="按名称/代码搜索并加入自选股, 如 招商银行 / 600036 / 513050" autocomplete="off" />
             <button type="button" class="btn-primary" id="my-search-btn">
-              <span class="btn-icon">🔍</span> 搜索
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-search"/></svg> 搜索
             </button>
             <div class="search-panel hidden" id="my-search-panel"></div>
           </div>
           <button type="button" class="btn-primary my-refresh-btn" id="my-refresh-btn">
-            <span class="btn-icon">↻</span> 刷新
+            <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-refresh"/></svg> 刷新
           </button>
           <div class="bt-dropdown">
             <button type="button" class="btn-primary" id="my-backtest-btn" title="对当前自选股执行回测, 选择不同方法">
-              <span class="btn-icon">🔬</span> 回测
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-flask"/></svg> 回测
             </button>
             <div class="bt-menu hidden" id="my-backtest-menu">
-              <button type="button" data-method="alpha158">📈 Alpha158 因子回测 <em class="bt-menu-tip">A股</em></button>
-              <button type="button" data-method="ptf">📊 组合回测 (买入持有+区间交易) <em class="bt-menu-tip">自动估算买卖/止损价</em></button>
+              <button type="button" data-method="alpha158"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-chart-up"/></svg> Alpha158 因子回测 <em class="bt-menu-tip">A股</em></button>
+              <button type="button" data-method="ptf"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-chart-bar"/></svg> 组合回测 (买入持有+区间交易) <em class="bt-menu-tip">自动估算买卖/止损价</em></button>
             </div>
           </div>
           <span class="hint" id="my-sub"></span>
@@ -135,9 +137,9 @@
           </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary" id="etf-btn">
-              <span class="btn-icon">🔍</span> 筛选 ETF
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-search"/></svg> 筛选 ETF
             </button>
-            <button type="button" class="btn-ghost" id="etf-refresh-btn">↻ 刷新数据</button>
+            <button type="button" class="btn-ghost" id="etf-refresh-btn"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-refresh"/></svg> 刷新数据</button>
             <span class="range-hint" id="etf-hint"></span>
           </div>
         </form>
@@ -152,7 +154,7 @@
       <section class="result hidden" id="etf-result">
         <div class="result-head">
           <h2>ETF 筛选结果</h2>
-          <button type="button" class="btn-ghost btn-sm" id="etf-save-btn" title="把当前 ETF 筛选结果保存为策略Hub中的自定义策略">＋ 存入策略Hub</button>
+          <button type="button" class="btn-ghost btn-sm" id="etf-save-btn" title="把当前 ETF 筛选结果保存为策略Hub中的自定义策略"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-plus"/></svg> 存入策略Hub</button>
           <span class="hint" id="etf-sub"></span>
         </div>
         <div class="card table-card">
@@ -197,7 +199,7 @@
           <button type="button" class="seg-btn active" data-strat="rlv">红利低波</button>
           <button type="button" class="seg-btn" data-strat="fund">基本面</button>
         </div>
-        <button type="button" class="btn-ghost btn-sm" id="screener-save-btn" title="把当前筛选结果保存为策略Hub中的自定义策略">＋ 存入策略Hub</button>
+        <button type="button" class="btn-ghost btn-sm" id="screener-save-btn" title="把当前筛选结果保存为策略Hub中的自定义策略"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-plus"/></svg> 存入策略Hub</button>
       </div>
 
       <!-- ETF 筛选 (内容由 app.js 从原 #tab-etf 注入) -->
@@ -640,7 +642,7 @@
       </div>
 
       <div class="card hub-panel hidden" data-panel="ideas">
-        <div class="card-title"><h2>精选思想</h2><span class="hint">投资大师与方法 · 点击「核心理念」展开</span><button type="button" class="btn-ghost btn-sm" id="idea-create-btn" style="margin-left:auto">＋ 新建思想</button></div>
+        <div class="card-title"><h2>精选思想</h2><span class="hint">投资大师与方法 · 点击「核心理念」展开</span><button type="button" class="btn-ghost btn-sm" id="idea-create-btn" style="margin-left:auto"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-plus"/></svg> 新建思想</button></div>
         <div id="idea-cards"></div>
       </div>
 
@@ -648,8 +650,8 @@
         <div class="result-head">
           <h2 id="strategy-title">策略</h2>
           <span class="hint" id="strategy-sub"></span>
-          <button type="button" class="btn-primary btn-sm" id="strategy-a158-btn" style="margin-left:auto" title="将本策略筛选出的 A 股公司导入 Alpha158 回测">📈 Alpha158 回测</button>
-          <button type="button" class="btn-primary btn-sm" id="strategy-ptf-btn" title="将本策略筛选出的公司导入组合回测(买入持有+区间交易)">📊 组合回测</button>
+          <button type="button" class="btn-primary btn-sm" id="strategy-a158-btn" style="margin-left:auto" title="将本策略筛选出的 A 股公司导入 Alpha158 回测"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-chart-up"/></svg> Alpha158 回测</button>
+          <button type="button" class="btn-primary btn-sm" id="strategy-ptf-btn" title="将本策略筛选出的公司导入组合回测(买入持有+区间交易)"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-chart-bar"/></svg> 组合回测</button>
         </div>
         <div class="card table-card">
           <div class="table-wrap">
@@ -663,8 +665,8 @@
         <div class="result-head">
           <h2 id="custom-st-title">我的策略</h2>
           <span class="hint" id="custom-st-sub"></span>
-          <button type="button" class="btn-primary btn-sm" id="custom-st-a158-btn" style="margin-left:auto" title="将本策略的全部 A 股公司导入 Alpha158 回测">📈 Alpha158 回测</button>
-          <button type="button" class="btn-primary btn-sm" id="custom-st-ptf-btn" title="将本策略的全部公司导入组合回测(买入持有+区间交易)">📊 组合回测</button>
+          <button type="button" class="btn-primary btn-sm" id="custom-st-a158-btn" style="margin-left:auto" title="将本策略的全部 A 股公司导入 Alpha158 回测"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-chart-up"/></svg> Alpha158 回测</button>
+          <button type="button" class="btn-primary btn-sm" id="custom-st-ptf-btn" title="将本策略的全部公司导入组合回测(买入持有+区间交易)"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-chart-bar"/></svg> 组合回测</button>
         </div>
         <div class="card table-card">
           <div class="table-wrap">
@@ -710,7 +712,7 @@
           </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary" id="caibao-btn">
-              <span class="btn-icon">📚</span> 下载并分析
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-book"/></svg> 下载并分析
             </button>
             <span class="range-hint" id="caibao-hint"></span>
           </div>
@@ -792,7 +794,7 @@
             </div>          </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary" id="band-btn">
-              <span class="btn-icon">⚙</span> 自动估算参数并回测
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-settings"/></svg> 自动估算参数并回测
             </button>
             <span class="range-hint" id="band-range-hint"></span>
           </div>
@@ -1060,7 +1062,7 @@
           </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary" id="a158-btn">
-              <span class="btn-icon">📈</span> 运行 Alpha158 回测
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-chart-up"/></svg> 运行 Alpha158 回测
             </button>
             <span class="range-hint" id="a158-hint"></span>
           </div>
@@ -1181,7 +1183,7 @@
           </div>
           <div class="form-actions">
             <button type="submit" class="btn-primary" id="ptf-btn">
-              <span class="btn-icon">📊</span> 运行组合回测
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-chart-bar"/></svg> 运行组合回测
             </button>
             <span class="range-hint" id="ptf-hint"></span>
           </div>
@@ -1237,6 +1239,29 @@
       </div><!-- /bt-panel ptf -->
     </section><!-- /tab-backtest -->
 
+    <!-- ================= Tab: 页面管理 (官网 愿景/使命/价值观/新闻) ================= -->
+    <section id="tab-sitepage" class="hidden">
+      <div class="card form-card">
+        <div class="card-title">
+          <h2>官网内容管理</h2>
+          <span class="hint">编辑公司官网 (首页) 的 愿景 / 使命 / 价值观 / 新闻浏览 内容, 保存后即时生效</span>
+        </div>
+        <div id="sitepage-editor">
+          <div class="loading" id="sitepage-loading"><div class="spinner"></div><span>正在加载官网内容…</span></div>
+          <div class="error hidden" id="sitepage-error"></div>
+        </div>
+        <div class="form-actions" id="sitepage-actions">
+          <button type="button" class="btn-primary" id="sitepage-save-btn">
+            <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-check"/></svg> 保存全部修改
+          </button>
+          <button type="button" class="btn-ghost" id="sitepage-reload-btn">
+            <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-refresh"/></svg> 重新加载
+          </button>
+          <span class="hint" id="sitepage-hint"></span>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <!-- 思想编辑模态框 (一个页面多字段输入, 替代多次 prompt) -->
@@ -1290,7 +1315,7 @@
     <span>数据源 tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/app.js?v=76"></script>
+  <script src="/static/js/auth.js?v=5"></script>
+  <script src="/static/js/app.js?v=78"></script>
 </body>
 </html>

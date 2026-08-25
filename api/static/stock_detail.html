@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>股票详情</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20" />
+  <link rel="stylesheet" href="/static/css/style.css?v=21" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <style>
     .detail-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -74,7 +74,7 @@
     .timeline { position: relative; padding-left: 22px; margin: 0; list-style: none; }
     .timeline::before {
       content: ""; position: absolute; left: 6px; top: 4px; bottom: 4px;
-      width: 2px; background: linear-gradient(#c7d2fe, #e0e7ff);
+      width: 2px; background: linear-gradient(#b9c7d8, #d8e0ea);
     }
     .timeline li { position: relative; padding: 0 0 18px 0; }
     .timeline li::before {
@@ -114,7 +114,7 @@
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
-        <span class="brand-logo">📈</span>
+        <span class="brand-logo"><svg class="icon" aria-hidden="true" style="width:34px;height:34px"><use href="/static/img/icons.svg#icon-chart-up"/></svg></span>
         <div>
           <h1>股票详情</h1>
           <p>K线 · PB/PE · 分红 · 52周高低 · 股本市值</p>
@@ -133,8 +133,8 @@
 
     <div id="content" class="hidden">
       <div class="detail-head">
-        <a class="back-link" href="/" onclick="history.length>1&&event.preventDefault();history.back();">← 返回</a>
-        <button type="button" class="btn-primary" id="add-my-btn">⭐ 加入我的股票</button>
+        <a class="back-link" href="/admin" onclick="history.length>1&&event.preventDefault();history.back();">← 返回后台</a>
+        <button type="button" class="btn-primary" id="add-my-btn"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-star"/></svg> 加入我的股票</button>
         <div class="detail-title">
           <h1 id="d-name">—</h1>
           <span class="code-line" id="d-code-line"></span>
@@ -185,7 +185,7 @@
       <div class="card">
         <div class="card-title">
           <h3>公司大事 <span class="hint">网络搜索 + AI 总结, 按时间倒序 (仅供参考)</span></h3>
-          <button type="button" class="btn-ghost" id="events-sync-btn">↻ 重新生成</button>
+          <button type="button" class="btn-ghost" id="events-sync-btn"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-refresh"/></svg> 重新生成</button>
         </div>
         <div class="events-toolbar">
           <span id="events-status" class="hint"></span>
@@ -222,7 +222,7 @@
     <span>股票详情 · FastAPI + tushare · 仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/auth.js?v=4"></script>
-  <script src="/static/js/stock_detail.js?v=27"></script>
+  <script src="/static/js/auth.js?v=5"></script>
+  <script src="/static/js/stock_detail.js?v=28"></script>
 </body>
 </html>

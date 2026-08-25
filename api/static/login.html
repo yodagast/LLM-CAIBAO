@@ -4,12 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>登录 · 智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=38" />
+  <link rel="stylesheet" href="/static/css/style.css?v=39" />
   <style>
     .login-page {
       min-height: 100vh; display: flex; align-items: center; justify-content: center;
       padding: 24px 16px;
-      background: linear-gradient(135deg, #eef2ff 0%, #f5f7fb 100%);
+      background: linear-gradient(135deg, #e8eef5 0%, #f5f7fb 100%);
     }
     .login-card {
       background: var(--card); border-radius: 16px; box-shadow: var(--shadow-lg);
@@ -28,7 +28,7 @@
     <div class="login-card">
       <div class="login-brand">
         <h1>智能选股回测平台</h1>
-        <p>登录后查看自选股 / ETF筛选 / 选股等全部功能</p>
+        <p>登录后进入投资研究后台 (自选股 / 选股 / 财报挖掘 / 回测)</p>
       </div>
       <div class="login-form">
         <div class="field">
@@ -47,11 +47,15 @@
         <button type="button" class="btn-primary" id="auth-submit">登录</button>
         <button type="button" class="btn-ghost" id="auth-toggle">没有账号? 去注册</button>
       </div>
-      <div class="login-foot">数据源 tushare · 仅供研究参考, 不构成投资建议</div>
+      <div class="login-foot">
+        <a href="/" style="color:var(--primary)">← 返回公司官网</a>
+        <span style="margin:0 10px;color:var(--text-soft)">|</span>
+        数据源 tushare · 仅供研究参考, 不构成投资建议
+      </div>
     </div>
   </div>
 
-  <script src="/static/js/auth.js?v=4"></script>
+  <script src="/static/js/auth.js?v=5"></script>
   <script>
     /* 独立登录/注册页: 已登录自动跳回 next; 登录成功跳回 next */
     CaiBaoAuth.initLoginPage();

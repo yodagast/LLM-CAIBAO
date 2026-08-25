@@ -2079,3 +2079,73 @@ async def pending_stock_events_job_count() -> int:
     async with pool.acquire() as conn:
         return int(await conn.fetchval(
             "SELECT count(*) FROM stock_events_jobs WHERE status = 'pending'"))
+
+
+# ---------------------------------------------------------------------------
+# 公司官网内容表 site_pages (愿景/使命/价值观/新闻, 后台页面管理编辑)
+# 单行表: 全站内容存 JSON 字段, 前端官网 fetch 渲染, 后台 tab 编辑保存
+# ---------------------------------------------------------------------------
+
+SITE_PAGES_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS site_pages (
+    id          BIGSERIAL PRIMARY KEY,
+    key         VARCHAR(32)  NOT NULL UNIQUE,   -- vision / mission / values / news
+    title       VARCHAR(64)  DEFAULT '',
+    content     TEXT         DEFAULT '',        -- 主内容 (愿景/使命正文; 价值观为 JSON 数组; 新闻为 JSON 数组)
+    updated_at  TIMESTAMP    DEFAULT now()
+);
+"""
+
+
+async def init_site_pages_schema() -> None:
+    """创建 site_pages 表 (幂等), 首次空表写入默认占位内容。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(SITE_PAGES_SCHEMA_DDL)
+        # 默认内容 (仅在表为空时插入, 不覆盖用户编辑)
+        n = await conn.fetchval("SELECT count(*) FROM site_pages")
+        if n == 0:
+            defaults = [
+                ("vision", "愿景",
+                 '{"title": "愿景", "lede": "创造时间和知识的复利。", '
+                 '"body": "时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。我们相信，真正的复利不止来自资本，更来自长期积累的正确认知与时间的朋友。让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值——这是我们为之努力的愿景。"}'),
+                ("mission", "使命",
+                 '{"title": "使命", "lede": "一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。", '
+                 '"body": "无论资金规模大小，我们都以同样的审慎与纪律对待每一份托付。合理的收益意味着不追逐泡沫与侥幸，可持续的收益意味着拥有穿越周期的稳健底色，超过社会平均的收益意味着持续为客户创造真正的增量价值。"}'),
+                ("values", "价值观",
+                 '[{"name": "本分", "desc": "做对的事情、把事情做对、求责于己，坚持 stop doing list——知道什么不该做，比知道该做什么更重要。"},'
+                 '{"name": "客观", "desc": "假设正确、逻辑正确、事实正确；对抗认知偏差、对抗误判心理，让决策建立在可验证的事实与逻辑之上。"},'
+                 '{"name": "理性", "desc": "避免愚蠢，而非追求聪明；避免损失，而非追求利润。把不犯重大错误作为第一原则。"},'
+                 '{"name": "诚实", "desc": "对知识、对人诚实，知之为知之，不知为不知。不掩饰无知，不夸大能力，对结果如实相告。"},'
+                 '{"name": "持续学习 · 知行合一", "desc": "把学习作为终身习惯，在不确定性中持续进化；让认知落到行动，让行动验证认知，循环精进。"}]'),
+                ("news", "新闻浏览",
+                 '[{"date": "2026年8月", "title": "财宝资本研究平台全面上线智能选股回测系统", "tag": "公司动态"},'
+                 '{"date": "2026年7月", "title": "财宝资本发布年度价值投资研究展望", "tag": "研究发布"},'
+                 '{"date": "2026年6月", "title": "财宝资本受邀参加亚洲价值投资论坛并作主题分享", "tag": "行业交流"},'
+                 '{"date": "2026年4月", "title": "财宝资本举办「长期主义与复利」投资者闭门沙龙", "tag": "投资者关系"},'
+                 '{"date": "2026年2月", "title": "财宝资本向教育公益基金会捐赠，支持青年金融人才培养", "tag": "社会责任"}]'),
+            ]
+            await conn.executemany(
+                "INSERT INTO site_pages (key, title, content) VALUES ($1, $2, $3)",
+                defaults)
+
+
+async def get_site_pages() -> dict[str, dict]:
+    """读取全部官网内容, 返回 {key: {title, content, updated_at}}。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT key, title, content, updated_at FROM site_pages")
+    return {str(r["key"]): {"title": r["title"], "content": r["content"],
+                            "updated_at": str(r["updated_at"])} for r in rows}
+
+
+async def upsert_site_page(key: str, title: str, content: str) -> bool:
+    """写入/更新一个官网内容块 (key 唯一 upsert)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO site_pages (key, title, content, updated_at) VALUES ($1, $2, $3, now()) "
+            "ON CONFLICT (key) DO UPDATE SET title = EXCLUDED.title, "
+            "content = EXCLUDED.content, updated_at = now()",
+            key, title, content)
+    return True

@@ -227,11 +227,11 @@
     let inList = false;
 
     function setAddedState() {
-      btn.textContent = "✓ 已加入 · 点击移除";
+      btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-check"/></svg> 已加入 · 点击移除';
       btn.classList.add("added");
     }
     function setNotAddedState() {
-      btn.textContent = "⭐ 加入我的股票";
+      btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-star"/></svg> 加入我的股票';
       btn.classList.remove("added");
     }
 
@@ -265,9 +265,11 @@
         inList = !inList;
         if (inList) setAddedState(); else setNotAddedState();
       } catch (err) {
-        btn.textContent = "✗ 操作失败";
+        btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-x"/></svg> 操作失败';
         setTimeout(() => {
-          btn.textContent = inList ? "✓ 已加入 · 点击移除" : "⭐ 加入我的股票";
+          btn.innerHTML = inList
+            ? '<svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-check"/></svg> 已加入 · 点击移除'
+            : '<svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-star"/></svg> 加入我的股票';
         }, 2000);
       } finally {
         btn.disabled = false;

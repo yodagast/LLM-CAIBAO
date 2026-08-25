@@ -55,6 +55,7 @@ async def _startup() -> None:
         await pg_service.init_invest_ideas_schema()
         await pg_service.init_stock_events_schema()
         await pg_service.init_stock_events_jobs_schema()
+        await pg_service.init_site_pages_schema()
         # 启动公司大事生成 worker (持久化任务队列, 多进程靠 pg 抢占安全)
         try:
             if events_service.worker_task is None or events_service.worker_task.done():
@@ -226,6 +227,18 @@ class IdeaUpdate(BaseModel):
     principles: str | None = Field(None, max_length=3000)
 
 
+class SiteContentRequest(BaseModel):
+    """官网站点内容保存 (后台「页面管理」编辑)。"""
+    key: str = Field(..., description="内容块标志: vision/mission/values/news")
+    title: str = Field(..., max_length=64, description="板块标题")
+    content: str = Field("", max_length=20000, description="内容 (JSON 字符串, values/news 为数组)")
+
+
+class SiteContentBatchRequest(BaseModel):
+    """官网站点内容批量保存 (一次提交全部板块)。"""
+    items: list[SiteContentRequest] = Field(..., min_length=1, max_length=10)
+
+
 class BandOptimizeRequest(BaseModel):
     """区间交易参数估算请求。"""
     ts_code: str = Field(..., description="股票代码, 如 000858.SZ 或 000858")
@@ -332,6 +345,14 @@ class EtfScreenRequest(BaseModel):
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
+    """公司官网首页 (公司简介 / 投资原则 / 公司文化 / 新闻浏览)。"""
+    return FileResponse(STATIC_DIR / "home.html",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_index() -> FileResponse:
+    """后台 (原智能选股回测平台页面)。"""
     # 禁止缓存 index.html: 它引用带版本号的静态资源 (style.css?v=N / app.js?v=N),
     # 若被浏览器缓存会一直请求旧版本号资源 (表现为 304 / 前端不更新)。
     return FileResponse(STATIC_DIR / "index.html",
@@ -1342,3 +1363,30 @@ async def ideas_delete(sid: int, request: Request) -> dict:
     await _get_owned_idea(sid, user["id"])
     n = await invest_ideas_service.delete_idea(sid, user["id"])
     return {"ok": True, "deleted": n}
+
+
+# ---------------------------------------------------------------------------
+# 官网内容管理 (后台「页面管理」: 愿景/使命/价值观/新闻, 前端官网动态渲染)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/site/content")
+async def site_content_get() -> dict:
+    """读取全部官网内容 (公开, 官网首页调用)。"""
+    try:
+        pages = await pg_service.get_site_pages()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取官网内容失败: {e}")
+    return {"items": pages}
+
+
+@app.put("/api/site/content")
+async def site_content_save(req: SiteContentBatchRequest, request: Request) -> dict:
+    """批量保存官网内容 (需登录, 仅后台「页面管理」调用)。"""
+    await _require_user(request)
+    try:
+        for it in req.items:
+            await pg_service.upsert_site_page(
+                it.key.strip(), it.title.strip(), it.content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"保存官网内容失败: {e}")
+    return {"ok": True, "saved": len(req.items)}

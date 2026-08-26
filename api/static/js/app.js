@@ -173,11 +173,6 @@
         <div class="field">
           <label for="sp-values">价值观列表 (每行一条, 用 | 分隔名称与描述)</label>
           <textarea id="sp-values" class="sp-textarea" rows="8" placeholder="本分 | 做对的事情、把事情做对、求责于己…&#10;客观 | 假设正确、逻辑正确、事实正确…">${(sitePageData.values || []).map(v => String(v.name || "") + " | " + String(v.desc || "")).join("\n").replace(/</g, "&lt;")}</textarea>
-        </div>`) +
-      sitePageSection("新闻浏览 News", "官网首页「新闻浏览」列表, 每行一条, 格式: 日期 | 标题 | 标签 (标签可空)", `
-        <div class="field">
-          <label for="sp-news">新闻列表 (每行一条, 用 | 分隔 日期 | 标题 | 标签)</label>
-          <textarea id="sp-news" class="sp-textarea" rows="8" placeholder="2026年8月 | 财宝资本研究平台全面上线智能选股回测系统 | 公司动态&#10;2026年7月 | 财宝资本发布年度价值投资研究展望 | 研究发布">${(sitePageData.news || []).map(n => [n.date, n.title, n.tag].filter(Boolean).join(" | ")).join("\n").replace(/</g, "&lt;")}</textarea>
         </div>`);
   }
 
@@ -199,17 +194,14 @@
       if (idx > -1) return { name: line.slice(0, idx).trim(), desc: line.slice(idx + 1).trim() };
       return { name: line, desc: "" };
     });
-    const news = v("sp-news").split("\n").map(l => l.trim()).filter(Boolean).map(line => {
-      const parts = line.split("|").map(s => s.trim());
-      return { date: parts[0] || "", title: parts[1] || "", tag: parts[2] || "" };
-    });
-    return { vision, mission, values, news };
+    return { vision, mission, values };
   }
 
   async function loadSitePageContent() {
     const box = $("#sitepage-editor");
     const errEl = $("#sitepage-error");
     const hint = $("#sitepage-hint");
+    const loadingEl = $("#sitepage-loading");
     if (!box) return;
     try {
       const r = await fetch("/api/site/content");
@@ -223,14 +215,15 @@
         vision: parse((pages.vision || {}).content, fbVision),
         mission: parse((pages.mission || {}).content, fbMission),
         values: parse((pages.values || {}).content, []),
-        news: parse((pages.news || {}).content, []),
       };
       renderSitePageEditor();
+      if (loadingEl) loadingEl.classList.add("hidden");   // 隐藏转圈
       if (errEl) errEl.classList.add("hidden");
       if (hint) hint.textContent = "";
     } catch (e) {
       sitePageData = null;
       if (box) box.innerHTML = "";
+      if (loadingEl) loadingEl.classList.add("hidden");   // 失败也隐藏转圈
       if (errEl) { errEl.textContent = "加载官网内容失败: " + (e.message || e); errEl.classList.remove("hidden"); }
     }
   }
@@ -241,7 +234,6 @@
       { key: "vision", title: data.vision.title, content: JSON.stringify(data.vision) },
       { key: "mission", title: data.mission.title, content: JSON.stringify(data.mission) },
       { key: "values", title: "价值观", content: JSON.stringify(data.values) },
-      { key: "news", title: "新闻浏览", content: JSON.stringify(data.news) },
     ];
     const btn = $("#sitepage-save-btn");
     const hint = $("#sitepage-hint");
@@ -262,11 +254,111 @@
     }
   }
 
+  // ---------- 内容管理 (公司文化 / 行业研究 / 新闻浏览) ----------
+  let spView = "culture";    // culture 公司文化 / research 行业研究 / news 新闻浏览
+
+  function setSpView(view) {
+    spView = view;
+    document.querySelectorAll("#sp-seg-kind .seg-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.kind === view);
+    });
+    const isArticles = (view === "research" || view === "news");
+    const artBox = $("#sp-view-articles");
+    const cBox = $("#sp-view-culture");
+    if (artBox) artBox.classList.toggle("hidden", !isArticles);
+    if (cBox) cBox.classList.toggle("hidden", isArticles);
+    // 文章视图提示 "新建文章" 类型
+    const createBtn = $("#article-create-btn");
+    if (createBtn) {
+      createBtn.dataset.kind = view;
+      createBtn.innerHTML = svgIcon("icon-plus") + " 新建" + (view === "news" ? "新闻" : "研究文章");
+    }
+    if (isArticles) loadArticles();
+    else loadSitePageContent();
+  }
+
+  function renderArticlesTable(list) {
+    const tbody = document.querySelector("#articles-table tbody");
+    if (!tbody) return;
+    if (!list || !list.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-soft)">暂无文章, 点击「新建文章」创建</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map((a) => {
+      let tags = [];
+      try { tags = JSON.parse(a.tags || "[]") || []; } catch (e) { tags = []; }
+      return (
+        '<tr>' +
+        '  <td>' + a.id + "</td>" +
+        '  <td><a href="/article/' + a.id + '" target="_blank" class="stock-link">' + (a.title || "") + "</a></td>" +
+        '  <td>' + (a.date || "") + "</td>" +
+        '  <td>' + (tags.map((t) => { const escT = String(t).replace(/</g, "&lt;"); return '<span class="filter-badge">' + escT + "</span>"; }).join(" ") || "") + "</td>" +
+        '  <td>' + String(a.updated_at || "").slice(0, 16).replace("T", " ") + "</td>" +
+        '  <td style="white-space:nowrap">' +
+        '    <a class="btn-ghost btn-sm" href="/admin/article_edit?id=' + a.id + '&kind=' + a.kind + '">编辑</a> ' +
+        '    <button type="button" class="btn-ghost btn-sm" data-act="del" data-id="' + a.id + '">删除</button>' +
+        "  </td>" +
+        "</tr>"
+      );
+    }).join("");
+    tbody.querySelectorAll("[data-act]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = parseInt(btn.dataset.id, 10);
+        deleteArticle(id);
+      });
+    });
+  }
+
+  async function loadArticles() {
+    const tbody = document.querySelector("#articles-table tbody");
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-soft)">加载中…</td></tr>';
+    try {
+      const r = await fetch("/api/site/articles?kind=" + spView + "&limit=500");
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "读取失败");
+      renderArticlesTable(d.items || []);
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--red)">加载失败: ' + String(e.message || e).replace(/</g, "&lt;") + "</td></tr>";
+    }
+  }
+
+  async function deleteArticle(aid) {
+    if (!window.confirm("确定删除该文章？")) return;
+    try {
+      const r = await fetch("/api/site/articles/" + aid, { method: "DELETE" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "删除失败");
+      loadArticles();
+    } catch (e) {
+      alert("删除失败: " + (e.message || e));
+    }
+  }
+
   function initSitePageEditor() {
     const saveBtn = $("#sitepage-save-btn");
     const reloadBtn = $("#sitepage-reload-btn");
     if (saveBtn) saveBtn.addEventListener("click", saveSitePage);
     if (reloadBtn) reloadBtn.addEventListener("click", loadSitePageContent);
+    initArticleManager();   // 内容管理: 三视图切换 + 文章管理
+  }
+
+  function initArticleManager() {
+    // 三视图切换 (公司文化 / 行业研究 / 新闻浏览)
+    document.querySelectorAll("#sp-seg-kind .seg-btn").forEach((btn) => {
+      btn.addEventListener("click", () => setSpView(btn.dataset.kind));
+    });
+    const createBtn = $("#article-create-btn");
+    if (createBtn) {
+      createBtn.addEventListener("click", () => {
+        const kind = createBtn.dataset.kind || spView;
+        location.href = "/admin/article_edit?kind=" + kind;
+      });
+    }
+    // 从编辑页返回时 (URL ?sitepage=kind) 恢复对应视图
+    const q = new URLSearchParams(location.search);
+    const initView = q.get("sitepage");
+    setSpView(initView === "research" || initView === "news" ? initView : "culture");
   }
 
   // ---------- 股票联想 (共享 datalist, 回测/区间估价/财报 三处复用) ----------
@@ -476,8 +568,11 @@
       });
       // 切到策略Hub 时刷新策略列表 (自定义策略可能变化)
       if (btn.dataset.tab === "strategies") { loadStrategies(); loadIdeas(); }
-      // 切到页面管理 时加载官网内容
-      if (btn.dataset.tab === "sitepage") { loadSitePageContent(); }
+      // 切到页面管理 时按当前视图加载 (公司文化编辑 或 文章管理)
+      if (btn.dataset.tab === "sitepage") {
+        if (spView === "research" || spView === "news") loadArticles();
+        else loadSitePageContent();
+      }
       // 切到回测 tab 且 Alpha158 子面板可见时刷新股票池
       if (btn.dataset.tab === "backtest") {
         const ap = document.getElementById("bt-alpha158");

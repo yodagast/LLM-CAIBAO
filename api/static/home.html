@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>财宝资本 CaiBao Capital · 创造时间和知识的复利</title>
-  <link rel="stylesheet" href="/static/css/home.css?v=3" />
+  <link rel="stylesheet" href="/static/css/home.css?v=5" />
 </head>
 <body>
 
@@ -16,10 +16,9 @@
         <span class="brand-text"><b>财宝资本</b><span>CaiBao Capital</span></span>
       </a>
       <nav class="nav-links">
-        <a class="lnk" href="#vision">愿景</a>
-        <a class="lnk" href="#mission">使命</a>
-        <a class="lnk" href="#values">价值观</a>
-        <a class="lnk" href="#news">新闻浏览</a>
+        <a class="lnk active" href="/">公司文化</a>
+        <a class="lnk" href="/research">行业研究</a>
+        <a class="lnk" href="/news">新闻浏览</a>
       </nav>
     </div>
   </header>
@@ -34,60 +33,49 @@
         以本分、客观、理性、诚实为准则，在长期主义中积累时间与知识的复利。
       </p>
       <div class="hero-actions">
-        <a class="btn-hero solid" href="#values">了解我们的价值观</a>
+        <a class="btn-hero solid" href="#culture">了解我们的公司文化</a>
+        <a class="btn-hero ghost" href="/research">浏览行业研究</a>
       </div>
     </div>
   </section>
 
-  <!-- 愿景 -->
-  <section class="block" id="vision">
+  <!-- 公司文化: 愿景 + 使命 + 价值观 -->
+  <section class="block" id="culture">
     <div class="block-inner">
-      <div class="section-kicker">Vision</div>
-      <h2 class="section-title">愿景</h2>
-      <p class="section-lede lead" id="vision-lede">
-        创造时间和知识的复利。
-      </p>
-      <p class="paragraph" id="vision-body">
-        时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。我们相信，真正的复利不止来自资本，
-        更来自长期积累的正确认知与时间的朋友。让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值——
-        这是我们为之努力的愿景。
-      </p>
-    </div>
-  </section>
+      <div class="section-kicker">Culture</div>
+      <h2 class="section-title">公司文化</h2>
 
-  <!-- 使命 -->
-  <section class="block block-alt" id="mission">
-    <div class="block-inner">
-      <div class="section-kicker">Mission</div>
-      <h2 class="section-title">使命</h2>
-      <p class="section-lede lead" id="mission-lede">
-        一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。
-      </p>
-      <p class="paragraph" id="mission-body">
-        无论资金规模大小，我们都以同样的审慎与纪律对待每一份托付。合理的收益意味着不追逐泡沫与侥幸，
-        可持续的收益意味着拥有穿越周期的稳健底色，超过社会平均的收益意味着持续为客户创造真正的增量价值。
-      </p>
-    </div>
-  </section>
-
-  <!-- 价值观 -->
-  <section class="block" id="values">
-    <div class="block-inner">
-      <div class="section-kicker">Values</div>
-      <h2 class="section-title">价值观</h2>
-      <div class="principles-grid" id="values-grid">
-        <!-- 由 JS 从 API 渲染 -->
+      <!-- 愿景 -->
+      <div class="culture-sec" id="culture-vision">
+        <div class="culture-kicker">Vision · 愿景</div>
+        <p class="section-lede lead" id="vision-lede">
+          创造时间和知识的复利。
+        </p>
+        <p class="paragraph" id="vision-body">
+          时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。我们相信，真正的复利不止来自资本，
+          更来自长期积累的正确认知与时间的朋友。让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值——
+          这是我们为之努力的愿景。
+        </p>
       </div>
-    </div>
-  </section>
 
-  <!-- 新闻浏览 -->
-  <section class="block block-alt" id="news">
-    <div class="block-inner">
-      <div class="section-kicker">News</div>
-      <h2 class="section-title">新闻浏览</h2>
-      <div class="news-list" id="news-list">
-        <!-- 由 JS 从 API 渲染 -->
+      <!-- 使命 -->
+      <div class="culture-sec" id="culture-mission">
+        <div class="culture-kicker">Mission · 使命</div>
+        <p class="section-lede lead" id="mission-lede">
+          一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。
+        </p>
+        <p class="paragraph" id="mission-body">
+          无论资金规模大小，我们都以同样的审慎与纪律对待每一份托付。合理的收益意味着不追逐泡沫与侥幸，
+          可持续的收益意味着拥有穿越周期的稳健底色，超过社会平均的收益意味着持续为客户创造真正的增量价值。
+        </p>
+      </div>
+
+      <!-- 价值观 -->
+      <div class="culture-sec" id="culture-values">
+        <div class="culture-kicker">Values · 价值观</div>
+        <div class="principles-grid" id="values-grid">
+          <!-- 由 JS 从 API 渲染 -->
+        </div>
       </div>
     </div>
   </section>
@@ -108,10 +96,9 @@
         </div>
         <div>
           <h5>快捷导航</h5>
-          <p><a href="#vision">愿景</a></p>
-          <p><a href="#mission">使命</a></p>
-          <p><a href="#values">价值观</a></p>
-          <p><a href="#news">新闻浏览</a></p>
+          <p><a href="/">公司文化</a></p>
+          <p><a href="/research">行业研究</a></p>
+          <p><a href="/news">新闻浏览</a></p>
         </div>
         <div>
           <h5>联系我们</h5>
@@ -128,7 +115,7 @@
   </footer>
 
   <script>
-    // 官网内容动态加载: 从后端 API 读取 愿景/使命/价值观/新闻, 渲染到对应区块
+    // 公司文化页: 从后端 API 读取 愿景/使命/价值观, 渲染到对应区块
     // 后端无数据 / 接口异常时自动回退到页内静态兜底内容
     (function () {
       /* ---------- 静态兜底数据 (与后端 site_pages 默认值一致) ---------- */
@@ -149,13 +136,6 @@
           { name: "理性", desc: "避免愚蠢，而非追求聪明；避免损失，而非追求利润。把不犯重大错误作为第一原则。" },
           { name: "诚实", desc: "对知识、对人诚实，知之为知之，不知为不知。不掩饰无知，不夸大能力，对结果如实相告。" },
           { name: "持续学习 · 知行合一", desc: "把学习作为终身习惯，在不确定性中持续进化；让认知落到行动，让行动验证认知，循环精进。" }
-        ],
-        news: [
-          { date: "2026年8月", title: "财宝资本研究平台全面上线智能选股回测系统", tag: "公司动态" },
-          { date: "2026年7月", title: "财宝资本发布年度价值投资研究展望", tag: "研究发布" },
-          { date: "2026年6月", title: "财宝资本受邀参加亚洲价值投资论坛并作主题分享", tag: "行业交流" },
-          { date: "2026年4月", title: "财宝资本举办「长期主义与复利」投资者闭门沙龙", tag: "投资者关系" },
-          { date: "2026年2月", title: "财宝资本向教育公益基金会捐赠，支持青年金融人才培养", tag: "社会责任" }
         ]
       };
 
@@ -174,7 +154,6 @@
       /* 渲染各区块 */
       function renderVision(v) {
         if (!v) return;
-        // 标题、引语、正文
         var lede = $("vision-lede"); if (lede) lede.textContent = v.lede || "";
         var body = $("vision-body"); if (body) body.textContent = v.body || "";
       }
@@ -197,21 +176,6 @@
           );
         }).join("");
       }
-      function renderNews(list) {
-        if (!Array.isArray(list) || !list.length) return;
-        var box = $("news-list");
-        if (!box) return;
-        box.innerHTML = list.map(function (it) {
-          var href = (it.url && it.url !== "javascript:void(0)") ? esc(it.url) : "javascript:void(0)";
-          return (
-            '<div class="news-item">' +
-            '  <span class="news-date">' + esc(it.date || "") + "</span>" +
-            '  <a class="news-title" href="' + href + '">' + esc(it.title || "") + "</a>" +
-            (it.tag ? '  <span class="news-tag">' + esc(it.tag) + "</span>" : "") +
-            "</div>"
-          );
-        }).join("");
-      }
 
       /* 主入口: 拉取 API, 成功则渲染, 失败回退静态 */
       try {
@@ -222,23 +186,19 @@
             var vision = parseJson((pages.vision || {}).content, FALLBACK.vision);
             var mission = parseJson((pages.mission || {}).content, FALLBACK.mission);
             var values = parseJson((pages.values || {}).content, FALLBACK.values);
-            var news = parseJson((pages.news || {}).content, FALLBACK.news);
             renderVision(vision);
             renderMission(mission);
             renderValues(Array.isArray(values) ? values : FALLBACK.values);
-            renderNews(Array.isArray(news) ? news : FALLBACK.news);
           })
           .catch(function () {
             renderVision(FALLBACK.vision);
             renderMission(FALLBACK.mission);
             renderValues(FALLBACK.values);
-            renderNews(FALLBACK.news);
           });
       } catch (e) {
         renderVision(FALLBACK.vision);
         renderMission(FALLBACK.mission);
         renderValues(FALLBACK.values);
-        renderNews(FALLBACK.news);
       }
     })();
   </script>

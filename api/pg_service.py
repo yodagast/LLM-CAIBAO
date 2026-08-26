@@ -2089,45 +2089,77 @@ async def pending_stock_events_job_count() -> int:
 SITE_PAGES_SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS site_pages (
     id          BIGSERIAL PRIMARY KEY,
-    key         VARCHAR(32)  NOT NULL UNIQUE,   -- vision / mission / values / news
+    key         VARCHAR(32)  NOT NULL UNIQUE,   -- vision / mission / values / industry_research / news
     title       VARCHAR(64)  DEFAULT '',
-    content     TEXT         DEFAULT '',        -- 主内容 (愿景/使命正文; 价值观为 JSON 数组; 新闻为 JSON 数组)
+    content     TEXT         DEFAULT '',        -- vision/mission 为 JSON; industry_research/news 为 Markdown 文本
     updated_at  TIMESTAMP    DEFAULT now()
 );
 """
 
+# 各内容块的默认占位 (插入/补齐时使用)
+SITE_PAGES_DEFAULTS = [
+    ("vision", "愿景",
+     '{"title": "愿景", "lede": "创造时间和知识的复利。", '
+     '"body": "时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。我们相信，真正的复利不止来自资本，更来自长期积累的正确认知与时间的朋友。让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值——这是我们为之努力的愿景。"}'),
+    ("mission", "使命",
+     '{"title": "使命", "lede": "一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。", '
+     '"body": "无论资金规模大小，我们都以同样的审慎与纪律对待每一份托付。合理的收益意味着不追逐泡沫与侥幸，可持续的收益意味着拥有穿越周期的稳健底色，超过社会平均的收益意味着持续为客户创造真正的增量价值。"}'),
+    ("values", "价值观",
+     '[{"name": "本分", "desc": "做对的事情、把事情做对、求责于己，坚持 stop doing list——知道什么不该做，比知道该做什么更重要。"},'
+     '{"name": "客观", "desc": "假设正确、逻辑正确、事实正确；对抗认知偏差、对抗误判心理，让决策建立在可验证的事实与逻辑之上。"},'
+     '{"name": "理性", "desc": "避免愚蠢，而非追求聪明；避免损失，而非追求利润。把不犯重大错误作为第一原则。"},'
+     '{"name": "诚实", "desc": "对知识、对人诚实，知之为知之，不知为不知。不掩饰无知，不夸大能力，对结果如实相告。"},'
+     '{"name": "持续学习 · 知行合一", "desc": "把学习作为终身习惯，在不确定性中持续进化；让认知落到行动，让行动验证认知，循环精进。"}]'),
+    ("industry_research", "行业研究",
+     '# 行业研究\n\n我们持续对重点行业与企业展开深度研究，以下为部分研究成果。\n\n## 白酒行业深度\n\n高端化与库存周期……\n'),
+    ("news", "新闻浏览",
+     '# 新闻浏览\n\n## 研究平台上线\n\n财宝资本研究平台全面上线智能选股回测系统。\n'),
+]
+
 
 async def init_site_pages_schema() -> None:
-    """创建 site_pages 表 (幂等), 首次空表写入默认占位内容。"""
+    """创建 site_pages 表 (幂等)。首次空表写入全部默认内容;
+    已有表仅补齐缺失的 key (如从旧版升级新增 research 块, 不覆盖用户编辑)。
+    """
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(SITE_PAGES_SCHEMA_DDL)
-        # 默认内容 (仅在表为空时插入, 不覆盖用户编辑)
-        n = await conn.fetchval("SELECT count(*) FROM site_pages")
-        if n == 0:
-            defaults = [
-                ("vision", "愿景",
-                 '{"title": "愿景", "lede": "创造时间和知识的复利。", '
-                 '"body": "时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。我们相信，真正的复利不止来自资本，更来自长期积累的正确认知与时间的朋友。让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值——这是我们为之努力的愿景。"}'),
-                ("mission", "使命",
-                 '{"title": "使命", "lede": "一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。", '
-                 '"body": "无论资金规模大小，我们都以同样的审慎与纪律对待每一份托付。合理的收益意味着不追逐泡沫与侥幸，可持续的收益意味着拥有穿越周期的稳健底色，超过社会平均的收益意味着持续为客户创造真正的增量价值。"}'),
-                ("values", "价值观",
-                 '[{"name": "本分", "desc": "做对的事情、把事情做对、求责于己，坚持 stop doing list——知道什么不该做，比知道该做什么更重要。"},'
-                 '{"name": "客观", "desc": "假设正确、逻辑正确、事实正确；对抗认知偏差、对抗误判心理，让决策建立在可验证的事实与逻辑之上。"},'
-                 '{"name": "理性", "desc": "避免愚蠢，而非追求聪明；避免损失，而非追求利润。把不犯重大错误作为第一原则。"},'
-                 '{"name": "诚实", "desc": "对知识、对人诚实，知之为知之，不知为不知。不掩饰无知，不夸大能力，对结果如实相告。"},'
-                 '{"name": "持续学习 · 知行合一", "desc": "把学习作为终身习惯，在不确定性中持续进化；让认知落到行动，让行动验证认知，循环精进。"}]'),
-                ("news", "新闻浏览",
-                 '[{"date": "2026年8月", "title": "财宝资本研究平台全面上线智能选股回测系统", "tag": "公司动态"},'
-                 '{"date": "2026年7月", "title": "财宝资本发布年度价值投资研究展望", "tag": "研究发布"},'
-                 '{"date": "2026年6月", "title": "财宝资本受邀参加亚洲价值投资论坛并作主题分享", "tag": "行业交流"},'
-                 '{"date": "2026年4月", "title": "财宝资本举办「长期主义与复利」投资者闭门沙龙", "tag": "投资者关系"},'
-                 '{"date": "2026年2月", "title": "财宝资本向教育公益基金会捐赠，支持青年金融人才培养", "tag": "社会责任"}]'),
-            ]
+        # 旧版迁移: research → industry_research (改名)
+        has_research = await conn.fetchval("SELECT 1 FROM site_pages WHERE key='research' LIMIT 1")
+        if has_research:
+            await conn.execute("UPDATE site_pages SET key='industry_research', title='行业研究' "
+                               "WHERE key='research'")
+        # 旧版迁移: news 为 JSON 数组格式 → 转 markdown (旧列表 [{date,title,tag},...])
+        news_row = await conn.fetchrow("SELECT content FROM site_pages WHERE key='news'")
+        if news_row and news_row["content"] and str(news_row["content"]).lstrip().startswith("["):
+            try:
+                import json as _json
+                old_news = _json.loads(news_row["content"])
+                if isinstance(old_news, list):
+                    lines = ["# 新闻浏览", ""]
+                    for n in old_news:
+                        title = (n.get("title") or "").strip()
+                        date = (n.get("date") or "").strip()
+                        if title:
+                            lines.append(f"## {title}")
+                            if date:
+                                lines.append(f"*{date}*")
+                            if n.get("tag"):
+                                lines.append(f"标签: {n.get('tag')}")
+                            lines.append("")
+                    await conn.execute("UPDATE site_pages SET content=$1, updated_at=now() "
+                                       "WHERE key='news'", "\n".join(lines))
+            except Exception:
+                pass  # 非 JSON 数组则跳过 (已是 markdown)
+        # 已存在的 key 集合
+        rows = await conn.fetch("SELECT key FROM site_pages")
+        have = {str(r["key"]) for r in rows}
+        # 插入缺失的默认块
+        missing = [(k, t, c) for k, t, c in SITE_PAGES_DEFAULTS if k not in have]
+        if missing:
             await conn.executemany(
                 "INSERT INTO site_pages (key, title, content) VALUES ($1, $2, $3)",
-                defaults)
+                missing)
 
 
 async def get_site_pages() -> dict[str, dict]:
@@ -2149,3 +2181,122 @@ async def upsert_site_page(key: str, title: str, content: str) -> bool:
             "content = EXCLUDED.content, updated_at = now()",
             key, title, content)
     return True
+
+
+# ---------------------------------------------------------------------------
+# 官网文章表 site_articles (行业研究 / 新闻浏览, 后台文章管理增删改查)
+# 前端 /research /news 显示文章列表(标题/日期/标签), 点击进正文页
+# ---------------------------------------------------------------------------
+
+SITE_ARTICLES_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS site_articles (
+    id          BIGSERIAL PRIMARY KEY,
+    kind        VARCHAR(16)  NOT NULL,   -- research 行业研究 / news 新闻浏览
+    title       VARCHAR(200) NOT NULL,   -- 标题 (列表展示, 点击进正文)
+    date        VARCHAR(32)  DEFAULT '', -- 显示日期 (如 2026-08-26)
+    tags        TEXT         DEFAULT '', -- 标签 (JSON 数组字符串, 列表展示)
+    body        TEXT         DEFAULT '', -- 正文 (Markdown, 正文页渲染)
+    created_at  TIMESTAMP    DEFAULT now(),
+    updated_at  TIMESTAMP    DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_site_articles_kind ON site_articles (kind, id);
+"""
+
+
+async def init_site_articles_schema() -> None:
+    """创建 site_articles 表 (幂等)。首次空表时从旧 site_pages 迁移内容。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(SITE_ARTICLES_SCHEMA_DDL)
+        # 首次迁移: 表为空时, 将旧 site_pages 的行业研究/新闻 markdown 拆成文章
+        n = await conn.fetchval("SELECT count(*) FROM site_articles")
+        if n == 0:
+            for key, kind in (("industry_research", "research"), ("news", "news")):
+                row = await conn.fetchrow(
+                    "SELECT title, content FROM site_pages WHERE key=$1", key)
+                if not row or not row["content"]:
+                    continue
+                title = str(row["title"]) or ("行业研究" if kind == "research" else "新闻浏览")
+                # 解析 markdown: 二级标题"## X" 为文章标题, 其后内容为正文
+                lines = str(row["content"]).splitlines()
+                current_title = ""
+                buf: list[str] = []
+                for ln in lines:
+                    if ln.startswith("## "):
+                        # 提交上一篇文章
+                        if current_title:
+                            await conn.execute(
+                                "INSERT INTO site_articles (kind, title, date, tags, body) "
+                                "VALUES ($1, $2, $3, $4, $5)",
+                                kind, current_title, "", "", "\n".join(buf).strip())
+                        current_title = ln[3:].strip()
+                        buf = []
+                    elif not current_title:
+                        continue  # 忽略 ## 之前的内容
+                    else:
+                        buf.append(ln)
+                if current_title:
+                    await conn.execute(
+                        "INSERT INTO site_articles (kind, title, date, tags, body) "
+                        "VALUES ($1, $2, $3, $4, $5)",
+                        kind, current_title, "", "", "\n".join(buf).strip())
+                if not current_title and not buf:
+                    # 全篇无 ## 标题: 整篇作为一篇文章
+                    await conn.execute(
+                        "INSERT INTO site_articles (kind, title, date, tags, body) "
+                        "VALUES ($1, $2, $3, $4, $5)",
+                        kind, title, "", "", str(row["content"]).strip())
+
+
+async def list_site_articles(kind: str, limit: int = 100) -> list[dict]:
+    """列出某类型的全部文章 (按 id 降序, 列表页用, 不含 body 以减负)。"""
+    if kind not in ("research", "news"):
+        kind = "research"
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, kind, title, date, tags, updated_at "
+            "FROM site_articles WHERE kind = $1 ORDER BY id DESC LIMIT $2::int",
+            kind, int(limit))
+    return [dict(r) for r in rows]
+
+
+async def get_site_article(aid: int) -> dict | None:
+    """按 id 查文章 (正文页用, 含 body)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT id, kind, title, date, tags, body, updated_at "
+            "FROM site_articles WHERE id = $1", aid)
+    return dict(r) if r else None
+
+
+async def create_site_article(kind: str, title: str, date: str, tags: str, body: str) -> int:
+    """创建文章, 返回 id。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        aid = await conn.fetchval(
+            "INSERT INTO site_articles (kind, title, date, tags, body) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            kind, title, date, tags, body)
+    return int(aid)
+
+
+async def update_site_article(aid: int, kind: str, title: str, date: str,
+                              tags: str, body: str) -> int:
+    """更新文章, 返回受影响行数。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "UPDATE site_articles SET kind=$1, title=$2, date=$3, tags=$4, "
+            "body=$5, updated_at=now() WHERE id=$6 RETURNING id",
+            kind, title, date, tags, body, aid)
+    return len(rows)
+
+
+async def delete_site_article(aid: int) -> int:
+    """删除文章, 返回受影响行数。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("DELETE FROM site_articles WHERE id=$1 RETURNING id", aid)
+    return len(rows)

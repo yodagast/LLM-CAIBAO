@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=54" />
+  <link rel="stylesheet" href="/static/css/style.css?v=57" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -1239,25 +1239,58 @@
       </div><!-- /bt-panel ptf -->
     </section><!-- /tab-backtest -->
 
-    <!-- ================= Tab: 页面管理 (官网 愿景/使命/价值观/新闻) ================= -->
+    <!-- ================= Tab: 页面管理 (公司文化 / 行业研究 / 新闻浏览) ================= -->
     <section id="tab-sitepage" class="hidden">
       <div class="card form-card">
         <div class="card-title">
-          <h2>官网内容管理</h2>
-          <span class="hint">编辑公司官网 (首页) 的 愿景 / 使命 / 价值观 / 新闻浏览 内容, 保存后即时生效</span>
+          <h2>内容管理</h2>
+          <span class="hint">管理官网内容: 公司文化 / 行业研究 / 新闻浏览</span>
+          <div class="seg-group" style="margin-left:auto" id="sp-seg-kind">
+            <button type="button" class="seg-btn" data-kind="culture">公司文化</button>
+            <button type="button" class="seg-btn" data-kind="research">行业研究</button>
+            <button type="button" class="seg-btn" data-kind="news">新闻浏览</button>
+          </div>
         </div>
-        <div id="sitepage-editor">
+
+        <!-- 视图: 公司文化 (愿景/使命/价值观) -->
+        <div id="sp-view-culture">
           <div class="loading" id="sitepage-loading"><div class="spinner"></div><span>正在加载官网内容…</span></div>
           <div class="error hidden" id="sitepage-error"></div>
+          <div id="sitepage-editor"></div>
+          <div class="form-actions" id="sitepage-actions">
+            <button type="button" class="btn-primary" id="sitepage-save-btn">
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-check"/></svg> 保存全部修改
+            </button>
+            <button type="button" class="btn-ghost" id="sitepage-reload-btn">
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-refresh"/></svg> 重新加载
+            </button>
+            <span class="hint" id="sitepage-hint"></span>
+          </div>
         </div>
-        <div class="form-actions" id="sitepage-actions">
-          <button type="button" class="btn-primary" id="sitepage-save-btn">
-            <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-check"/></svg> 保存全部修改
-          </button>
-          <button type="button" class="btn-ghost" id="sitepage-reload-btn">
-            <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-refresh"/></svg> 重新加载
-          </button>
-          <span class="hint" id="sitepage-hint"></span>
+
+        <!-- 视图: 文章管理 (行业研究 / 新闻浏览 共用, 类型由 seg 决定) -->
+        <div id="sp-view-articles" class="hidden">
+          <div class="form-actions">
+            <button type="button" class="btn-primary" id="article-create-btn">
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-plus"/></svg> 新建文章
+            </button>
+            <span class="hint" id="sp-art-hint">前端展示标题、时间与标签, 点击进入正文页</span>
+          </div>
+          <div class="table-wrap" style="max-height:560px;overflow:auto;">
+            <table id="articles-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>标题</th>
+                  <th>日期</th>
+                  <th>标签</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -1316,6 +1349,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=5"></script>
-  <script src="/static/js/app.js?v=78"></script>
+  <script src="/static/js/app.js?v=82"></script>
 </body>
 </html>

@@ -53,6 +53,8 @@ a { color: inherit; text-decoration: none; }
   font-size: 14px; color: var(--ink); letter-spacing: 1px;
   padding: 6px 0; position: relative; transition: color .2s;
 }
+.nav-links a.lnk.active { color: var(--accent); font-weight: 700; }
+.nav-links a.lnk.active::after { width: 100%; }
 .nav-links a.lnk:hover { color: var(--accent); }
 .nav-links a.lnk::after {
   content: ""; position: absolute; left: 0; bottom: 0; width: 0; height: 1px;
@@ -147,6 +149,27 @@ blockquote.quote {
 .culture-item h4 { font-family: var(--serif); font-size: 18px; color: var(--navy); margin-bottom: 6px; }
 .culture-item p { font-size: 14px; color: var(--soft); }
 
+/* 公司文化: 愿景 / 使命 / 价值观 三个子区块 */
+.culture-sec { padding: 34px 0; border-bottom: 1px solid var(--line); }
+.culture-sec:first-child { padding-top: 8px; }
+.culture-sec:last-child { border-bottom: none; }
+.culture-kicker {
+  font-family: var(--serif); font-size: 14px; letter-spacing: 3px;
+  color: var(--accent); text-transform: uppercase; margin-bottom: 14px;
+}
+
+/* ---------- 公司研究 ---------- */
+.research-list { display: flex; flex-direction: column; margin-top: 16px; }
+.research-item {
+  padding: 24px 6px; border-bottom: 1px solid var(--line);
+  transition: background .2s;
+}
+.research-item:hover { background: #fbf9f4; }
+.research-head { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
+.research-title { font-family: var(--serif); font-size: 17px; color: var(--ink); }
+.research-item:hover .research-title { color: var(--accent); }
+.research-summary { font-size: 14px; color: var(--soft); margin-top: 8px; line-height: 1.8; }
+
 /* ---------- 新闻浏览 ---------- */
 .news-list { display: flex; flex-direction: column; margin-top: 16px; }
 .news-item {
@@ -166,6 +189,56 @@ blockquote.quote {
   border: 1px solid var(--accent); border-radius: 999px; padding: 1px 10px;
   margin-left: 10px; white-space: nowrap;
 }
+
+/* ---------- 文章列表 (行业研究 / 新闻浏览列表页) ---------- */
+.article-list { display: flex; flex-direction: column; margin-top: 16px; }
+.article-item {
+  display: block; padding: 22px 6px; border-bottom: 1px solid var(--line);
+  transition: background .2s;
+}
+.article-item:hover { background: #fbf9f4; }
+.article-head { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
+.article-title { font-family: var(--serif); font-size: 18px; color: var(--ink); }
+.article-item:hover .article-title { color: var(--accent); }
+
+/* ---------- 文章正文页 ---------- */
+.article-meta { display: flex; align-items: baseline; margin-bottom: 12px; }
+.article-h1 {
+  font-family: var(--serif); font-size: clamp(24px, 3.6vw, 34px);
+  color: var(--navy); line-height: 1.4; margin-bottom: 28px;
+}
+.article-back { margin-top: 40px; }
+.article-back .btn-hero.solid { background: var(--navy); color: #fff; }
+.article-back .btn-hero.solid:hover { background: var(--accent); }
+
+/* ---------- Markdown 正文 (行业研究 / 新闻浏览页) ---------- */
+.md-body { font-size: 15px; line-height: 2; color: var(--ink); }
+.md-body h1, .md-body h2, .md-body h3 {
+  font-family: var(--serif); color: var(--navy);
+  margin: 1.6em 0 .7em; line-height: 1.5;
+}
+.md-body h1 { font-size: 26px; }
+.md-body h2 { font-size: 21px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.md-body h3 { font-size: 18px; }
+.md-body p { margin: .8em 0; }
+.md-body ul, .md-body ol { margin: .8em 0; padding-left: 1.6em; }
+.md-body a { color: var(--accent); border-bottom: 1px solid var(--accent); }
+.md-body blockquote {
+  font-family: var(--serif); color: #4a5462; font-style: italic;
+  border-left: 3px solid var(--accent); background: var(--accent-soft);
+  padding: 14px 20px; margin: 1.2em 0; border-radius: 0 10px 10px 0;
+}
+.md-body table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+.md-body th, .md-body td { border: 1px solid var(--line); padding: 8px 14px; text-align: left; }
+.md-body th { background: var(--accent-soft); font-weight: 600; }
+.md-body code { background: var(--accent-soft); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+.md-body pre {
+  background: var(--navy); color: #e8eef5; padding: 16px 20px;
+  border-radius: 10px; overflow: auto; margin: 1em 0;
+}
+.md-body pre code { background: transparent; padding: 0; color: inherit; }
+.md-body hr { border: none; border-top: 1px solid var(--line); margin: 2em 0; }
+.loading-inline { color: var(--soft); font-size: 14px; padding: 20px 0; }
 
 /* ---------- CTA ---------- */
 .cta {

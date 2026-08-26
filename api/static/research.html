@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>行业研究 · 财宝资本 CaiBao Capital</title>
+  <link rel="stylesheet" href="/static/css/home.css?v=5" />
+</head>
+<body>
+
+  <!-- 顶部导航 -->
+  <header class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">财</span>
+        <span class="brand-text"><b>财宝资本</b><span>CaiBao Capital</span></span>
+      </a>
+      <nav class="nav-links">
+        <a class="lnk" href="/">公司文化</a>
+        <a class="lnk active" href="/research">行业研究</a>
+        <a class="lnk" href="/news">新闻浏览</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- 行业研究列表 -->
+  <section class="block block-alt" id="research">
+    <div class="block-inner">
+      <div class="section-kicker">Research</div>
+      <h2 class="section-title">行业研究</h2>
+      <div class="article-list" id="research-list">
+        <div class="loading-inline">加载中…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 页脚 -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-grid">
+        <div>
+          <h5>财宝资本</h5>
+          <p>创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
+        </div>
+        <div>
+          <h5>快捷导航</h5>
+          <p><a href="/">公司文化</a></p>
+          <p><a href="/research">行业研究</a></p>
+          <p><a href="/news">新闻浏览</a></p>
+        </div>
+        <div>
+          <h5>联系我们</h5>
+          <p>邮箱：contact@caibaocapital.com</p>
+          <p>电话：+86 000 0000 0000</p>
+          <p>地址：中国 · 上海</p>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
+        <span>本站内容仅供研究参考，不构成投资建议。</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // 行业研究列表页: 从 API 读取文章列表 (标题/日期/标签), 点击进正文页
+    (function () {
+      var box = document.getElementById("research-list");
+      function esc(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+          return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+        });
+      }
+      function render(items) {
+        if (!items || !items.length) {
+          box.innerHTML = '<div class="loading-inline">暂无内容</div>';
+          return;
+        }
+        box.innerHTML = items.map(function (it) {
+          var tags = [];
+          try { tags = JSON.parse(it.tags || "[]") || []; } catch (e) { tags = []; }
+          var tagHtml = tags.map(function (t) {
+            return '<span class="news-tag">' + esc(t) + "</span>";
+          }).join("");
+          return (
+            '<a class="article-item" href="/article/' + it.id + '">' +
+            '  <div class="article-head">' +
+            '    <span class="news-date">' + esc(it.date || "") + "</span>" +
+            '    <span class="article-title">' + esc(it.title) + "</span>" +
+            tagHtml +
+            "  </div>" +
+            "</a>"
+          );
+        }).join("");
+      }
+      fetch("/api/site/articles?kind=research")
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })
+        .then(function (d) { render(d.items); })
+        .catch(function () { box.innerHTML = '<div class="loading-inline">加载失败</div>'; });
+    })();
+  </script>
+
+</body>
+</html>

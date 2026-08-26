@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>编辑文章 · 内容管理</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=57" />
+</head>
+<body class="auth-loading">
+  <main class="container" style="max-width:860px;margin:0 auto;padding:24px 16px;">
+    <div class="card form-card">
+      <div class="card-title" style="flex-wrap:wrap;gap:10px;">
+        <h2 id="ae-title">编辑文章</h2>
+        <span class="hint" id="ae-sub"></span>
+        <a class="btn-ghost btn-sm" style="margin-left:auto" id="ae-back" href="/admin">← 返回</a>
+      </div>
+
+      <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="field">
+          <label for="ae-kind">类型 <em>*</em></label>
+          <select id="ae-kind">
+            <option value="research">行业研究</option>
+            <option value="news">新闻浏览</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="ae-date">日期</label>
+          <input type="text" id="ae-date" placeholder="如 2026-08-26" />
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <label for="ae-title">标题 <em>*</em></label>
+          <input type="text" id="ae-title" placeholder="文章标题 (列表展示)" />
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <label for="ae-tags">标签 (逗号分隔)</label>
+          <input type="text" id="ae-tags" placeholder="如 行业研究, 深度报告" />
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <label for="ae-body">正文 (Markdown) <em>*</em></label>
+          <textarea id="ae-body" class="sp-textarea" style="min-height:420px;width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;line-height:1.7;resize:vertical;" placeholder="# 标题&#10;&#10;正文内容…"></textarea>
+          <div class="hint">支持 Markdown 语法: # 标题 / - 列表 / | 表格 | / [链接](url) / **加粗** 等</div>
+        </div>
+      </div>
+
+      <div class="error hidden" id="ae-error"></div>
+      <div class="form-actions" style="display:flex;gap:10px;align-items:center;margin-top:14px;">
+        <button type="button" class="btn-primary" id="ae-save-btn">
+          <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-check"/></svg> 保存
+        </button>
+        <button type="button" class="btn-ghost" id="ae-cancel-btn">取消</button>
+        <span class="hint" id="ae-hint"></span>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/js/auth.js?v=5"></script>
+  <script>
+    // 独立文章编辑页: ?id= 编辑已有文章, 空=新建
+    (function () {
+      "use strict";
+      var q = new URLSearchParams(location.search);
+      var aid = q.get("id") ? parseInt(q.get("id"), 10) : null;
+      var defKind = q.get("kind") === "research" ? "research" : "news";
+
+      // 返回链接: 回到 内容管理 对应类型列表 (?sitepage=research / news)
+      function updateBack(kind) {
+        var back = document.getElementById("ae-back");
+        if (back) {
+          back.href = "/admin?sitepage=" + kind;
+          back.textContent = "← 返回" + (kind === "news" ? "新闻浏览" : "行业研究");
+        }
+      }
+      updateBack(defKind);
+
+      function setHint(msg, isErr) {
+        var h = document.getElementById("ae-hint");
+        if (!h) return;
+        h.innerHTML = isErr ? "" : msg;
+        if (isErr) {
+          var e = document.getElementById("ae-error");
+          if (e) { e.textContent = msg; e.classList.remove("hidden"); }
+          h.textContent = "";
+        } else {
+          var e2 = document.getElementById("ae-error");
+          if (e2) e2.classList.add("hidden");
+          h.textContent = msg;
+        }
+      }
+
+      async function load() {
+        if (!aid) {
+          // 新建
+          document.getElementById("ae-title").textContent = "新建文章";
+          document.getElementById("ae-kind").value = defKind;
+          updateBack(defKind);
+          return;
+        }
+        document.getElementById("ae-title").textContent = "编辑文章 (ID " + aid + ")";
+        try {
+          const r = await fetch("/api/site/articles/" + aid);
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "读取失败");
+          const it = d.item;
+          document.getElementById("ae-kind").value = it.kind || defKind;
+          document.getElementById("ae-date").value = it.date || "";
+          document.getElementById("ae-title").value = it.title || "";
+          try { document.getElementById("ae-tags").value = (JSON.parse(it.tags || "[]") || []).join(", "); } catch (e) {}
+          document.getElementById("ae-body").value = it.body || "";
+          updateBack(it.kind || defKind);
+        } catch (e) {
+          setHint("加载失败: " + (e.message || e), true);
+        }
+      }
+
+      async function save() {
+        const kind = document.getElementById("ae-kind").value;
+        const title = document.getElementById("ae-title").value.trim();
+        const date = document.getElementById("ae-date").value.trim();
+        const tagsRaw = document.getElementById("ae-tags").value;
+        const body = document.getElementById("ae-body").value;
+        if (!title) { setHint("标题不能为空", true); return; }
+        if (!body) { setHint("正文不能为空", true); return; }
+        const tags = tagsRaw.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean);
+        const btn = document.getElementById("ae-save-btn");
+        btn.disabled = true;
+        try {
+          const url = aid ? "/api/site/articles/" + aid : "/api/site/articles";
+          const r = await fetch(url, {
+            method: aid ? "PUT" : "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ kind: kind, title: title, date: date, tags: tags, body: body }),
+          });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "保存失败");
+          // 保存成功: 跳回内容管理对应类型
+          const back = document.getElementById("ae-back");
+          back.href = "/admin?sitepage=" + kind;
+          back.click();
+        } catch (e) {
+          setHint("保存失败: " + (e.message || e), true);
+          btn.disabled = false;
+        }
+      }
+
+      document.getElementById("ae-save-btn").addEventListener("click", save);
+      document.getElementById("ae-cancel-btn").addEventListener("click", function () {
+        location.href = "/admin?sitepage=" + document.getElementById("ae-kind").value;
+      });
+
+      // 登录检查: 未登录跳登录页
+      CaiBaoAuth.init().then(function () {
+        if (!CaiBaoAuth.isLoggedIn()) {
+          location.replace("/static/login.html?next=" + encodeURIComponent(location.pathname + location.search));
+          return;
+        }
+        document.body.classList.remove("auth-loading");
+        load();
+      });
+    })();
+  </script>
+</body>
+</html>

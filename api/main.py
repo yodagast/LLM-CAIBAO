@@ -56,6 +56,7 @@ async def _startup() -> None:
         await pg_service.init_stock_events_schema()
         await pg_service.init_stock_events_jobs_schema()
         await pg_service.init_site_pages_schema()
+        await pg_service.init_site_articles_schema()
         # 启动公司大事生成 worker (持久化任务队列, 多进程靠 pg 抢占安全)
         try:
             if events_service.worker_task is None or events_service.worker_task.done():
@@ -239,6 +240,15 @@ class SiteContentBatchRequest(BaseModel):
     items: list[SiteContentRequest] = Field(..., min_length=1, max_length=10)
 
 
+class SiteArticleRequest(BaseModel):
+    """官网文章 (行业研究 / 新闻浏览) 创建/更新。"""
+    kind: str = Field(..., description="类型: research 行业研究 / news 新闻浏览")
+    title: str = Field(..., min_length=1, max_length=200, description="标题")
+    date: str = Field("", max_length=32, description="展示日期 (如 2026-08-26)")
+    tags: list[str] = Field(default_factory=list, max_length=10, description="标签列表")
+    body: str = Field("", max_length=50000, description="正文 (Markdown)")
+
+
 class BandOptimizeRequest(BaseModel):
     """区间交易参数估算请求。"""
     ts_code: str = Field(..., description="股票代码, 如 000858.SZ 或 000858")
@@ -345,8 +355,36 @@ class EtfScreenRequest(BaseModel):
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
-    """公司官网首页 (公司简介 / 投资原则 / 公司文化 / 新闻浏览)。"""
+    """公司官网首页 (公司文化: 愿景 / 使命 / 价值观)。"""
     return FileResponse(STATIC_DIR / "home.html",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/research", include_in_schema=False)
+async def research_page() -> FileResponse:
+    """行业研究列表页 (文章列表, 点击进正文页)。"""
+    return FileResponse(STATIC_DIR / "research.html",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/news", include_in_schema=False)
+async def news_page() -> FileResponse:
+    """新闻浏览列表页 (文章列表, 点击进正文页)。"""
+    return FileResponse(STATIC_DIR / "news.html",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/admin/article_edit", include_in_schema=False)
+async def article_edit_page() -> FileResponse:
+    """后台文章编辑页 (独立页面, 替代弹窗; ?id= 编辑, 空=新建)。"""
+    return FileResponse(STATIC_DIR / "article_edit.html",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/article/{aid}", include_in_schema=False)
+async def article_page(aid: int) -> FileResponse:
+    """文章正文页 (行业研究/新闻 详情, 前端按 id 拉取渲染)。"""
+    return FileResponse(STATIC_DIR / "article.html",
                         headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
@@ -1390,3 +1428,75 @@ async def site_content_save(req: SiteContentBatchRequest, request: Request) -> d
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存官网内容失败: {e}")
     return {"ok": True, "saved": len(req.items)}
+
+
+# ---------------------------------------------------------------------------
+# 官网文章管理 (行业研究 / 新闻浏览, 后台文章管理; 前台 /research /news 列表 + /article/{id} 正文)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/site/articles")
+async def site_articles_list(kind: str = Query("research", description="research 行业研究 / news 新闻浏览"),
+                             limit: int = Query(100, ge=1, le=500)) -> dict:
+    """公开: 某类型文章列表 (不含正文体, 列表页用)。"""
+    try:
+        items = await pg_service.list_site_articles(kind.strip(), limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取文章列表失败: {e}")
+    return {"kind": kind, "count": len(items), "items": items}
+
+
+@app.get("/api/site/articles/{aid}")
+async def site_articles_get(aid: int) -> dict:
+    """公开: 文章详情 (含正文 body, 正文页用)。不存在返回 404。"""
+    try:
+        art = await pg_service.get_site_article(aid)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取文章失败: {e}")
+    if not art:
+        raise HTTPException(status_code=404, detail="文章不存在")
+    return {"item": art}
+
+
+@app.post("/api/site/articles")
+async def site_articles_create(req: SiteArticleRequest, request: Request) -> dict:
+    """创建文章 (需登录, 后台文章管理用)。"""
+    await _require_user(request)
+    if req.kind not in ("research", "news"):
+        raise HTTPException(status_code=400, detail="kind 须为 research 或 news")
+    try:
+        aid = await pg_service.create_site_article(
+            req.kind, req.title.strip(), req.date.strip(),
+            __import__("json").dumps(req.tags, ensure_ascii=False), req.body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"创建文章失败: {e}")
+    return {"ok": True, "id": aid}
+
+
+@app.put("/api/site/articles/{aid}")
+async def site_articles_update(aid: int, req: SiteArticleRequest, request: Request) -> dict:
+    """更新文章 (需登录, 后台文章管理用)。"""
+    await _require_user(request)
+    if req.kind not in ("research", "news"):
+        raise HTTPException(status_code=400, detail="kind 须为 research 或 news")
+    try:
+        n = await pg_service.update_site_article(
+            aid, req.kind, req.title.strip(), req.date.strip(),
+            __import__("json").dumps(req.tags, ensure_ascii=False), req.body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新文章失败: {e}")
+    if not n:
+        raise HTTPException(status_code=404, detail="文章不存在")
+    return {"ok": True, "updated": n}
+
+
+@app.delete("/api/site/articles/{aid}")
+async def site_articles_delete(aid: int, request: Request) -> dict:
+    """删除文章 (需登录, 后台文章管理用)。"""
+    await _require_user(request)
+    try:
+        n = await pg_service.delete_site_article(aid)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除文章失败: {e}")
+    if not n:
+        raise HTTPException(status_code=404, detail="文章不存在")
+    return {"ok": True, "deleted": n}

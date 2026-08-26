@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>文章 · 财宝资本 CaiBao Capital</title>
+  <link rel="stylesheet" href="/static/css/home.css?v=5" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+  <!-- 顶部导航 -->
+  <header class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">财</span>
+        <span class="brand-text"><b>财宝资本</b><span>CaiBao Capital</span></span>
+      </a>
+      <nav class="nav-links">
+        <a class="lnk" href="/">公司文化</a>
+        <a class="lnk" id="nav-research" href="/research">行业研究</a>
+        <a class="lnk" id="nav-news" href="/news">新闻浏览</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- 文章正文 -->
+  <section class="block" id="article">
+    <div class="block-inner">
+      <div class="article-meta">
+        <span class="news-date" id="art-date">—</span>
+        <span class="news-tag" id="art-tags" style="margin-left:8px"></span>
+      </div>
+      <h1 class="article-h1" id="art-title">加载中…</h1>
+      <article class="md-body" id="art-body">
+        <div class="loading-inline">加载中…</div>
+      </article>
+      <div class="article-back">
+        <a class="btn-hero solid" id="art-back" href="/research">← 返回列表</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- 页脚 -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-grid">
+        <div>
+          <h5>财宝资本</h5>
+          <p>创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
+        </div>
+        <div>
+          <h5>快捷导航</h5>
+          <p><a href="/">公司文化</a></p>
+          <p><a href="/research">行业研究</a></p>
+          <p><a href="/news">新闻浏览</a></p>
+        </div>
+        <div>
+          <h5>联系我们</h5>
+          <p>邮箱：contact@caibaocapital.com</p>
+          <p>电话：+86 000 0000 0000</p>
+          <p>地址：中国 · 上海</p>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
+        <span>本站内容仅供研究参考，不构成投资建议。</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // 文章正文页: 从 API 读取文章详情 (标题/日期/标签/正文 markdown) 并渲染
+    (function () {
+      var aid = parseInt((location.pathname.match(/\/article\/(\d+)/) || [])[1] || "0", 10);
+      function esc(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+          return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+        });
+      }
+      if (!aid) {
+        document.getElementById("art-title").textContent = "文章不存在";
+        return;
+      }
+      var back = document.getElementById("art-back");
+      fetch("/api/site/articles/" + aid)
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })
+        .then(function (d) {
+          var it = d.item;
+          document.title = it.title + " · 财宝资本 CaiBao Capital";
+          document.getElementById("art-title").textContent = it.title || "";
+          document.getElementById("art-date").textContent = it.date || "";
+          var tags = [];
+          try { tags = JSON.parse(it.tags || "[]") || []; } catch (e) { tags = []; }
+          document.getElementById("art-tags").textContent = tags.join(" · ");
+          document.getElementById("art-body").innerHTML = marked.parse(it.body || "");
+          // 高亮对应导航 + 返回链接
+          if (it.kind === "news") {
+            var nn = document.getElementById("nav-news"); if (nn) nn.classList.add("active");
+            back.href = "/news";
+          } else {
+            var nr = document.getElementById("nav-research"); if (nr) nr.classList.add("active");
+            back.href = "/research";
+          }
+        })
+        .catch(function () {
+          document.getElementById("art-title").textContent = "文章不存在或已删除";
+          document.getElementById("art-body").innerHTML = "";
+        });
+    })();
+  </script>
+
+</body>
+</html>

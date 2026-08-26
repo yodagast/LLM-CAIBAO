@@ -2961,12 +2961,24 @@
         return;
       }
       mySearchPanel.innerHTML = items.map((it) => `
-        <div class="search-item" data-code="${_esc(it.ts_code)}">
+        <div class="search-item" data-code="${_esc(it.ts_code)}" data-name="${_esc(it.name)}" title="点击查看 股票详情">
           <span class="si-name">${_esc(it.name)}</span>
           <span class="si-code">${_esc(it.ts_code)}</span>
           <span class="si-kind">${_kindLabel(it.kind)}</span>
+          <span class="si-detail">详情 →</span>
           <button type="button" class="btn-ghost btn-sm si-add" data-code="${_esc(it.ts_code)}">${svgIcon("icon-plus")} 加入</button>
         </div>`).join("");
+      // 点击候选整行 → 打开股票详情页 (排除按钮)
+      mySearchPanel.querySelectorAll(".search-item").forEach((row) => {
+        row.addEventListener("click", (e) => {
+          if (e.target.closest(".si-add")) return;   // 加入按钮不跳转
+          const code = row.dataset.code;
+          if (code) {
+            sessionStorage.setItem("my_search_query", mySearchInput.value.trim());
+            window.open(`/static/stock_detail.html?code=${encodeURIComponent(code)}`, "_blank");
+          }
+        });
+      });
       mySearchPanel.querySelectorAll(".si-add").forEach((btn) => {
         btn.addEventListener("click", async (e) => {
           e.stopPropagation();

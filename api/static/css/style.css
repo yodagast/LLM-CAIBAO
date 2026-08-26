@@ -460,6 +460,8 @@ body.auth-loading .container { visibility: hidden; }
 .search-item .si-name { font-weight: 600; color: var(--text); flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-item .si-code { color: var(--text-soft); font-size: 12px; flex: 1; }
 .search-item .si-kind { color: var(--text-soft); font-size: 11px; flex: 0 0 auto; }
+.search-item .si-detail { color: var(--primary); font-size: 11px; flex: 0 0 auto; opacity: 0; transition: opacity .15s; }
+.search-item:hover .si-detail { opacity: 1; }
 .search-item .si-add { white-space: nowrap; padding: 4px 10px; font-size: 12px; flex: 0 0 auto; }
 .search-item .si-add.added { background: #26a69a; border-color: #26a69a; color: #fff; }
 .search-empty { padding: 12px; color: var(--text-soft); font-size: 13px; text-align: center; }

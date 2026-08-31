@@ -90,6 +90,17 @@ async def _require_user(request: Request) -> dict:
     return user
 
 
+SITE_ADMIN = "yodagast"  # 官网内容管理仅管理员可写
+
+
+async def _require_site_admin(request: Request) -> dict:
+    """官网内容管理 (页面管理/文章) 写操作: 仅管理员可用, 否则 403。"""
+    user = await _require_user(request)
+    if user["username"] != SITE_ADMIN:
+        raise HTTPException(status_code=403, detail="无权限: 仅管理员可管理官网内容")
+    return user
+
+
 def _set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=SESSION_COOKIE,
@@ -1419,8 +1430,8 @@ async def site_content_get() -> dict:
 
 @app.put("/api/site/content")
 async def site_content_save(req: SiteContentBatchRequest, request: Request) -> dict:
-    """批量保存官网内容 (需登录, 仅后台「页面管理」调用)。"""
-    await _require_user(request)
+    """批量保存官网内容 (仅管理员, 后台「页面管理」调用)。"""
+    await _require_site_admin(request)
     try:
         for it in req.items:
             await pg_service.upsert_site_page(
@@ -1459,8 +1470,8 @@ async def site_articles_get(aid: int) -> dict:
 
 @app.post("/api/site/articles")
 async def site_articles_create(req: SiteArticleRequest, request: Request) -> dict:
-    """创建文章 (需登录, 后台文章管理用)。"""
-    await _require_user(request)
+    """创建文章 (仅管理员, 后台文章管理用)。"""
+    await _require_site_admin(request)
     if req.kind not in ("research", "news"):
         raise HTTPException(status_code=400, detail="kind 须为 research 或 news")
     try:
@@ -1474,8 +1485,8 @@ async def site_articles_create(req: SiteArticleRequest, request: Request) -> dic
 
 @app.put("/api/site/articles/{aid}")
 async def site_articles_update(aid: int, req: SiteArticleRequest, request: Request) -> dict:
-    """更新文章 (需登录, 后台文章管理用)。"""
-    await _require_user(request)
+    """更新文章 (仅管理员, 后台文章管理用)。"""
+    await _require_site_admin(request)
     if req.kind not in ("research", "news"):
         raise HTTPException(status_code=400, detail="kind 须为 research 或 news")
     try:
@@ -1491,8 +1502,8 @@ async def site_articles_update(aid: int, req: SiteArticleRequest, request: Reque
 
 @app.delete("/api/site/articles/{aid}")
 async def site_articles_delete(aid: int, request: Request) -> dict:
-    """删除文章 (需登录, 后台文章管理用)。"""
-    await _require_user(request)
+    """删除文章 (仅管理员, 后台文章管理用)。"""
+    await _require_site_admin(request)
     try:
         n = await pg_service.delete_site_article(aid)
     except Exception as e:

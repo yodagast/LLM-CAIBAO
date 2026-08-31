@@ -1189,6 +1189,15 @@ async def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250)
     end_date = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=int(days * 1.6) + 30)).strftime("%Y%m%d")
     df = await get_daily(ts_code, kind, start_date=start, end_date=end_date)
+    # 收盘价展示规则: 17 点前显示前一交易日, 17 点后显示当天
+    try:
+        _, display_td = await _display_trade_dates(pro)
+        if display_td:
+            df_t = df[df["trade_date"].astype(str) <= display_td]
+            if not df_t.empty:
+                df = df_t
+    except Exception:
+        pass
     last = df.iloc[-1]
     last_close = float(last["close"])
     last_date = str(last["trade_date"])
@@ -1201,7 +1210,13 @@ async def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250)
     try:
         b = await _get_snapshot_basic(pro, ts_code, start, end_date)
         if b is not None and not b.empty:
-            b = b.sort_values("trade_date").iloc[-1]
+            b = b.sort_values("trade_date")
+            # daily_basic 同样按展示规则截断 (估值/收盘同日)
+            if display_td:
+                b_t = b[b["trade_date"].astype(str) <= display_td]
+                if not b_t.empty:
+                    b = b_t
+            b = b.iloc[-1]
             pb = _to_float(b.get("pb"))
             pe = _to_float(b.get("pe"))
             pe_ttm = _to_float(b.get("pe_ttm"))
@@ -1260,10 +1275,41 @@ async def _latest_trade_date(pro) -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
-async def _latest_daily_map(pro) -> dict[str, dict]:
-    """全市场最新交易日 daily → {ts_code: {close, pre_close, pct_chg}} (15min 缓存)。
+# 收盘价展示规则: 每天 17:00 后显示当天收盘价, 17:00 前显示前一个交易日收盘价
+_DISPLAY_HOUR = 17  # 17 点为分界
 
-    一次调用替代 N 只自选股逐只拉日线, 是自选股列表加速的关键。
+
+async def _display_trade_dates(pro) -> tuple[str, str]:
+    """返回 (latest_td, display_td): latest_td=tushare 最新交易日, display_td=按时间规则应展示的交易日。
+
+    规则: 当前时间(本地) < 17:00 → 展示最新交易日的前一交易日; ≥ 17:00 → 展示最新交易日(当天)。
+    用 000001 日线最后几条推断交易日序列 (tushare 的 trade_date 升序)。
+    """
+    try:
+        probe = await pro.daily(ts_code="000001.SZ", fields="trade_date,close")
+        if probe is None or probe.empty:
+            raise ValueError("probe empty")
+        dates = [str(d) for d in probe.sort_values("trade_date")["trade_date"].tolist()]
+        if len(dates) < 2:
+            raise ValueError("probe too short")
+        latest_td = dates[-1]
+        now = datetime.now()
+        if now.hour >= _DISPLAY_HOUR:
+            return latest_td, latest_td
+        # 17 点前: 展示前一交易日
+        prev_td = dates[-2] if len(dates) >= 2 else latest_td
+        return latest_td, prev_td
+    except Exception:
+        # 探测失败: 保守返回最新交易日 (不额外限制)
+        td = datetime.now().strftime("%Y%m%d")
+        return td, td
+
+
+async def _latest_daily_map(pro) -> dict[str, dict]:
+    """全市场指定交易日 daily → {ts_code: {close, pre_close, pct_chg}} (15min 缓存)。
+
+    交易日按 _display_trade_dates 规则选取 (17 点前用前一交易日, 17 点后用当天),
+    保证自选股列表"最近收盘价"符合展示规则。
     """
     now = time.time()
     hit = _LATEST_DAILY_CACHE.get("all")
@@ -1271,7 +1317,7 @@ async def _latest_daily_map(pro) -> dict[str, dict]:
         return hit[1]
     m: dict[str, dict] = {}
     try:
-        td = await _latest_trade_date(pro)
+        _, td = await _display_trade_dates(pro)
         df = await pro.daily(trade_date=td, fields="ts_code,close,pre_close,pct_chg")
         if df is not None and not df.empty:
             for _, r in df.iterrows():
@@ -1287,14 +1333,17 @@ async def _latest_daily_map(pro) -> dict[str, dict]:
 
 
 async def _latest_basic_map(pro) -> dict[str, dict]:
-    """全市场最新 daily_basic → {ts_code: {pb, pe, pe_ttm, total_mv, circ_mv, dv_ttm}} (15min 缓存)。"""
+    """全市场指定交易日 daily_basic → {ts_code: {pb, pe, pe_ttm, total_mv, circ_mv, dv_ttm}} (15min 缓存)。
+
+    交易日按 _display_trade_dates 规则选取 (与 _latest_daily_map 一致, 保证估值与收盘价同日)。
+    """
     now = time.time()
     hit = _LATEST_BASIC_CACHE.get("all")
     if hit and now - hit[0] < _LATEST_TTL:
         return hit[1]
     m: dict[str, dict] = {}
     try:
-        td = await _latest_trade_date(pro)
+        _, td = await _display_trade_dates(pro)
         df = await pro.daily_basic(trade_date=td, fields="ts_code,pb,pe,pe_ttm,total_mv,circ_mv,dv_ttm")
         if df is not None and not df.empty:
             for _, r in df.iterrows():
@@ -1367,26 +1416,21 @@ async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str,
     rest = [c for c in ts_codes if c not in a_codes]
     out: dict[str, dict] = {}
     pro = _init_pro()
-    # 优先本地 pg 读最新行情/估值 (目标列表已回填, 避免 tushare 全市场 daily/daily_basic 调用)
-    dmap, bmap = await _pg_latest_maps(a_codes)
-    missing = [c for c in a_codes if c not in dmap]
-    if missing:
-        # pg 未回填的股票 → 用 tushare 全市场批量接口补 (15min 缓存)
-        full_d = await _latest_daily_map(pro)
-        full_b = await _latest_basic_map(pro)
-        for c in missing:
-            if c not in dmap and full_d.get(c):
-                dmap[c] = full_d[c]
-            if c not in bmap and full_b.get(c):
-                bmap[c] = full_b[c]
-        # 后台回填 pg 缺失的股票 (下次加载走 pg, 不再打 tushare 全市场)
-        try:
-            targets = [{"ts_code": c, "kind": _classify_ts_code(c)}
-                       for c in missing if not c.endswith(".HK")]
-            if targets:
-                asyncio.create_task(_backfill_silently(targets))
-        except Exception:
-            pass
+    # 收盘价展示规则: 17 点前显示前一交易日, 17 点后显示当天
+    _, display_td = await _display_trade_dates(pro)
+    # 主数据源: tushare 按 display_td 的全市场批量接口 (保证收盘价符合展示规则, 15min 缓存)
+    dmap = await _latest_daily_map(pro)
+    bmap = await _latest_basic_map(pro)
+    # 补漏: tushare 批量可能缺停牌/未在批量结果的股票 → 从本地 pg 读 (仅作补充, 不影响主数据)
+    try:
+        pg_d, pg_b = await _pg_latest_maps(a_codes)
+        for c in a_codes:
+            if c not in dmap and pg_d.get(c):
+                dmap[c] = pg_d[c]
+            if c not in bmap and pg_b.get(c):
+                bmap[c] = pg_b[c]
+    except Exception:
+        pass
     end_date = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=int(days * 1.6) + 30)).strftime("%Y%m%d")
     sem = asyncio.Semaphore(8)
@@ -1395,11 +1439,24 @@ async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str,
         async with sem:
             try:
                 df = await get_daily(code, "stock", start_date=start, end_date=end_date)
+                # 按展示规则截断 df: 只保留 ≤ display_td 的交易日 (17 点前不含当天)
+                if display_td:
+                    df_t = df[df["trade_date"].astype(str) <= display_td]
+                    if not df_t.empty:
+                        df = df_t
                 last = df.iloc[-1]
                 recent = df.tail(days)
                 d = dmap.get(code) or {}
                 b = bmap.get(code) or {}
-                last_close = float(d["close"]) if d.get("close") is not None else float(last["close"])
+                # 收盘价/涨跌幅 以 tushare 批量(dmap, 已按 display_td) 为主, 缺失用 df 截断后最后一条
+                if d.get("close") is not None:
+                    last_close = float(d["close"])
+                    last_date = display_td or str(last["trade_date"])
+                    last_pct = d.get("pct_chg")
+                else:
+                    last_close = float(last["close"])
+                    last_date = str(last["trade_date"])
+                    last_pct = _to_float(last.get("pct_chg"))
                 div = await _dividend_latest(pro, code)
                 div_per_share = div["cash_div"] if div else None
                 dv_ttm = b.get("dv_ttm")
@@ -1408,8 +1465,8 @@ async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str,
                 return {
                     "ts_code": code,
                     "last_close": last_close,
-                    "last_date": str(last["trade_date"]),
-                    "pct_chg": d.get("pct_chg") if d.get("pct_chg") is not None else _to_float(last.get("pct_chg")),
+                    "last_date": last_date,
+                    "pct_chg": last_pct,
                     "pb": b.get("pb"),
                     "pe": b.get("pe"),
                     "pe_ttm": b.get("pe_ttm"),

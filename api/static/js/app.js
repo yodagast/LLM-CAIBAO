@@ -157,8 +157,8 @@
           ${spField("愿景引语 (大标题)", "sp-vision-lede", sitePageData.vision.lede, "如 创造时间和知识的复利。")}
         </div>
         <div class="field">
-          <label for="sp-vision-body">愿景正文</label>
-          <textarea id="sp-vision-body" class="sp-textarea" rows="5" placeholder="愿景详细描述…">${String(sitePageData.vision.body || "").replace(/</g, "&lt;")}</textarea>
+          <label for="sp-vision-body">愿景正文 (每行一条, 用 | 分隔名称与描述)</label>
+          <textarea id="sp-vision-body" class="sp-textarea" rows="5" placeholder="创造时间和知识的复利 | 时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。&#10;决策沉淀为可复用 | 让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值…">${String(sitePageData.vision.body || "").replace(/</g, "&lt;")}</textarea>
         </div>`) +
       sitePageSection("使命 Mission", "官网首页「使命」板块内容", `
         <div class="grid">
@@ -166,8 +166,8 @@
           ${spField("使命引语 (大标题)", "sp-mission-lede", sitePageData.mission.lede, "如 一视同仁…")}
         </div>
         <div class="field">
-          <label for="sp-mission-body">使命正文</label>
-          <textarea id="sp-mission-body" class="sp-textarea" rows="5" placeholder="使命详细描述…">${String(sitePageData.mission.body || "").replace(/</g, "&lt;")}</textarea>
+          <label for="sp-mission-body">使命正文 (每行一条, 用 | 分隔名称与描述)</label>
+          <textarea id="sp-mission-body" class="sp-textarea" rows="6" placeholder="合理 | 只希望赚取能力圈范围内的收益。&#10;可持续 | 依靠时间的复利来增加收益。&#10;超过社会平均水平 | 我们追求卓越，努力创造长期能超过社会平均水平的收益…">${String(sitePageData.mission.body || "").replace(/</g, "&lt;")}</textarea>
         </div>`) +
       sitePageSection("价值观 Values", "官网首页「价值观」板块, 每行一条, 格式: 名称 | 描述", `
         <div class="field">
@@ -335,7 +335,37 @@
     }
   }
 
+  // ---------- 页面管理权限: 仅管理员 (yodagast) 可见/可编辑 ----------
+  const SITE_ADMIN_USER = "yodagast";
+
+  function isSiteAdmin() {
+    try {
+      const u = (window.CaiBaoAuth && CaiBaoAuth.getUser) ? CaiBaoAuth.getUser() : null;
+      return !!(u && u.username === SITE_ADMIN_USER);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /* 非管理员: 隐藏「页面管理」tab; 若当前正在页面管理视图则切回我的股票 */
+  function enforceSiteAdminTab() {
+    if (isSiteAdmin()) return;
+    const sel = '.tab[data-tab="sitepage"]';
+    const tab = document.querySelector(sel);
+    if (tab) tab.classList.add("hidden");
+    const view = document.getElementById("tab-sitepage");
+    if (view && !view.classList.contains("hidden")) {
+      view.classList.add("hidden");
+      document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === "my"));
+    }
+  }
+
   function initSitePageEditor() {
+    // 非管理员: 不绑定编辑器逻辑 + 隐藏 tab
+    if (!isSiteAdmin()) {
+      enforceSiteAdminTab();
+      return;
+    }
     const saveBtn = $("#sitepage-save-btn");
     const reloadBtn = $("#sitepage-reload-btn");
     if (saveBtn) saveBtn.addEventListener("click", saveSitePage);
@@ -355,10 +385,24 @@
         location.href = "/admin/article_edit?kind=" + kind;
       });
     }
-    // 从编辑页返回时 (URL ?sitepage=kind) 恢复对应视图
+    // 从编辑页返回时 (URL ?sitepage=kind) 自动激活「页面管理」tab 并恢复对应视图
     const q = new URLSearchParams(location.search);
     const initView = q.get("sitepage");
-    setSpView(initView === "research" || initView === "news" ? initView : "culture");
+    if (initView === "research" || initView === "news") {
+      // 仅管理员: 激活「页面管理」tab; 非管理员强制隐藏
+      if (!isSiteAdmin()) {
+        enforceSiteAdminTab();
+        return;
+      }
+      // 激活「页面管理」tab
+      document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === "sitepage"));
+      document.querySelectorAll('[id^="tab-"]').forEach((p) => {
+        p.classList.toggle("hidden", p.id !== "tab-sitepage");
+      });
+      setSpView(initView);
+    } else {
+      setSpView("culture");
+    }
   }
 
   // ---------- 股票联想 (共享 datalist, 回测/区间估价/财报 三处复用) ----------
@@ -3655,7 +3699,10 @@
   // ---------- 用户认证: 未登录跳转独立登录页, 登录后展示 Tab 并加载自选股 ----------
   if (window.CaiBaoAuth) {
     CaiBaoAuth.onAuthChange(() => {
-      if (CaiBaoAuth.isLoggedIn()) { loadMyStocks(); loadStrategies(); loadIdeas(); loadAlpha158Pool(); }
+      if (CaiBaoAuth.isLoggedIn()) {
+        loadMyStocks(); loadStrategies(); loadIdeas(); loadAlpha158Pool();
+        initSitePageEditor();   // 登录用户变化时重新 enforce 页面管理权限
+      }
       else location.replace("/static/login.html");
     });
     CaiBaoAuth.init().then(() => {
@@ -3665,6 +3712,8 @@
         loadStrategies();
         loadIdeas();
         loadAlpha158Pool();
+        // URL 带 ?sitepage= 时自动切换到「页面管理」tab 并恢复对应视图 (从编辑页返回)
+        initSitePageEditor();
       } else {
         location.replace("/static/login.html");          // 未登录跳登录页 (不显示 Tab)
       }
@@ -3672,8 +3721,8 @@
   } else {
     document.body.classList.remove("auth-loading");
     loadMyStocks();
+    initSitePageEditor();
   }
 
   checkHealth();
-  initSitePageEditor();   // 页面管理 (官网 愿景/使命/价值观/新闻 编辑)
 })();

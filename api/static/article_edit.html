@@ -3,14 +3,35 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/static/favicon.ico" sizes="32x32" />
+  <link rel="icon" href="/static/img/favicon-192.png" sizes="192x192" />
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
   <title>编辑文章 · 内容管理</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=57" />
+  <link rel="stylesheet" href="/static/css/style.css?v=59" />
+  <style>
+    /* 保存成功/失败 toast */
+    .ae-toast {
+      position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+      z-index: 1000; padding: 12px 26px; border-radius: 10px;
+      font-size: 14px; font-weight: 600; color: #fff;
+      box-shadow: 0 8px 24px rgba(0,0,0,.18);
+      display: flex; align-items: center; gap: 8px;
+      transition: opacity .25s, transform .25s;
+      max-width: 80vw;
+    }
+    .ae-toast.ok { background: #16a34a; }
+    .ae-toast.err { background: #dc2626; }
+    .ae-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .ae-toast.hidden { opacity: 0; transform: translateX(-50%) translateY(-8px); pointer-events: none; }
+  </style>
 </head>
 <body class="auth-loading">
+  <!-- 保存成功/失败 toast 提示 -->
+  <div id="ae-toast" class="ae-toast hidden" role="status" aria-live="polite"></div>
   <main class="container" style="max-width:860px;margin:0 auto;padding:24px 16px;">
     <div class="card form-card">
       <div class="card-title" style="flex-wrap:wrap;gap:10px;">
-        <h2 id="ae-title">编辑文章</h2>
+        <h2 id="ae-page-title">编辑文章</h2>
         <span class="hint" id="ae-sub"></span>
         <a class="btn-ghost btn-sm" style="margin-left:auto" id="ae-back" href="/admin">← 返回</a>
       </div>
@@ -28,8 +49,8 @@
           <input type="text" id="ae-date" placeholder="如 2026-08-26" />
         </div>
         <div class="field" style="grid-column:1/-1;">
-          <label for="ae-title">标题 <em>*</em></label>
-          <input type="text" id="ae-title" placeholder="文章标题 (列表展示)" />
+          <label for="ae-title-input">标题 <em>*</em></label>
+          <input type="text" id="ae-title-input" placeholder="文章标题 (列表展示)" />
         </div>
         <div class="field" style="grid-column:1/-1;">
           <label for="ae-tags">标签 (逗号分隔)</label>
@@ -58,6 +79,10 @@
     // 独立文章编辑页: ?id= 编辑已有文章, 空=新建
     (function () {
       "use strict";
+      // 内联 SVG 图标 (编辑页未加载 app.js, 自备)
+      function svgIcon(id) {
+        return '<svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#' + id + '"/></svg>';
+      }
       var q = new URLSearchParams(location.search);
       var aid = q.get("id") ? parseInt(q.get("id"), 10) : null;
       var defKind = q.get("kind") === "research" ? "research" : "news";
@@ -87,15 +112,34 @@
         }
       }
 
+      // ---------- 保存结果 toast 反馈 ----------
+      var toastTimer = null;
+      function showToast(msg, isOk) {
+        var t = document.getElementById("ae-toast");
+        if (!t) return;
+        clearTimeout(toastTimer);
+        t.textContent = msg;
+        t.className = "ae-toast " + (isOk ? "ok" : "err") + " show";
+        // 3 秒后自动淡出
+        toastTimer = setTimeout(function () {
+          t.classList.remove("show");
+          t.classList.add("hidden");
+        }, 3000);
+      }
+      function hideToast() {
+        var t = document.getElementById("ae-toast");
+        if (t) { t.classList.remove("show"); t.classList.add("hidden"); }
+      }
+
       async function load() {
         if (!aid) {
           // 新建
-          document.getElementById("ae-title").textContent = "新建文章";
+          document.getElementById("ae-page-title").textContent = "新建文章";
           document.getElementById("ae-kind").value = defKind;
           updateBack(defKind);
           return;
         }
-        document.getElementById("ae-title").textContent = "编辑文章 (ID " + aid + ")";
+        document.getElementById("ae-page-title").textContent = "编辑文章 (ID " + aid + ")";
         try {
           const r = await fetch("/api/site/articles/" + aid);
           const d = await r.json();
@@ -103,7 +147,7 @@
           const it = d.item;
           document.getElementById("ae-kind").value = it.kind || defKind;
           document.getElementById("ae-date").value = it.date || "";
-          document.getElementById("ae-title").value = it.title || "";
+          document.getElementById("ae-title-input").value = it.title || "";
           try { document.getElementById("ae-tags").value = (JSON.parse(it.tags || "[]") || []).join(", "); } catch (e) {}
           document.getElementById("ae-body").value = it.body || "";
           updateBack(it.kind || defKind);
@@ -114,15 +158,18 @@
 
       async function save() {
         const kind = document.getElementById("ae-kind").value;
-        const title = document.getElementById("ae-title").value.trim();
+        const title = document.getElementById("ae-title-input").value.trim();
         const date = document.getElementById("ae-date").value.trim();
         const tagsRaw = document.getElementById("ae-tags").value;
         const body = document.getElementById("ae-body").value;
-        if (!title) { setHint("标题不能为空", true); return; }
-        if (!body) { setHint("正文不能为空", true); return; }
+        if (!title) { showToast("保存失败: 标题不能为空", false); return; }
+        if (!body) { showToast("保存失败: 正文不能为空", false); return; }
         const tags = tagsRaw.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean);
+        const isNew = !aid;
         const btn = document.getElementById("ae-save-btn");
         btn.disabled = true;
+        btn.innerHTML = `${svgIcon("icon-refresh")} 保存中…`;
+        hideToast();
         try {
           const url = aid ? "/api/site/articles/" + aid : "/api/site/articles";
           const r = await fetch(url, {
@@ -132,13 +179,17 @@
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "保存失败");
-          // 保存成功: 跳回内容管理对应类型
-          const back = document.getElementById("ae-back");
-          back.href = "/admin?sitepage=" + kind;
-          back.click();
+          // 保存成功: 展示绿色 toast 后跳回内容管理对应类型
+          showToast(isNew ? "✅ 创建成功，正在返回列表…" : "✅ 保存成功，正在返回列表…", true);
+          setTimeout(() => {
+            const url2 = "/admin?sitepage=" + kind;
+            if (aid) { location.href = url2; } else { location.href = url2; }
+          }, 900);
         } catch (e) {
+          showToast("保存失败: " + (e.message || e), false);
           setHint("保存失败: " + (e.message || e), true);
           btn.disabled = false;
+          btn.innerHTML = `${svgIcon("icon-check")} 保存`;
         }
       }
 
@@ -151,6 +202,12 @@
       CaiBaoAuth.init().then(function () {
         if (!CaiBaoAuth.isLoggedIn()) {
           location.replace("/static/login.html?next=" + encodeURIComponent(location.pathname + location.search));
+          return;
+        }
+        // 仅管理员 (yodagast) 可编辑官网内容
+        var u = CaiBaoAuth.getUser ? CaiBaoAuth.getUser() : null;
+        if (!u || u.username !== "yodagast") {
+          location.replace("/admin");   // 非管理员: 回到后台
           return;
         }
         document.body.classList.remove("auth-loading");

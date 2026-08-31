@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/static/favicon.ico" sizes="32x32" />
+  <link rel="icon" href="/static/img/favicon-192.png" sizes="192x192" />
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
   <title>财宝资本 CaiBao Capital · 创造时间和知识的复利</title>
   <link rel="stylesheet" href="/static/css/home.css?v=5" />
 </head>
@@ -51,11 +54,9 @@
         <p class="section-lede lead" id="vision-lede">
           创造时间和知识的复利。
         </p>
-        <p class="paragraph" id="vision-body">
-          时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。我们相信，真正的复利不止来自资本，
-          更来自长期积累的正确认知与时间的朋友。让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值——
-          这是我们为之努力的愿景。
-        </p>
+        <div class="principles-grid" id="vision-grid">
+          <!-- 由 JS 从 API 渲染 (与价值观同款卡片) -->
+        </div>
       </div>
 
       <!-- 使命 -->
@@ -64,10 +65,9 @@
         <p class="section-lede lead" id="mission-lede">
           一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。
         </p>
-        <p class="paragraph" id="mission-body">
-          无论资金规模大小，我们都以同样的审慎与纪律对待每一份托付。合理的收益意味着不追逐泡沫与侥幸，
-          可持续的收益意味着拥有穿越周期的稳健底色，超过社会平均的收益意味着持续为客户创造真正的增量价值。
-        </p>
+        <div class="principles-grid" id="mission-grid">
+          <!-- 由 JS 从 API 渲染 (与价值观同款卡片) -->
+        </div>
       </div>
 
       <!-- 价值观 -->
@@ -123,12 +123,12 @@
         vision: {
           title: "愿景",
           lede: "创造时间和知识的复利。",
-          body: "时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。我们相信，真正的复利不止来自资本，更来自长期积累的正确认知与时间的朋友。让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值—— 这是我们为之努力的愿景。"
+          body: "时间是复利最可靠的伙伴 | 时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。\n知识是复利的土壤 | 真正的复利不止来自资本，更来自长期积累的正确认知。\n决策沉淀为可复用 | 让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值。"
         },
         mission: {
           title: "使命",
           lede: "一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。",
-          body: "无论资金规模大小，我们都以同样的审慎与纪律对待每一份托付。合理的收益意味着不追逐泡沫与侥幸，可持续的收益意味着拥有穿越周期的稳健底色，超过社会平均的收益意味着持续为客户创造真正的增量价值。"
+          body: "合理 | 只赚取能力圈范围内的利润。\n可持续 | 依靠时间和知识的复利来增加利润。\n超越平凡 | 我们追求卓越，希望长期有超过社会平均水平的收益，但短期或牛市中我们可能会亏损。\n利润之外 | 我们视解决社会需求、探索科学与真知为我们的初心，并能够学以致用，创造时间和知识的复利。"
         },
         values: [
           { name: "本分", desc: "做对的事情、把事情做对、求责于己，坚持 stop doing list——知道什么不该做，比知道该做什么更重要。" },
@@ -151,22 +151,18 @@
         return (v == null || typeof v !== "object") ? fallback : v;
       }
 
-      /* 渲染各区块 */
-      function renderVision(v) {
-        if (!v) return;
-        var lede = $("vision-lede"); if (lede) lede.textContent = v.lede || "";
-        var body = $("vision-body"); if (body) body.textContent = v.body || "";
-      }
-      function renderMission(m) {
-        if (!m) return;
-        var lede = $("mission-lede"); if (lede) lede.textContent = m.lede || "";
-        var body = $("mission-body"); if (body) body.textContent = m.body || "";
-      }
-      function renderValues(list) {
-        if (!Array.isArray(list) || !list.length) return;
-        var grid = $("values-grid");
+      /* 渲染各区块: 愿景/使命/价值观 统一为卡片网格 (名称 | 描述) */
+      function renderCards(containerId, body) {
+        var grid = $(containerId);
         if (!grid) return;
-        grid.innerHTML = list.map(function (it, i) {
+        var items = String(body || "").split("\n").map(function (l) { return l.trim(); })
+          .filter(Boolean).map(function (line) {
+            var idx = line.indexOf("|");
+            if (idx > -1) return { name: line.slice(0, idx).trim(), desc: line.slice(idx + 1).trim() };
+            return { name: line, desc: "" };
+          });
+        if (!items.length) { grid.innerHTML = ""; return; }
+        grid.innerHTML = items.map(function (it, i) {
           return (
             '<div class="principle">' +
             '  <div class="p-num">' + String(i + 1).padStart(2, "0") + "</div>" +
@@ -175,6 +171,22 @@
             "</div>"
           );
         }).join("");
+      }
+      function renderVision(v) {
+        if (!v) return;
+        var lede = $("vision-lede"); if (lede) lede.textContent = v.lede || "";
+        renderCards("vision-grid", v.body);
+      }
+      function renderMission(m) {
+        if (!m) return;
+        var lede = $("mission-lede"); if (lede) lede.textContent = m.lede || "";
+        renderCards("mission-grid", m.body);
+      }
+      function renderValues(list) {
+        if (!Array.isArray(list) || !list.length) return;
+        renderCards("values-grid", list.map(function (it) {
+          return String(it.name || "") + " | " + String(it.desc || "");
+        }).join("\n"));
       }
 
       /* 主入口: 拉取 API, 成功则渲染, 失败回退静态 */

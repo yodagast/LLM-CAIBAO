@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/static/favicon.ico" sizes="32x32" />
+  <link rel="icon" href="/static/img/favicon-192.png" sizes="192x192" />
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
   <title>智能选股回测平台</title>
   <link rel="stylesheet" href="/static/css/style.css?v=58" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
@@ -25,7 +28,7 @@
         <button type="button" class="tab" data-tab="caibao">财报挖掘</button>
         <button type="button" class="tab" data-tab="band">区间交易估价</button>
         <button type="button" class="tab" data-tab="backtest">回测策略</button>
-        <button type="button" class="tab" data-tab="sitepage"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-book"/></svg> 页面管理</button>
+        <button type="button" class="tab" data-tab="sitepage" data-admin-only><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-book"/></svg> 页面管理</button>
       </div>
       <div class="tabs-auth" id="auth-zone"></div>
     </nav>
@@ -1349,6 +1352,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=5"></script>
-  <script src="/static/js/app.js?v=83"></script>
+  <script src="/static/js/app.js?v=87"></script>
 </body>
 </html>

@@ -244,6 +244,7 @@ class SiteContentRequest(BaseModel):
     key: str = Field(..., description="内容块标志: vision/mission/values/news")
     title: str = Field(..., max_length=64, description="板块标题")
     content: str = Field("", max_length=20000, description="内容 (JSON 字符串, values/news 为数组)")
+    content_en: str = Field("", max_length=20000, description="英文内容 (同格式, 空=无英文版)")
 
 
 class SiteContentBatchRequest(BaseModel):
@@ -255,9 +256,11 @@ class SiteArticleRequest(BaseModel):
     """官网文章 (行业研究 / 新闻浏览) 创建/更新。"""
     kind: str = Field(..., description="类型: research 行业研究 / news 新闻浏览")
     title: str = Field(..., min_length=1, max_length=200, description="标题")
+    title_en: str = Field("", max_length=200, description="英文标题")
     date: str = Field("", max_length=32, description="展示日期 (如 2026-08-26)")
     tags: list[str] = Field(default_factory=list, max_length=10, description="标签列表")
     body: str = Field("", max_length=50000, description="正文 (Markdown)")
+    body_en: str = Field("", max_length=50000, description="英文正文 (Markdown)")
 
 
 class BandOptimizeRequest(BaseModel):
@@ -1435,7 +1438,7 @@ async def site_content_save(req: SiteContentBatchRequest, request: Request) -> d
     try:
         for it in req.items:
             await pg_service.upsert_site_page(
-                it.key.strip(), it.title.strip(), it.content)
+                it.key.strip(), it.title.strip(), it.content, it.content_en)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存官网内容失败: {e}")
     return {"ok": True, "saved": len(req.items)}
@@ -1477,7 +1480,8 @@ async def site_articles_create(req: SiteArticleRequest, request: Request) -> dic
     try:
         aid = await pg_service.create_site_article(
             req.kind, req.title.strip(), req.date.strip(),
-            __import__("json").dumps(req.tags, ensure_ascii=False), req.body)
+            __import__("json").dumps(req.tags, ensure_ascii=False), req.body,
+            req.title_en.strip(), req.body_en)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建文章失败: {e}")
     return {"ok": True, "id": aid}
@@ -1492,7 +1496,8 @@ async def site_articles_update(aid: int, req: SiteArticleRequest, request: Reque
     try:
         n = await pg_service.update_site_article(
             aid, req.kind, req.title.strip(), req.date.strip(),
-            __import__("json").dumps(req.tags, ensure_ascii=False), req.body)
+            __import__("json").dumps(req.tags, ensure_ascii=False), req.body,
+            req.title_en.strip(), req.body_en)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新文章失败: {e}")
     if not n:

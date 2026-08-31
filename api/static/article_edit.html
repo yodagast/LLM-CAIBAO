@@ -49,17 +49,26 @@
           <input type="text" id="ae-date" placeholder="如 2026-08-26" />
         </div>
         <div class="field" style="grid-column:1/-1;">
-          <label for="ae-title-input">标题 <em>*</em></label>
+          <label for="ae-title-input">标题 (中文) <em>*</em></label>
           <input type="text" id="ae-title-input" placeholder="文章标题 (列表展示)" />
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <label for="ae-title-en">标题 (English)</label>
+          <input type="text" id="ae-title-en" placeholder="Article title (shown in English mode)" />
         </div>
         <div class="field" style="grid-column:1/-1;">
           <label for="ae-tags">标签 (逗号分隔)</label>
           <input type="text" id="ae-tags" placeholder="如 行业研究, 深度报告" />
         </div>
         <div class="field" style="grid-column:1/-1;">
-          <label for="ae-body">正文 (Markdown) <em>*</em></label>
+          <label for="ae-body">正文 (Markdown, 中文) <em>*</em></label>
           <textarea id="ae-body" class="sp-textarea" style="min-height:420px;width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;line-height:1.7;resize:vertical;" placeholder="# 标题&#10;&#10;正文内容…"></textarea>
           <div class="hint">支持 Markdown 语法: # 标题 / - 列表 / | 表格 | / [链接](url) / **加粗** 等</div>
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <label for="ae-body-en">正文 (Markdown, English)</label>
+          <textarea id="ae-body-en" class="sp-textarea" style="min-height:300px;width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;line-height:1.7;resize:vertical;" placeholder="# Title&#10;&#10;Article body in English…"></textarea>
+          <div class="hint">英文版正文 (English mode 下展示; 留空则英文模式回退中文正文)</div>
         </div>
       </div>
 
@@ -148,8 +157,10 @@
           document.getElementById("ae-kind").value = it.kind || defKind;
           document.getElementById("ae-date").value = it.date || "";
           document.getElementById("ae-title-input").value = it.title || "";
+          document.getElementById("ae-title-en").value = it.title_en || "";
           try { document.getElementById("ae-tags").value = (JSON.parse(it.tags || "[]") || []).join(", "); } catch (e) {}
           document.getElementById("ae-body").value = it.body || "";
+          document.getElementById("ae-body-en").value = it.body_en || "";
           updateBack(it.kind || defKind);
         } catch (e) {
           setHint("加载失败: " + (e.message || e), true);
@@ -159,9 +170,11 @@
       async function save() {
         const kind = document.getElementById("ae-kind").value;
         const title = document.getElementById("ae-title-input").value.trim();
+        const titleEn = document.getElementById("ae-title-en").value.trim();
         const date = document.getElementById("ae-date").value.trim();
         const tagsRaw = document.getElementById("ae-tags").value;
         const body = document.getElementById("ae-body").value;
+        const bodyEn = document.getElementById("ae-body-en").value;
         if (!title) { showToast("保存失败: 标题不能为空", false); return; }
         if (!body) { showToast("保存失败: 正文不能为空", false); return; }
         const tags = tagsRaw.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean);
@@ -175,15 +188,14 @@
           const r = await fetch(url, {
             method: aid ? "PUT" : "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ kind: kind, title: title, date: date, tags: tags, body: body }),
+            body: JSON.stringify({ kind: kind, title: title, title_en: titleEn, date: date, tags: tags, body: body, body_en: bodyEn }),
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "保存失败");
           // 保存成功: 展示绿色 toast 后跳回内容管理对应类型
           showToast(isNew ? "✅ 创建成功，正在返回列表…" : "✅ 保存成功，正在返回列表…", true);
           setTimeout(() => {
-            const url2 = "/admin?sitepage=" + kind;
-            if (aid) { location.href = url2; } else { location.href = url2; }
+            location.href = "/admin?sitepage=" + kind;
           }, 900);
         } catch (e) {
           showToast("保存失败: " + (e.message || e), false);

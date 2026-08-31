@@ -6,9 +6,10 @@
   <link rel="icon" href="/static/favicon.ico" sizes="32x32" />
   <link rel="icon" href="/static/img/favicon-192.png" sizes="192x192" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
-  <title>文章 · 财宝资本 CaiBao Capital</title>
-  <link rel="stylesheet" href="/static/css/home.css?v=5" />
+  <title data-i18n-title="article.title">文章 · 财宝资本 CaiBao Capital</title>
+  <link rel="stylesheet" href="/static/css/home.css?v=6" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/static/js/i18n.js"></script>
 </head>
 <body>
 
@@ -17,12 +18,12 @@
     <div class="nav-inner">
       <a class="brand" href="/">
         <span class="brand-mark">财</span>
-        <span class="brand-text"><b>财宝资本</b><span>CaiBao Capital</span></span>
+        <span class="brand-text"><b data-i18n="brand.name">财宝资本</b><span data-i18n="brand.sub">CaiBao Capital</span></span>
       </a>
       <nav class="nav-links">
-        <a class="lnk" href="/">公司文化</a>
-        <a class="lnk" id="nav-research" href="/research">行业研究</a>
-        <a class="lnk" id="nav-news" href="/news">新闻浏览</a>
+        <a class="lnk" data-i18n="nav.culture" href="/">公司文化</a>
+        <a class="lnk" data-i18n="nav.research" id="nav-research" href="/research">行业研究</a>
+        <a class="lnk" data-i18n="nav.news" id="nav-news" href="/news">新闻浏览</a>
       </nav>
     </div>
   </header>
@@ -34,12 +35,12 @@
         <span class="news-date" id="art-date">—</span>
         <span class="news-tag" id="art-tags" style="margin-left:8px"></span>
       </div>
-      <h1 class="article-h1" id="art-title">加载中…</h1>
+      <h1 class="article-h1" id="art-title" data-i18n="list.loading">加载中…</h1>
       <article class="md-body" id="art-body">
-        <div class="loading-inline">加载中…</div>
+        <div class="loading-inline" data-i18n="list.loading">加载中…</div>
       </article>
       <div class="article-back">
-        <a class="btn-hero solid" id="art-back" href="/research">← 返回列表</a>
+        <a class="btn-hero solid" data-i18n="back.list" id="art-back" href="/research">← 返回列表</a>
       </div>
     </div>
   </section>
@@ -49,30 +50,43 @@
     <div class="footer-inner">
       <div class="footer-grid">
         <div>
-          <h5>财宝资本</h5>
-          <p>创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
+          <h5 data-i18n="footer.capital">财宝资本</h5>
+          <p data-i18n="footer.desc">创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
         </div>
         <div>
-          <h5>快捷导航</h5>
-          <p><a href="/">公司文化</a></p>
-          <p><a href="/research">行业研究</a></p>
-          <p><a href="/news">新闻浏览</a></p>
+          <h5 data-i18n="footer.nav">快捷导航</h5>
+          <p><a href="/" data-i18n="footer.culture">公司文化</a></p>
+          <p><a href="/research" data-i18n="footer.research">行业研究</a></p>
+          <p><a href="/news" data-i18n="footer.news">新闻浏览</a></p>
         </div>
         <div>
-          <h5>联系我们</h5>
-          <p>邮箱：contact@caibaocapital.com</p>
-          <p>电话：+86 000 0000 0000</p>
-          <p>地址：中国 · 上海</p>
+          <h5 data-i18n="footer.contact">联系我们</h5>
+          <p data-i18n="footer.email">邮箱：contact@caibaocapital.com</p>
+          <p data-i18n="footer.tel">电话：+86 000 0000 0000</p>
+          <p data-i18n="footer.addr">地址：中国 · 上海</p>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
-        <span>本站内容仅供研究参考，不构成投资建议。</span>
+        <span data-i18n="footer.rights">© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
+        <span data-i18n="footer.disclaimer">本站内容仅供研究参考，不构成投资建议。</span>
       </div>
     </div>
   </footer>
 
   <script>
+    /* 文章正文页词典 */
+    if (window.I18N) {
+      window.I18N.register({
+        zh: {
+          "article.title": "文章 · 财宝资本 CaiBao Capital",
+          "article.suffix": " · 财宝资本 CaiBao Capital"
+        },
+        en: {
+          "article.title": "Article · CaiBao Capital",
+          "article.suffix": " · CaiBao Capital"
+        }
+      });
+    }
     // 文章正文页: 从 API 读取文章详情 (标题/日期/标签/正文 markdown) 并渲染
     (function () {
       var aid = parseInt((location.pathname.match(/\/article\/(\d+)/) || [])[1] || "0", 10);
@@ -81,35 +95,76 @@
           return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
         });
       }
+      var t = function (k) { return window.I18N ? window.I18N.t(k) : ""; };
+      var backHref = "/research";
       if (!aid) {
-        document.getElementById("art-title").textContent = "文章不存在";
+        document.getElementById("art-title").textContent = t("article.notfound");
         return;
       }
       var back = document.getElementById("art-back");
+      var navResearch = document.getElementById("nav-research");
+      var navNews = document.getElementById("nav-news");
+      function setActiveNav() {
+        if (back.dataset.kind === "news") {
+          if (navNews) navNews.classList.add("active");
+          if (navResearch) navResearch.classList.remove("active");
+        } else {
+          if (navResearch) navResearch.classList.add("active");
+          if (navNews) navNews.classList.remove("active");
+        }
+      }
       fetch("/api/site/articles/" + aid)
         .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })
         .then(function (d) {
           var it = d.item;
-          document.title = it.title + " · 财宝资本 CaiBao Capital";
-          document.getElementById("art-title").textContent = it.title || "";
+          var useEn = (window.I18N && window.I18N.getLang() === "en");
+          var showTitle = (useEn && it.title_en) ? it.title_en : it.title;
+          var showBody = (useEn && it.body_en) ? it.body_en : it.body;
+          document.title = (showTitle || "") + t("article.suffix");
+          var titleEl = document.getElementById("art-title");
+          titleEl.textContent = showTitle || "";
+          titleEl.removeAttribute("data-i18n");   // 已加载真实标题, 不再受语言切换影响
           document.getElementById("art-date").textContent = it.date || "";
           var tags = [];
           try { tags = JSON.parse(it.tags || "[]") || []; } catch (e) { tags = []; }
           document.getElementById("art-tags").textContent = tags.join(" · ");
-          document.getElementById("art-body").innerHTML = marked.parse(it.body || "");
+          document.getElementById("art-body").innerHTML = marked.parse(showBody || "");
           // 高亮对应导航 + 返回链接
           if (it.kind === "news") {
-            var nn = document.getElementById("nav-news"); if (nn) nn.classList.add("active");
+            back.dataset.kind = "news";
             back.href = "/news";
           } else {
-            var nr = document.getElementById("nav-research"); if (nr) nr.classList.add("active");
+            back.dataset.kind = "research";
             back.href = "/research";
           }
+          backHref = back.href;
+          setActiveNav();
         })
         .catch(function () {
-          document.getElementById("art-title").textContent = "文章不存在或已删除";
+          var errEl = document.getElementById("art-title");
+          errEl.textContent = t("article.deleted");
+          errEl.removeAttribute("data-i18n");
           document.getElementById("art-body").innerHTML = "";
         });
+      if (window.I18N) {
+        // 语言切换时重载文章正文 (标题/正文切换中英)
+        window.I18N.onApply = function () {
+          fetch("/api/site/articles/" + aid)
+            .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })
+            .then(function (d) {
+              var it = d.item;
+              var useEn = (window.I18N && window.I18N.getLang() === "en");
+              var showTitle = (useEn && it.title_en) ? it.title_en : it.title;
+              var showBody = (useEn && it.body_en) ? it.body_en : it.body;
+              document.title = (showTitle || "") + t("article.suffix");
+              var titleEl = document.getElementById("art-title");
+              titleEl.textContent = showTitle || "";
+              document.getElementById("art-body").innerHTML = marked.parse(showBody || "");
+              setActiveNav();
+            })
+            .catch(function () {});
+        };
+      }
     })();
   </script>
 

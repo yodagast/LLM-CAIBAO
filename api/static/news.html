@@ -6,8 +6,9 @@
   <link rel="icon" href="/static/favicon.ico" sizes="32x32" />
   <link rel="icon" href="/static/img/favicon-192.png" sizes="192x192" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
-  <title>新闻浏览 · 财宝资本 CaiBao Capital</title>
-  <link rel="stylesheet" href="/static/css/home.css?v=5" />
+  <title data-i18n-title="news.title">新闻浏览 · 财宝资本 CaiBao Capital</title>
+  <link rel="stylesheet" href="/static/css/home.css?v=6" />
+  <script src="/static/js/i18n.js"></script>
 </head>
 <body>
 
@@ -16,12 +17,12 @@
     <div class="nav-inner">
       <a class="brand" href="/">
         <span class="brand-mark">财</span>
-        <span class="brand-text"><b>财宝资本</b><span>CaiBao Capital</span></span>
+        <span class="brand-text"><b data-i18n="brand.name">财宝资本</b><span data-i18n="brand.sub">CaiBao Capital</span></span>
       </a>
       <nav class="nav-links">
-        <a class="lnk" href="/">公司文化</a>
-        <a class="lnk" href="/research">行业研究</a>
-        <a class="lnk active" href="/news">新闻浏览</a>
+        <a class="lnk" data-i18n="nav.culture" href="/">公司文化</a>
+        <a class="lnk" data-i18n="nav.research" href="/research">行业研究</a>
+        <a class="lnk active" data-i18n="nav.news" href="/news">新闻浏览</a>
       </nav>
     </div>
   </header>
@@ -30,9 +31,9 @@
   <section class="block" id="news">
     <div class="block-inner">
       <div class="section-kicker">News</div>
-      <h2 class="section-title">新闻浏览</h2>
+      <h2 class="section-title" data-i18n="news.title2">新闻浏览</h2>
       <div class="article-list" id="news-list">
-        <div class="loading-inline">加载中…</div>
+        <div class="loading-inline" data-i18n="list.loading">加载中…</div>
       </div>
     </div>
   </section>
@@ -42,30 +43,37 @@
     <div class="footer-inner">
       <div class="footer-grid">
         <div>
-          <h5>财宝资本</h5>
-          <p>创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
+          <h5 data-i18n="footer.capital">财宝资本</h5>
+          <p data-i18n="footer.desc">创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
         </div>
         <div>
-          <h5>快捷导航</h5>
-          <p><a href="/">公司文化</a></p>
-          <p><a href="/research">行业研究</a></p>
-          <p><a href="/news">新闻浏览</a></p>
+          <h5 data-i18n="footer.nav">快捷导航</h5>
+          <p><a href="/" data-i18n="footer.culture">公司文化</a></p>
+          <p><a href="/research" data-i18n="footer.research">行业研究</a></p>
+          <p><a href="/news" data-i18n="footer.news">新闻浏览</a></p>
         </div>
         <div>
-          <h5>联系我们</h5>
-          <p>邮箱：contact@caibaocapital.com</p>
-          <p>电话：+86 000 0000 0000</p>
-          <p>地址：中国 · 上海</p>
+          <h5 data-i18n="footer.contact">联系我们</h5>
+          <p data-i18n="footer.email">邮箱：contact@caibaocapital.com</p>
+          <p data-i18n="footer.tel">电话：+86 000 0000 0000</p>
+          <p data-i18n="footer.addr">地址：中国 · 上海</p>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
-        <span>本站内容仅供研究参考，不构成投资建议。</span>
+        <span data-i18n="footer.rights">© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
+        <span data-i18n="footer.disclaimer">本站内容仅供研究参考，不构成投资建议。</span>
       </div>
     </div>
   </footer>
 
   <script>
+    /* 新闻浏览列表页词典 */
+    if (window.I18N) {
+      window.I18N.register({
+        zh: { "news.title": "新闻浏览 · 财宝资本 CaiBao Capital", "news.title2": "新闻浏览" },
+        en: { "news.title": "News · CaiBao Capital", "news.title2": "News" }
+      });
+    }
     // 新闻浏览列表页: 从 API 读取文章列表 (标题/日期/标签), 点击进正文页
     (function () {
       var box = document.getElementById("news-list");
@@ -74,32 +82,39 @@
           return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
         });
       }
+      var t = function (k) { return window.I18N ? window.I18N.t(k) : ""; };
+      function lang() { return window.I18N ? window.I18N.getLang() : "zh"; }
+      function showState(key) { box.innerHTML = '<div class="loading-inline">' + t(key) + "</div>"; }
       function render(items) {
         if (!items || !items.length) {
-          box.innerHTML = '<div class="loading-inline">暂无内容</div>';
+          showState("list.empty");
           return;
         }
+        var useEn = lang() === "en";
         box.innerHTML = items.map(function (it) {
           var tags = [];
           try { tags = JSON.parse(it.tags || "[]") || []; } catch (e) { tags = []; }
-          var tagHtml = tags.map(function (t) {
-            return '<span class="news-tag">' + esc(t) + "</span>";
+          var tagHtml = tags.map(function (x) {
+            return '<span class="news-tag">' + esc(x) + "</span>";
           }).join("");
+          var title = (useEn && it.title_en) ? it.title_en : it.title;
           return (
             '<a class="article-item" href="/article/' + it.id + '">' +
             '  <div class="article-head">' +
             '    <span class="news-date">' + esc(it.date || "") + "</span>" +
-            '    <span class="article-title">' + esc(it.title) + "</span>" +
+            '    <span class="article-title">' + esc(title) + "</span>" +
             tagHtml +
             "  </div>" +
             "</a>"
           );
         }).join("");
       }
+      if (window.I18N) { window.I18N.onApply = function () { render(currentItems); }; }
+      var currentItems = null;
       fetch("/api/site/articles?kind=news")
         .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })
-        .then(function (d) { render(d.items); })
-        .catch(function () { box.innerHTML = '<div class="loading-inline">加载失败</div>'; });
+        .then(function (d) { currentItems = d.items; render(d.items); })
+        .catch(function () { showState("list.fail"); });
     })();
   </script>
 

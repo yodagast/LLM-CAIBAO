@@ -6,8 +6,9 @@
   <link rel="icon" href="/static/favicon.ico" sizes="32x32" />
   <link rel="icon" href="/static/img/favicon-192.png" sizes="192x192" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
-  <title>财宝资本 CaiBao Capital · 创造时间和知识的复利</title>
-  <link rel="stylesheet" href="/static/css/home.css?v=5" />
+  <title data-i18n-title="home.title">财宝资本 CaiBao Capital · 创造时间和知识的复利人生</title>
+  <link rel="stylesheet" href="/static/css/home.css?v=6" />
+  <script src="/static/js/i18n.js"></script>
 </head>
 <body>
 
@@ -16,12 +17,12 @@
     <div class="nav-inner">
       <a class="brand" href="/">
         <span class="brand-mark">财</span>
-        <span class="brand-text"><b>财宝资本</b><span>CaiBao Capital</span></span>
+        <span class="brand-text"><b data-i18n="brand.name">财宝资本</b><span data-i18n="brand.sub">CaiBao Capital</span></span>
       </a>
       <nav class="nav-links">
-        <a class="lnk active" href="/">公司文化</a>
-        <a class="lnk" href="/research">行业研究</a>
-        <a class="lnk" href="/news">新闻浏览</a>
+        <a class="lnk active" data-i18n="nav.culture" href="/">公司文化</a>
+        <a class="lnk" data-i18n="nav.research" href="/research">行业研究</a>
+        <a class="lnk" data-i18n="nav.news" href="/news">新闻浏览</a>
       </nav>
     </div>
   </header>
@@ -30,14 +31,14 @@
   <section class="hero">
     <div class="hero-inner">
       <div class="hero-eyebrow">Vision · Mission · Values</div>
-      <h1 id="hero-title">创造时间和知识的复利。</h1>
-      <p class="hero-sub" id="hero-sub">
+      <h1 data-i18n="home.hero.title" id="hero-title">创造时间和知识的复利。</h1>
+      <p class="hero-sub" data-i18n="home.hero.sub" id="hero-sub">
         我们一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。
-        以本分、客观、理性、诚实为准则，在长期主义中积累时间与知识的复利。
+        以本分、客观、理性、诚实为准则，创造时间与知识的复利人生。
       </p>
       <div class="hero-actions">
-        <a class="btn-hero solid" href="#culture">了解我们的公司文化</a>
-        <a class="btn-hero ghost" href="/research">浏览行业研究</a>
+        <a class="btn-hero solid" data-i18n="home.hero.cta1" href="#culture">了解我们的公司文化</a>
+        <a class="btn-hero ghost" data-i18n="home.hero.cta2" href="/research">浏览行业研究</a>
       </div>
     </div>
   </section>
@@ -46,11 +47,11 @@
   <section class="block" id="culture">
     <div class="block-inner">
       <div class="section-kicker">Culture</div>
-      <h2 class="section-title">公司文化</h2>
+      <h2 class="section-title" data-i18n="home.culture">公司文化</h2>
 
       <!-- 愿景 -->
       <div class="culture-sec" id="culture-vision">
-        <div class="culture-kicker">Vision · 愿景</div>
+        <div class="culture-kicker" data-i18n="home.vision.kicker">Vision · 愿景</div>
         <p class="section-lede lead" id="vision-lede">
           创造时间和知识的复利。
         </p>
@@ -61,7 +62,7 @@
 
       <!-- 使命 -->
       <div class="culture-sec" id="culture-mission">
-        <div class="culture-kicker">Mission · 使命</div>
+        <div class="culture-kicker" data-i18n="home.mission.kicker">Mission · 使命</div>
         <p class="section-lede lead" id="mission-lede">
           一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。
         </p>
@@ -72,7 +73,7 @@
 
       <!-- 价值观 -->
       <div class="culture-sec" id="culture-values">
-        <div class="culture-kicker">Values · 价值观</div>
+        <div class="culture-kicker" data-i18n="home.values.kicker">Values · 价值观</div>
         <div class="principles-grid" id="values-grid">
           <!-- 由 JS 从 API 渲染 -->
         </div>
@@ -82,8 +83,8 @@
 
   <!-- 页脚前的 CTA -->
   <section class="cta">
-    <h2>创造时间与知识的复利</h2>
-    <p>我们一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。</p>
+    <h2 data-i18n="home.cta.title">创造时间与知识的复利</h2>
+    <p data-i18n="home.cta.sub">我们一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。</p>
   </section>
 
   <!-- 页脚 -->
@@ -91,30 +92,63 @@
     <div class="footer-inner">
       <div class="footer-grid">
         <div>
-          <h5>财宝资本</h5>
-          <p>创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
+          <h5 data-i18n="footer.capital">财宝资本</h5>
+          <p data-i18n="footer.desc">创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
         </div>
         <div>
-          <h5>快捷导航</h5>
-          <p><a href="/">公司文化</a></p>
-          <p><a href="/research">行业研究</a></p>
-          <p><a href="/news">新闻浏览</a></p>
+          <h5 data-i18n="footer.nav">快捷导航</h5>
+          <p><a href="/" data-i18n="footer.culture">公司文化</a></p>
+          <p><a href="/research" data-i18n="footer.research">行业研究</a></p>
+          <p><a href="/news" data-i18n="footer.news">新闻浏览</a></p>
         </div>
         <div>
-          <h5>联系我们</h5>
-          <p>邮箱：contact@caibaocapital.com</p>
-          <p>电话：+86 000 0000 0000</p>
-          <p>地址：中国 · 上海</p>
+          <h5 data-i18n="footer.contact">联系我们</h5>
+          <p data-i18n="footer.email">邮箱：contact@caibaocapital.com</p>
+          <p data-i18n="footer.tel">电话：+86 000 0000 0000</p>
+          <p data-i18n="footer.addr">地址：中国 · 上海</p>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
-        <span>本站内容仅供研究参考，不构成投资建议。</span>
+        <span data-i18n="footer.rights">© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
+        <span data-i18n="footer.disclaimer">本站内容仅供研究参考，不构成投资建议。</span>
       </div>
     </div>
   </footer>
 
   <script>
+
+    /* 首页特有文案 (hero / cta / 板块标题) */
+    if (window.I18N) {
+      window.I18N.register({
+        zh: {
+          "home.title": "财宝资本 CaiBao Capital · 创造时间和知识的复利",
+          "home.hero.title": "创造时间和知识的复利。",
+          "home.hero.sub": "我们一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。以本分、客观、理性、诚实为准则，在长期主义中积累时间与知识的复利。",
+          "home.hero.cta1": "了解我们的公司文化",
+          "home.hero.cta2": "浏览行业研究",
+          "home.culture": "公司文化",
+          "home.vision.kicker": "Vision · 愿景",
+          "home.mission.kicker": "Mission · 使命",
+          "home.values.kicker": "Values · 价值观",
+          "home.cta.title": "创造时间与知识的复利",
+          "home.cta.sub": "我们一视同仁，为客户创造合理的、可持续的、超过社会平均的收益。"
+        },
+        en: {
+          "home.title": "CaiBao Capital · Compounding of Time and Knowledge",
+          "home.hero.title": "Compounding of time and knowledge.",
+          "home.hero.sub": "We serve every client impartially, creating reasonable, sustainable returns above the social average. Guided by integrity, objectivity, rationality and honesty, we build compounding of time and knowledge through long-termism.",
+          "home.hero.cta1": "Discover Our Culture",
+          "home.hero.cta2": "Explore Research",
+          "home.culture": "Our Culture",
+          "home.vision.kicker": "Vision",
+          "home.mission.kicker": "Mission",
+          "home.values.kicker": "Values",
+          "home.cta.title": "Compounding of Time and Knowledge",
+          "home.cta.sub": "We serve every client impartially, creating reasonable, sustainable returns above the social average."
+        }
+      });
+    }
+
     // 公司文化页: 从后端 API 读取 愿景/使命/价值观, 渲染到对应区块
     // 后端无数据 / 接口异常时自动回退到页内静态兜底内容
     (function () {
@@ -190,28 +224,40 @@
       }
 
       /* 主入口: 拉取 API, 成功则渲染, 失败回退静态 */
+      var pageData = null;
+      function lang() { return window.I18N ? window.I18N.getLang() : "zh"; }
+      function renderAll() {
+        if (!pageData) return;
+        var useEn = lang() === "en";
+        renderVision(parseJson(useEn ? pageData.visionEn : pageData.vision, FALLBACK.vision));
+        renderMission(parseJson(useEn ? pageData.missionEn : pageData.mission, FALLBACK.mission));
+        renderValues(parseJson(useEn ? pageData.valuesEn : pageData.values, FALLBACK.values));
+      }
       try {
         fetch("/api/site/content")
           .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })
           .then(function (data) {
             var pages = (data && data.items) || {};
-            var vision = parseJson((pages.vision || {}).content, FALLBACK.vision);
-            var mission = parseJson((pages.mission || {}).content, FALLBACK.mission);
-            var values = parseJson((pages.values || {}).content, FALLBACK.values);
-            renderVision(vision);
-            renderMission(mission);
-            renderValues(Array.isArray(values) ? values : FALLBACK.values);
+            pageData = {
+              vision: (pages.vision || {}).content || "",
+              mission: (pages.mission || {}).content || "",
+              values: (pages.values || {}).content || "",
+              visionEn: (pages.vision || {}).content_en || "",
+              missionEn: (pages.mission || {}).content_en || "",
+              valuesEn: (pages.values || {}).content_en || ""
+            };
+            renderAll();
           })
           .catch(function () {
-            renderVision(FALLBACK.vision);
-            renderMission(FALLBACK.mission);
-            renderValues(FALLBACK.values);
+            pageData = { vision: "", mission: "", values: "", visionEn: "", missionEn: "", valuesEn: "" };
+            renderAll();
           });
       } catch (e) {
-        renderVision(FALLBACK.vision);
-        renderMission(FALLBACK.mission);
-        renderValues(FALLBACK.values);
+        pageData = { vision: "", mission: "", values: "", visionEn: "", missionEn: "", valuesEn: "" };
+        renderAll();
       }
+      /* 语言切换时重渲染愿景/使命/价值观内容 */
+      if (window.I18N) { window.I18N.onApply = renderAll; }
     })();
   </script>
 

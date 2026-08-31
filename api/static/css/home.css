@@ -70,6 +70,21 @@ a { color: inherit; text-decoration: none; }
 .btn-admin:hover { background: var(--navy); color: #fff; }
 .nav-toggle { display: none; }
 
+/* ---------- 语言切换按钮 (i18n) ---------- */
+.lang-switch {
+  margin-left: 6px;
+  flex: none;
+  min-width: 44px; height: 32px; padding: 0 12px;
+  border: 1px solid var(--navy); border-radius: 999px;
+  background: transparent; color: var(--navy);
+  font-family: var(--sans); font-size: 13px; font-weight: 700; letter-spacing: 1px;
+  cursor: pointer; transition: all .2s;
+}
+.lang-switch:hover { background: var(--navy); color: #fff; }
+@media (max-width: 768px) {
+  .lang-switch { min-width: 40px; height: 30px; padding: 0 10px; }
+}
+
 /* ---------- Hero ---------- */
 .hero {
   background:

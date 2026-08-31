@@ -159,6 +159,18 @@
         <div class="field">
           <label for="sp-vision-body">愿景正文 (每行一条, 用 | 分隔名称与描述)</label>
           <textarea id="sp-vision-body" class="sp-textarea" rows="5" placeholder="创造时间和知识的复利 | 时间是价值投资最重要的盟友，知识是做出正确判断最可靠的根基。&#10;决策沉淀为可复用 | 让每一次决策都沉淀为可复用的知识，让每一分时间都服务于长期价值…">${String(sitePageData.vision.body || "").replace(/</g, "&lt;")}</textarea>
+        </div>
+        <div class="field">
+          <label for="sp-vision-title-en"><em style="color:var(--accent, #b08d57)">EN</em> 愿景标题 (English)</label>
+          <input type="text" id="sp-vision-title-en" class="sp-input" value="${String((sitePageData.visionEn || {}).title || "").replace(/"/g, "&quot;")}" placeholder="Vision" />
+        </div>
+        <div class="field">
+          <label for="sp-vision-lede-en"><em style="color:var(--accent, #b08d57)">EN</em> 愿景引语 (English)</label>
+          <input type="text" id="sp-vision-lede-en" class="sp-input" value="${String((sitePageData.visionEn || {}).lede || "").replace(/"/g, "&quot;")}" placeholder="Compounding of time and knowledge." />
+        </div>
+        <div class="field">
+          <label for="sp-vision-body-en"><em style="color:var(--accent, #b08d57)">EN</em> 愿景正文 (English)</label>
+          <textarea id="sp-vision-body-en" class="sp-textarea" rows="5" placeholder="Respect Knowledge | Compounding goes beyond capital; it comes from cognition, decisions and mistakes accumulated over the long term.">${String((sitePageData.visionEn || {}).body || "").replace(/</g, "&lt;")}</textarea>
         </div>`) +
       sitePageSection("使命 Mission", "官网首页「使命」板块内容", `
         <div class="grid">
@@ -168,33 +180,61 @@
         <div class="field">
           <label for="sp-mission-body">使命正文 (每行一条, 用 | 分隔名称与描述)</label>
           <textarea id="sp-mission-body" class="sp-textarea" rows="6" placeholder="合理 | 只希望赚取能力圈范围内的收益。&#10;可持续 | 依靠时间的复利来增加收益。&#10;超过社会平均水平 | 我们追求卓越，努力创造长期能超过社会平均水平的收益…">${String(sitePageData.mission.body || "").replace(/</g, "&lt;")}</textarea>
+        </div>
+        <div class="field">
+          <label for="sp-mission-title-en"><em style="color:var(--accent, #b08d57)">EN</em> 使命标题 (English)</label>
+          <input type="text" id="sp-mission-title-en" class="sp-input" value="${String((sitePageData.missionEn || {}).title || "").replace(/"/g, "&quot;")}" placeholder="Mission" />
+        </div>
+        <div class="field">
+          <label for="sp-mission-lede-en"><em style="color:var(--accent, #b08d57)">EN</em> 使命引语 (English)</label>
+          <input type="text" id="sp-mission-lede-en" class="sp-input" value="${String((sitePageData.missionEn || {}).lede || "").replace(/"/g, "&quot;")}" placeholder="Serve every client impartially and create reasonable, sustainable returns above the social average." />
+        </div>
+        <div class="field">
+          <label for="sp-mission-body-en"><em style="color:var(--accent, #b08d57)">EN</em> 使命正文 (English)</label>
+          <textarea id="sp-mission-body-en" class="sp-textarea" rows="6" placeholder="Reasonable | Only seek profits within our circle of competence.&#10;Sustainable | Grow profits through the compounding of time and knowledge.">${String((sitePageData.missionEn || {}).body || "").replace(/</g, "&lt;")}</textarea>
         </div>`) +
       sitePageSection("价值观 Values", "官网首页「价值观」板块, 每行一条, 格式: 名称 | 描述", `
         <div class="field">
           <label for="sp-values">价值观列表 (每行一条, 用 | 分隔名称与描述)</label>
           <textarea id="sp-values" class="sp-textarea" rows="8" placeholder="本分 | 做对的事情、把事情做对、求责于己…&#10;客观 | 假设正确、逻辑正确、事实正确…">${(sitePageData.values || []).map(v => String(v.name || "") + " | " + String(v.desc || "")).join("\n").replace(/</g, "&lt;")}</textarea>
+        </div>
+        <div class="field">
+          <label for="sp-values-en"><em style="color:var(--accent, #b08d57)">EN</em> 价值观列表 (English)</label>
+          <textarea id="sp-values-en" class="sp-textarea" rows="8" placeholder="Objectivity | Free ourselves from emotions and bias…&#10;Rationality | Base decisions on facts and logic…">${(sitePageData.valuesEn || []).map(v => String(v.name || "") + " | " + String(v.desc || "")).join("\n").replace(/</g, "&lt;")}</textarea>
         </div>`);
   }
 
   // 从编辑表单收集为待保存结构
   function collectSitePage() {
     const v = (id) => (document.getElementById(id) ? document.getElementById(id).value.trim() : "");
+    const parseLines = (raw) => raw.split("\n").map(l => l.trim()).filter(Boolean).map(line => {
+      const idx = line.indexOf("|");
+      if (idx > -1) return { name: line.slice(0, idx).trim(), desc: line.slice(idx + 1).trim() };
+      return { name: line, desc: "" };
+    });
     const vision = {
       title: v("sp-vision-title") || "愿景",
       lede: v("sp-vision-lede"),
       body: v("sp-vision-body"),
+    };
+    const visionEn = {
+      title: v("sp-vision-title-en") || "Vision",
+      lede: v("sp-vision-lede-en"),
+      body: v("sp-vision-body-en"),
     };
     const mission = {
       title: v("sp-mission-title") || "使命",
       lede: v("sp-mission-lede"),
       body: v("sp-mission-body"),
     };
-    const values = v("sp-values").split("\n").map(l => l.trim()).filter(Boolean).map(line => {
-      const idx = line.indexOf("|");
-      if (idx > -1) return { name: line.slice(0, idx).trim(), desc: line.slice(idx + 1).trim() };
-      return { name: line, desc: "" };
-    });
-    return { vision, mission, values };
+    const missionEn = {
+      title: v("sp-mission-title-en") || "Mission",
+      lede: v("sp-mission-lede-en"),
+      body: v("sp-mission-body-en"),
+    };
+    const values = parseLines(v("sp-values"));
+    const valuesEn = parseLines(v("sp-values-en"));
+    return { vision, visionEn, mission, missionEn, values, valuesEn };
   }
 
   async function loadSitePageContent() {
@@ -211,10 +251,15 @@
       const parse = (s, fb) => { try { return JSON.parse(s || ""); } catch (e) { return fb; } };
       const fbVision = { title: "愿景", lede: "", body: "" };
       const fbMission = { title: "使命", lede: "", body: "" };
+      const fbVisionEn = { title: "Vision", lede: "", body: "" };
+      const fbMissionEn = { title: "Mission", lede: "", body: "" };
       sitePageData = {
         vision: parse((pages.vision || {}).content, fbVision),
         mission: parse((pages.mission || {}).content, fbMission),
         values: parse((pages.values || {}).content, []),
+        visionEn: parse((pages.vision || {}).content_en, fbVisionEn),
+        missionEn: parse((pages.mission || {}).content_en, fbMissionEn),
+        valuesEn: parse((pages.values || {}).content_en, []),
       };
       renderSitePageEditor();
       if (loadingEl) loadingEl.classList.add("hidden");   // 隐藏转圈
@@ -231,9 +276,9 @@
   async function saveSitePage() {
     const data = collectSitePage();
     const items = [
-      { key: "vision", title: data.vision.title, content: JSON.stringify(data.vision) },
-      { key: "mission", title: data.mission.title, content: JSON.stringify(data.mission) },
-      { key: "values", title: "价值观", content: JSON.stringify(data.values) },
+      { key: "vision", title: data.vision.title, content: JSON.stringify(data.vision), content_en: JSON.stringify(data.visionEn) },
+      { key: "mission", title: data.mission.title, content: JSON.stringify(data.mission), content_en: JSON.stringify(data.missionEn) },
+      { key: "values", title: "价值观", content: JSON.stringify(data.values), content_en: JSON.stringify(data.valuesEn) },
     ];
     const btn = $("#sitepage-save-btn");
     const hint = $("#sitepage-hint");

@@ -2092,6 +2092,7 @@ CREATE TABLE IF NOT EXISTS site_pages (
     key         VARCHAR(32)  NOT NULL UNIQUE,   -- vision / mission / values / industry_research / news
     title       VARCHAR(64)  DEFAULT '',
     content     TEXT         DEFAULT '',        -- vision/mission 为 JSON; industry_research/news 为 Markdown 文本
+    content_en  TEXT         DEFAULT '',        -- 英文内容 (与 content 同格式, 空=无英文版)
     updated_at  TIMESTAMP    DEFAULT now()
 );
 """
@@ -2124,6 +2125,8 @@ async def init_site_pages_schema() -> None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(SITE_PAGES_SCHEMA_DDL)
+        # 迁移: 新增 content_en 列 (双语)
+        await conn.execute("ALTER TABLE site_pages ADD COLUMN IF NOT EXISTS content_en TEXT DEFAULT '';")
         # 旧版迁移: research → industry_research (改名)
         has_research = await conn.fetchval("SELECT 1 FROM site_pages WHERE key='research' LIMIT 1")
         if has_research:
@@ -2163,23 +2166,25 @@ async def init_site_pages_schema() -> None:
 
 
 async def get_site_pages() -> dict[str, dict]:
-    """读取全部官网内容, 返回 {key: {title, content, updated_at}}。"""
+    """读取全部官网内容, 返回 {key: {title, content, content_en, updated_at}}。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT key, title, content, updated_at FROM site_pages")
+        rows = await conn.fetch("SELECT key, title, content, content_en, updated_at FROM site_pages")
     return {str(r["key"]): {"title": r["title"], "content": r["content"],
+                            "content_en": r["content_en"] or "",
                             "updated_at": str(r["updated_at"])} for r in rows}
 
 
-async def upsert_site_page(key: str, title: str, content: str) -> bool:
-    """写入/更新一个官网内容块 (key 唯一 upsert)。"""
+async def upsert_site_page(key: str, title: str, content: str, content_en: str = "") -> bool:
+    """写入/更新一个官网内容块 (key 唯一 upsert, 双语)。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO site_pages (key, title, content, updated_at) VALUES ($1, $2, $3, now()) "
+            "INSERT INTO site_pages (key, title, content, content_en, updated_at) "
+            "VALUES ($1, $2, $3, $4, now()) "
             "ON CONFLICT (key) DO UPDATE SET title = EXCLUDED.title, "
-            "content = EXCLUDED.content, updated_at = now()",
-            key, title, content)
+            "content = EXCLUDED.content, content_en = EXCLUDED.content_en, updated_at = now()",
+            key, title, content, content_en or "")
     return True
 
 
@@ -2192,10 +2197,12 @@ SITE_ARTICLES_SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS site_articles (
     id          BIGSERIAL PRIMARY KEY,
     kind        VARCHAR(16)  NOT NULL,   -- research 行业研究 / news 新闻浏览
-    title       VARCHAR(200) NOT NULL,   -- 标题 (列表展示, 点击进正文)
+    title       VARCHAR(200) NOT NULL,   -- 标题 (列表展示, 点击进正文) 中文
+    title_en    VARCHAR(200) DEFAULT '', -- 英文标题
     date        VARCHAR(32)  DEFAULT '', -- 显示日期 (如 2026-08-26)
     tags        TEXT         DEFAULT '', -- 标签 (JSON 数组字符串, 列表展示)
-    body        TEXT         DEFAULT '', -- 正文 (Markdown, 正文页渲染)
+    body        TEXT         DEFAULT '', -- 正文 (Markdown, 正文页渲染) 中文
+    body_en     TEXT         DEFAULT '', -- 英文正文 (Markdown)
     created_at  TIMESTAMP    DEFAULT now(),
     updated_at  TIMESTAMP    DEFAULT now()
 );
@@ -2208,6 +2215,9 @@ async def init_site_articles_schema() -> None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(SITE_ARTICLES_SCHEMA_DDL)
+        # 迁移: 新增 title_en / body_en 列 (双语)
+        await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS title_en VARCHAR(200) DEFAULT '';")
+        await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS body_en TEXT DEFAULT '';")
         # 首次迁移: 表为空时, 将旧 site_pages 的行业研究/新闻 markdown 拆成文章
         n = await conn.fetchval("SELECT count(*) FROM site_articles")
         if n == 0:
@@ -2255,7 +2265,7 @@ async def list_site_articles(kind: str, limit: int = 100) -> list[dict]:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, kind, title, date, tags, updated_at "
+            "SELECT id, kind, title, title_en, date, tags, updated_at "
             "FROM site_articles WHERE kind = $1 ORDER BY id DESC LIMIT $2::int",
             kind, int(limit))
     return [dict(r) for r in rows]
@@ -2266,31 +2276,33 @@ async def get_site_article(aid: int) -> dict | None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
-            "SELECT id, kind, title, date, tags, body, updated_at "
+            "SELECT id, kind, title, title_en, date, tags, body, body_en, updated_at "
             "FROM site_articles WHERE id = $1", aid)
     return dict(r) if r else None
 
 
-async def create_site_article(kind: str, title: str, date: str, tags: str, body: str) -> int:
+async def create_site_article(kind: str, title: str, date: str, tags: str,
+                              body: str, title_en: str = "", body_en: str = "") -> int:
     """创建文章, 返回 id。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         aid = await conn.fetchval(
-            "INSERT INTO site_articles (kind, title, date, tags, body) "
-            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
-            kind, title, date, tags, body)
+            "INSERT INTO site_articles (kind, title, title_en, date, tags, body, body_en) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            kind, title, title_en or "", date, tags, body, body_en or "")
     return int(aid)
 
 
 async def update_site_article(aid: int, kind: str, title: str, date: str,
-                              tags: str, body: str) -> int:
+                              tags: str, body: str, title_en: str = "",
+                              body_en: str = "") -> int:
     """更新文章, 返回受影响行数。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "UPDATE site_articles SET kind=$1, title=$2, date=$3, tags=$4, "
-            "body=$5, updated_at=now() WHERE id=$6 RETURNING id",
-            kind, title, date, tags, body, aid)
+            "UPDATE site_articles SET kind=$1, title=$2, title_en=$3, date=$4, tags=$5, "
+            "body=$6, body_en=$7, updated_at=now() WHERE id=$8 RETURNING id",
+            kind, title, title_en or "", date, tags, body, body_en or "", aid)
     return len(rows)
 
 

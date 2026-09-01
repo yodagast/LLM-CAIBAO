@@ -34,6 +34,11 @@
   const lowLoading = $("#low-loading");
   const lowError = $("#low-error");
   const lowResult = $("#low-result");
+  // 港股低价选股元素
+  const hkLowBtn = $("#hk-low-btn");
+  const hkLowLoading = $("#hk-low-loading");
+  const hkLowError = $("#hk-low-error");
+  const hkLowResult = $("#hk-low-result");
 
   // 区间交易参数估算元素
   const bandForm = $("#band-form");
@@ -720,13 +725,13 @@
     }
   })();
   function setScreenerView(mkt, strat) {
-    // 低价选股仅支持 A 股 (只有 data-view="a-low"); 港股/ETF 下选低价选股自动切回 A 股
-    if (strat === "low" && mkt !== "a") mkt = "a";
+    // 低价选股支持 A股/港股 (data-view="a-low"/"hk-low"); ETF 无低价选股 → 自动切回 A 股
+    if (strat === "low" && mkt === "etf") mkt = "a";
     screenerState.mkt = mkt; screenerState.strat = strat;
     document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mkt === mkt));
     document.querySelectorAll("#seg-strat .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.strat === strat));
     const isEtf = mkt === "etf";
-    // ETF 模式: 隐藏 红利低波/基本面 策略段 与 顶部存入按钮 (ETF 结果区自带保存按钮)
+    // ETF 模式: 隐藏 红利低波/基本面/低价选股 策略段 与 顶部存入按钮 (ETF 结果区自带保存按钮)
     document.getElementById("seg-strat")?.classList.toggle("hidden", isEtf);
     document.getElementById("screener-save-btn")?.classList.toggle("hidden", isEtf);
     document.querySelectorAll('#tab-screener [data-view]').forEach((v) => {
@@ -850,6 +855,8 @@
     screen: { roe: { min: "#sc_f_roe", max: "#sc_f_roe_max" }, debt_to_assets: { max: "#sc_f_debt" }, gross_margin: { min: "#sc_f_gm" }, free_cashflow: { min: "#sc_f_fcf" } },
     hk_rlv: { dividend_yield_ttm: { min: "#hk_rlv_f_dy", max: "#hk_rlv_f_dy_max" }, volatility: { max: "#hk_rlv_f_vol" }, roe: { min: "#hk_rlv_f_roe_min", max: "#hk_rlv_f_roe_max" }, debt_to_assets: { max: "#hk_rlv_f_debt" }, payout_ratio: { min: "#hk_rlv_f_payout_min", max: "#hk_rlv_f_payout_max" }, free_cashflow: { min: "#hk_rlv_f_fcf" }, gross_margin: { min: "#hk_rlv_f_gm" } },
     hk_screen: { roe: { min: "#hk_sc_f_roe", max: "#hk_sc_f_roe_max" }, debt_to_assets: { max: "#hk_sc_f_debt" }, gross_margin: { min: "#hk_sc_f_gm" }, free_cashflow: { min: "#hk_sc_f_fcf" } },
+    low: { roe: { min: "#low_f_roe_min", max: "#low_f_roe_max" }, gross_margin: { min: "#low_f_gm" } },
+    hk_low: { roe: { min: "#hk_low_f_roe_min", max: "#hk_low_f_roe_max" }, gross_margin: { min: "#hk_low_f_gm" } },
   };
   const FILTER_BADGE_LABELS = { dividend_yield_ttm: "股息率TTM", volatility: "波动率", roe: "ROE", debt_to_assets: "资产负债率", payout_ratio: "分红率", gross_margin: "毛利率", free_cashflow: "自由现金流" };
   function filterBadges(filters, view) {
@@ -1308,15 +1315,27 @@
   const LOW_SORT_LABELS = {
     dev_pct: "距低点涨幅", name: "名称", close: "最近收盘",
     week52_low: "52周最低", week52_high: "52周最高", pct_chg: "涨跌幅",
-    pe_ttm: "PE(TTM)", pb: "PB", total_mv: "总市值",
+    pe_ttm: "PE(TTM)", pb: "PB", total_mv: "总市值", roe: "ROE", gross_margin: "毛利率",
   };
   const lowSort = { by: "dev_pct", order: "asc" };
 
   function buildLowPayload() {
     const maxDev = parseFloat($("#low_max_dev").value);
+    const filters = {};
+    const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
+    const roeMin = fNum("#low_f_roe_min");
+    const roeMax = fNum("#low_f_roe_max");
+    if (roeMin !== null || roeMax !== null) {
+      filters.roe = {};
+      if (roeMin !== null) filters.roe.min = roeMin;
+      if (roeMax !== null) filters.roe.max = roeMax;
+    }
+    const gm = fNum("#low_f_gm");
+    if (gm !== null) filters.gross_margin = { min: gm };
     return {
       industry: $("#low_industry").value.trim(),
       max_dev_pct: isNaN(maxDev) ? 15 : maxDev,
+      filters,
     };
   }
 
@@ -1330,7 +1349,7 @@
     $("#low-title").textContent =
       `低价选股 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"}`;
     $("#low-sub").innerHTML =
-      `最近收盘价 ≥ 52周最低价 且 ${devLabel} · 按距低点涨幅升序 (最接近低点的在前) · <span class="hint">${sourceLabel}</span>`;
+      `最近收盘价 ≥ 52周最低价 且 ${devLabel}${filterBadges(payload.filters, "low")} · 按距低点涨幅升序 (最接近低点的在前) · <span class="hint">${sourceLabel}</span>`;
 
     const body = items.map((it) => `
       <tr>
@@ -1345,9 +1364,11 @@
         <td class="num">${it.pe_ttm == null ? "—" : Number(it.pe_ttm).toFixed(2)}</td>
         <td class="num">${it.pb == null ? "—" : Number(it.pb).toFixed(2)}</td>
         <td class="num">${fmtYi(it.total_mv)}</td>
+        <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
+        <td class="num ${cls(it.gross_margin || 0)}">${fmtPctVal(it.gross_margin)}</td>
       </tr>`).join("");
     $("#low-table tbody").innerHTML = body ||
-      `<tr><td colspan="11" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据 (可尝试调大偏离阈值)</td></tr>`;
+      `<tr><td colspan="13" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据 (可尝试调大偏离阈值 / 放宽筛选)</td></tr>`;
     updateLowSortArrows();
     lowResult.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -1409,7 +1430,7 @@
       const rows = Array.from(tbody.querySelectorAll("tr"));
       const num = (tdEl) => { const t = tdEl.textContent.trim(); if (t === "—") return -Infinity; const n = parseFloat(t.replace(/[亿,万]/g, "")); return isNaN(n) ? -Infinity : n; };
       const txt = (tdEl) => tdEl.textContent.trim();
-      const idx = { dev_pct: 0, name: 2, close: 4, week52_low: 5, week52_high: 6, pct_chg: 7, pe_ttm: 8, pb: 9, total_mv: 10 }[by] ?? 0;
+      const idx = { dev_pct: 0, name: 2, close: 4, week52_low: 5, week52_high: 6, pct_chg: 7, pe_ttm: 8, pb: 9, total_mv: 10, roe: 11, gross_margin: 12 }[by] ?? 0;
       const isNum = !["name"].includes(by);
       rows.sort((a, b) => {
         const av = isNum ? num(a.children[idx]) : txt(a.children[idx]);
@@ -1684,6 +1705,145 @@
     updateHkRlvSortArrows();
     resBox.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  // ---------- 港股低价选股 (接近 52 周低点) ----------
+  const HK_LOW_SORT_LABELS = {
+    dev_pct: "距低点涨幅", name: "名称", close: "最近收盘",
+    week52_low: "52周最低", week52_high: "52周最高", pct_chg: "涨跌幅",
+    pe_ttm: "PE(TTM)", pb: "PB", total_mv: "总市值", roe: "ROE", gross_margin: "毛利率",
+  };
+  const hkLowSort = { by: "dev_pct", order: "asc" };
+
+  function buildHkLowPayload() {
+    const maxDev = parseFloat($("#hk_low_max_dev").value);
+    const filters = {};
+    const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
+    const roeMin = fNum("#hk_low_f_roe_min");
+    const roeMax = fNum("#hk_low_f_roe_max");
+    if (roeMin !== null || roeMax !== null) {
+      filters.roe = {};
+      if (roeMin !== null) filters.roe.min = roeMin;
+      if (roeMax !== null) filters.roe.max = roeMax;
+    }
+    const gm = fNum("#hk_low_f_gm");
+    if (gm !== null) filters.gross_margin = { min: gm };
+    return {
+      industry: $("#hk_low_industry").value.trim(),
+      max_dev_pct: isNaN(maxDev) ? 15 : maxDev,
+      filters,
+    };
+  }
+
+  async function runHkLowScreen(payload) {
+    hkLowError.classList.add("hidden");
+    hkLowResult.classList.add("hidden");
+    $("#hk-low-hint").textContent = "";
+    hkLowBtn.disabled = true;
+    hkLowLoading.classList.remove("hidden");
+    try {
+      const res = await fetch("/api/hk/lowprice/screen", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "筛选失败");
+      renderHkLow(data, payload);
+    } catch (err) {
+      hkLowError.textContent = err.message || "请求失败, 请检查后端服务。";
+      hkLowError.classList.remove("hidden");
+    } finally {
+      hkLowLoading.classList.add("hidden");
+      hkLowBtn.disabled = false;
+    }
+  }
+
+  function renderHkLow(data, payload) {
+    const items = data.items || [];
+    hkLowResult.classList.remove("hidden");
+    const devLabel = `偏离 52周低点 ≤ ${payload.max_dev_pct}%`;
+    const sourceLabel = data.source === "db"
+      ? `数据来自 pgsql (定时任务已入库${data.calc_date ? ` · ${data.calc_date}` : ""})`
+      : "实时计算 (pgsql 无当日数据, 本次为实时计算并已入库)";
+    $("#hk-low-title").textContent =
+      `港股低价选股 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"}`;
+    $("#hk-low-sub").innerHTML =
+      `最近收盘价 ≥ 52周最低价 且 ${devLabel}${filterBadges(payload.filters, "hk_low")} · 按距低点涨幅升序 (最接近低点的在前) · <span class="hint">${sourceLabel}</span>`;
+
+    const body = items.map((it) => `
+      <tr>
+        <td class="num ${cls((it.dev_pct || 0) * -1)}">${fmtPctVal(it.dev_pct)}</td>
+        <td>${it.ts_code}</td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
+        <td>${it.industry || ""}</td>
+        <td class="num">${it.close == null ? "—" : Number(it.close).toFixed(2)}</td>
+        <td class="num">${it.week52_low == null ? "—" : Number(it.week52_low).toFixed(2)}</td>
+        <td class="num">${it.week52_high == null ? "—" : Number(it.week52_high).toFixed(2)}</td>
+        <td class="num ${cls(it.pct_chg || 0)}">${fmtPctVal(it.pct_chg)}</td>
+        <td class="num">${it.pe_ttm == null ? "—" : Number(it.pe_ttm).toFixed(2)}</td>
+        <td class="num">${it.pb == null ? "—" : Number(it.pb).toFixed(2)}</td>
+        <td class="num">${fmtYi(it.total_mv)}</td>
+        <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
+        <td class="num ${cls(it.gross_margin || 0)}">${fmtPctVal(it.gross_margin)}</td>
+      </tr>`).join("");
+    $("#hk-low-table tbody").innerHTML = body ||
+      `<tr><td colspan="13" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据 (可尝试调大偏离阈值 / 放宽筛选)</td></tr>`;
+    updateHkLowSortArrows();
+    hkLowResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function updateHkLowSortArrows() {
+    document.querySelectorAll("#hk-low-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === hkLowSort.by) {
+        arrow.textContent = hkLowSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
+    });
+  }
+
+  $("#hk-low-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    runHkLowScreen(buildHkLowPayload());
+  });
+
+  // 表头点击排序 (客户端排序, 无需重新请求)
+  document.querySelectorAll("#hk-low-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (hkLowSort.by === by) {
+        hkLowSort.order = hkLowSort.order === "desc" ? "asc" : "desc";
+      } else {
+        hkLowSort.by = by;
+        hkLowSort.order = by === "name" ? "asc" : "desc";
+      }
+      const tbody = $("#hk-low-table tbody");
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      const num = (tdEl) => { const t = tdEl.textContent.trim(); if (t === "—") return -Infinity; const n = parseFloat(t.replace(/[亿,万]/g, "")); return isNaN(n) ? -Infinity : n; };
+      const txt = (tdEl) => tdEl.textContent.trim();
+      const idx = { dev_pct: 0, name: 2, close: 4, week52_low: 5, week52_high: 6, pct_chg: 7, pe_ttm: 8, pb: 9, total_mv: 10, roe: 11, gross_margin: 12 }[by] ?? 0;
+      const isNum = !["name"].includes(by);
+      rows.sort((a, b) => {
+        const av = isNum ? num(a.children[idx]) : txt(a.children[idx]);
+        const bv = isNum ? num(b.children[idx]) : txt(b.children[idx]);
+        if (av === -Infinity && bv === -Infinity) return 0;
+        if (av === -Infinity) return 1;
+        if (bv === -Infinity) return -1;
+        if (isNum) return hkLowSort.order === "asc" ? av - bv : bv - av;
+        return hkLowSort.order === "asc"
+          ? String(av).localeCompare(String(bv), "zh-CN")
+          : String(bv).localeCompare(String(av), "zh-CN");
+      });
+      rows.forEach((tr) => tbody.appendChild(tr));
+      updateHkLowSortArrows();
+    });
+  });
+
+  bindHkIndustrySuggest($("#hk_low_industry"), $("#hk-low-ind-panel"));
 
   // ---------- 港股基本面 ----------
   const HK_SCREEN_SORT_LABELS = {

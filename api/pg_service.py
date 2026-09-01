@@ -464,6 +464,31 @@ async def query_financial_by_code(ts_code: str, years: list[int]) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def latest_financial_map(codes: list[str]) -> dict[str, dict]:
+    """批量查询每只 A 股最近财年的 ROE/毛利率 (financial_data 表, 最新年报口径)。
+
+    返回 {ts_code: {"roe": float|None, "gross_margin": float|None}}; 无财务数据 (如
+    未回填/无年报) 的股票不在返回中。单次 SQL: 各股票取最近财年 (DISTINCT ON 年度最大)。
+    """
+    if not codes:
+        return {}
+    pool = await _get_pool()
+    out: dict[str, dict] = {}
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT DISTINCT ON (ts_code) ts_code, roe, gross_margin
+               FROM financial_data
+               WHERE ts_code = ANY($1::varchar[])
+               ORDER BY ts_code, year DESC""",
+            [str(c) for c in codes])
+    for r in rows:
+        out[str(r["ts_code"])] = {
+            "roe": r["roe"],
+            "gross_margin": r["gross_margin"],
+        }
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 每日区间交易推荐表 daily_band_recommend (全市场每日参数估算结果)
 # ---------------------------------------------------------------------------
@@ -620,6 +645,8 @@ CREATE TABLE IF NOT EXISTS low_price_screen (
     pe_ttm         DOUBLE PRECISION,          -- PE(TTM)
     pb             DOUBLE PRECISION,          -- PB
     total_mv       DOUBLE PRECISION,          -- 总市值 (万元)
+    roe            DOUBLE PRECISION,          -- ROE % (最新财年, 基本面表)
+    gross_margin   DOUBLE PRECISION,          -- 毛利率 % (最新财年, 基本面表)
     max_dev_pct    DOUBLE PRECISION,          -- 计算时使用的最大偏离阈值 % (记录来源)
     updated_at     TIMESTAMP    DEFAULT now(),
     UNIQUE (calc_date, ts_code)
@@ -630,17 +657,20 @@ CREATE INDEX IF NOT EXISTS idx_lps_date ON low_price_screen (calc_date);
 LOW_PRICE_COLS = [
     "calc_date", "ts_code", "symbol", "name", "industry",
     "close", "week52_high", "week52_low", "dev_pct", "pct_chg",
-    "pe_ttm", "pb", "total_mv", "max_dev_pct",
+    "pe_ttm", "pb", "total_mv", "roe", "gross_margin", "max_dev_pct",
 ]
 
 _LPS_UPSERT_SQL = _upsert_sql("low_price_screen", LOW_PRICE_COLS, ("calc_date", "ts_code"))
 
 
 async def init_low_price_schema() -> None:
-    """创建 low_price_screen 表与索引 (幂等)。"""
+    """创建 low_price_screen 表与索引 (幂等), 并对旧表迁移新增 ROE/毛利率 列。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(LOW_PRICE_SCHEMA_DDL)
+        # 旧表迁移: 低价选股增加 ROE / 毛利率 列 (与红利低波输出对齐)
+        await conn.execute("ALTER TABLE low_price_screen ADD COLUMN IF NOT EXISTS roe DOUBLE PRECISION;")
+        await conn.execute("ALTER TABLE low_price_screen ADD COLUMN IF NOT EXISTS gross_margin DOUBLE PRECISION;")
 
 
 async def upsert_low_price_rows(rows: list[dict]) -> int:
@@ -676,22 +706,40 @@ async def has_low_price_data(calc_date: str, industry: str = "") -> int:
 
 
 async def query_low_price(calc_date: str = "", industry: str = "",
-                          max_dev_pct: float = 15.0, limit: int = 10000) -> list[dict]:
+                          max_dev_pct: float = 15.0, limit: int = 10000,
+                          filters: dict | None = None) -> list[dict]:
     """查询某计算日低价选股结果, 按 dev_pct 升序 (最接近低点的在前), 返回全部命中。
 
-    industry 非空时按行业子串过滤; max_dev_pct 与入库时的阈值取小者 (避免显示入库时超阈值但当前查询阈值更小的结果)。
+    industry 非空时按行业子串过滤; max_dev_pct 与入库时的阈值取小者 (避免显示入库时超阈值但当前查询阈值更小的结果);
+    filters 支持 roe / gross_margin 阈值筛选 (与红利低波一致, 如 {'roe': {'min': 10}, 'gross_margin': {'min': 30}})。
     """
     if not calc_date:
         calc_date = await latest_low_price_date()
     if not calc_date:
         return []
     sql = """SELECT ts_code, symbol, name, industry, close, week52_high, week52_low,
-                    dev_pct, pct_chg, pe_ttm, pb, total_mv, calc_date
+                    dev_pct, pct_chg, pe_ttm, pb, total_mv, roe, gross_margin, calc_date
              FROM low_price_screen WHERE calc_date = $1 AND dev_pct <= LEAST(max_dev_pct, $2::float)"""
     params: list = [calc_date, float(max_dev_pct)]
     if industry.strip():
         sql += f" AND industry LIKE ${len(params) + 1}"
         params.append(f"%{industry.strip()}%")
+    # 阈值筛选 (roe / gross_margin): {字段: {min: x, max: y}}
+    _LP_FILTER_COLS = {"roe": "roe", "gross_margin": "gross_margin"}
+    for key, flt in (filters or {}).items():
+        col = _LP_FILTER_COLS.get(key)
+        if col is None:
+            continue
+        if isinstance(flt, dict):
+            mn, mx = flt.get("min"), flt.get("max")
+        else:
+            mn, mx = flt, None
+        if mn is not None:
+            sql += f" AND {col} >= ${len(params) + 1}"
+            params.append(float(mn))
+        if mx is not None:
+            sql += f" AND {col} <= ${len(params) + 1}"
+            params.append(float(mx))
     sql += f" ORDER BY dev_pct ASC LIMIT ${len(params) + 1}::int"
     params.append(int(limit))
     pool = await _get_pool()
@@ -1529,6 +1577,126 @@ async def hk_synced_ts_codes(years: list[int]) -> set:
             s = {str(r[0]) for r in rows}
             result = s if result is None else (result & s)
     return result or set()
+
+
+# ---------------------------------------------------------------------------
+# 港股低价选股结果表 hk_low_price_screen (全市场每日扫描, 定时任务写入, 前端优先读库)
+# ---------------------------------------------------------------------------
+
+HK_LOW_PRICE_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS hk_low_price_screen (
+    id             BIGSERIAL PRIMARY KEY,
+    calc_date      VARCHAR(16)  NOT NULL,    -- 计算/收盘日 YYYYMMDD
+    ts_code        VARCHAR(16)  NOT NULL,
+    symbol         VARCHAR(8)   DEFAULT '',
+    name           VARCHAR(64)  DEFAULT '',
+    industry       VARCHAR(64)  DEFAULT '',   -- 东财港股行业 (用于按行业隔离)
+    close          DOUBLE PRECISION,          -- 最近收盘价 (港元)
+    week52_high    DOUBLE PRECISION,          -- 52 周最高价 (港元)
+    week52_low     DOUBLE PRECISION,          -- 52 周最低价 (港元)
+    dev_pct        DOUBLE PRECISION,          -- 最近收盘价相对 52 周最低价涨幅 %
+    pct_chg        DOUBLE PRECISION,          -- 涨跌幅 %
+    pe_ttm         DOUBLE PRECISION,          -- PE(TTM)
+    pb             DOUBLE PRECISION,          -- PB
+    total_mv       DOUBLE PRECISION,          -- 总市值 (万港元)
+    roe            DOUBLE PRECISION,          -- ROE % (最新财年, 东财主要指标)
+    gross_margin   DOUBLE PRECISION,          -- 毛利率 % (最新财年, 东财主要指标)
+    max_dev_pct    DOUBLE PRECISION,          -- 计算时使用的最大偏离阈值 % (记录来源)
+    updated_at     TIMESTAMP    DEFAULT now(),
+    UNIQUE (calc_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_hk_lps_date ON hk_low_price_screen (calc_date);
+"""
+
+HK_LOW_PRICE_COLS = [
+    "calc_date", "ts_code", "symbol", "name", "industry",
+    "close", "week52_high", "week52_low", "dev_pct", "pct_chg",
+    "pe_ttm", "pb", "total_mv", "roe", "gross_margin", "max_dev_pct",
+]
+
+_HK_LPS_UPSERT_SQL = _upsert_sql("hk_low_price_screen", HK_LOW_PRICE_COLS, ("calc_date", "ts_code"))
+
+
+async def init_hk_low_price_schema() -> None:
+    """创建 hk_low_price_screen 表与索引 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(HK_LOW_PRICE_SCHEMA_DDL)
+
+
+async def upsert_hk_low_price_rows(rows: list[dict]) -> int:
+    """按 (calc_date, ts_code) upsert 写入港股低价选股结果, 返回行数。"""
+    if not rows:
+        return 0
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_HK_LPS_UPSERT_SQL,
+                               [tuple(r.get(c) for c in HK_LOW_PRICE_COLS) for r in rows])
+    return len(rows)
+
+
+async def latest_hk_low_price_date() -> str:
+    """最近一次计算的 calc_date (空串=无数据)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        v = await conn.fetchval("SELECT max(calc_date) FROM hk_low_price_screen;")
+    return str(v or "")
+
+
+async def has_hk_low_price_data(calc_date: str, industry: str = "") -> int:
+    """统计某计算日 (可选行业) 已入库的港股低价选股行数; 用于命中判断。"""
+    if not calc_date:
+        return 0
+    sql = "SELECT COUNT(*) FROM hk_low_price_screen WHERE calc_date = $1"
+    params: list = [calc_date]
+    if industry.strip():
+        sql += " AND industry LIKE $2"
+        params.append(f"%{industry.strip()}%")
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(sql, *params) or 0)
+
+
+async def query_hk_low_price(calc_date: str = "", industry: str = "",
+                             max_dev_pct: float = 15.0, limit: int = 10000,
+                             filters: dict | None = None) -> list[dict]:
+    """查询某计算日港股低价选股结果, 按 dev_pct 升序 (最接近低点的在前), 返回全部命中。
+
+    industry 非空时按行业子串过滤; max_dev_pct 与入库时的阈值取小者;
+    filters 支持 roe / gross_margin 阈值筛选 (与红利低波一致)。
+    """
+    if not calc_date:
+        calc_date = await latest_hk_low_price_date()
+    if not calc_date:
+        return []
+    sql = """SELECT ts_code, symbol, name, industry, close, week52_high, week52_low,
+                    dev_pct, pct_chg, pe_ttm, pb, total_mv, roe, gross_margin, calc_date
+             FROM hk_low_price_screen WHERE calc_date = $1 AND dev_pct <= LEAST(max_dev_pct, $2::float)"""
+    params: list = [calc_date, float(max_dev_pct)]
+    if industry.strip():
+        sql += f" AND industry LIKE ${len(params) + 1}"
+        params.append(f"%{industry.strip()}%")
+    _HK_LP_FILTER_COLS = {"roe": "roe", "gross_margin": "gross_margin"}
+    for key, flt in (filters or {}).items():
+        col = _HK_LP_FILTER_COLS.get(key)
+        if col is None:
+            continue
+        if isinstance(flt, dict):
+            mn, mx = flt.get("min"), flt.get("max")
+        else:
+            mn, mx = flt, None
+        if mn is not None:
+            sql += f" AND {col} >= ${len(params) + 1}"
+            params.append(float(mn))
+        if mx is not None:
+            sql += f" AND {col} <= ${len(params) + 1}"
+            params.append(float(mx))
+    sql += f" ORDER BY dev_pct ASC LIMIT ${len(params) + 1}::int"
+    params.append(int(limit))
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

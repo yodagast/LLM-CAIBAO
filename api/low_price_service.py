@@ -55,7 +55,8 @@ async def calc_low_price(max_dev_pct: float = 15.0, industry: str = "") -> list[
     """按 tushare 月线计算接近 52 周低点的公司 (不含入库), 返回全部命中 (按偏离度升序)。
 
     industry 非空时只计算该行业 (子串匹配); 每项含: ts_code / symbol / name / industry /
-    close / week52_high / week52_low / dev_pct / pct_chg / pe_ttm / pb / total_mv。
+    close / week52_high / week52_low / dev_pct / pct_chg / pe_ttm / pb / total_mv /
+    roe / gross_margin (最近财年财务数据)。
     """
     stocks = await _candidates(industry)
     cand = stocks.head(6000)
@@ -83,6 +84,13 @@ async def calc_low_price(max_dev_pct: float = 15.0, industry: str = "") -> list[
         basic_map = await ds._latest_basic_map(pro)
     except Exception:
         basic_map = {}
+
+    # 最近财年 ROE/毛利率 (financial_data 批量, 一次查询取全部候选)
+    codes4fin = [str(c) for c in cand["ts_code"].tolist()]
+    try:
+        fin_map = await pg.latest_financial_map(codes4fin)
+    except Exception:
+        fin_map = {}
 
     # 批量月线: 逐月请求月末 trade_date (每月返回全市场该月月线), 聚合每只股票最近 12 个月高低点。
     # 仅 12 次全市场请求, 避免逐只拉月线触发 tushare monthly 限频(300次/分钟)。
@@ -145,6 +153,7 @@ async def calc_low_price(max_dev_pct: float = 15.0, industry: str = "") -> list[
                 # 核心条件: 52周最低 <= 最近收盘 (成立前提) 且 偏离度在阈值内
                 dev_pct = (close - w52_low) / w52_low * 100.0
                 b = basic_map.get(code) or {}
+                f = fin_map.get(code) or {}
                 return {
                     "ts_code": code,
                     "symbol": symbol,
@@ -158,6 +167,8 @@ async def calc_low_price(max_dev_pct: float = 15.0, industry: str = "") -> list[
                     "pe_ttm": b.get("pe_ttm"),
                     "pb": b.get("pb"),
                     "total_mv": b.get("total_mv"),
+                    "roe": f.get("roe"),
+                    "gross_margin": f.get("gross_margin"),
                 }
             except Exception:
                 return None
@@ -196,6 +207,7 @@ async def sync_low_price_to_db(max_dev_pct: float = 15.0) -> int:
 
 
 async def get_low_price(industry: str = "", max_dev_pct: float = 15.0,
+                        filters: dict | None = None,
                         allow_live: bool = True) -> tuple[list[dict], bool, str]:
     """低价选股入口 (读库优先, 兜底月线计算)。
 
@@ -203,6 +215,9 @@ async def get_low_price(industry: str = "", max_dev_pct: float = 15.0,
       1. 存在 **当天 + 该行业** 的 pgsql 数据 → 直接从 pg 拉取 (source=db, 秒回);
       2. 无当天或无该行业数据 → 用 **tushare 月线** 按该行业 (空=全市场) 实时计算并自动入库
          (source=live)。
+
+    filters: ROE/毛利率 阈值筛选 (与红利低波一致, 如 {'roe': {'min': 10}, 'gross_margin': {'min': 30}})。
+    实时计算时先按偏离度筛出结果, 再在入库前应用 ROE/毛利率阈值 (与读库查询口径一致)。
 
     返回 (items, from_db, calc_date): from_db=True 数据来自 pg; False 为实时月线计算兜底
     (结果亦已入库供下次读库); calc_date 为计算日 (YYYYMMDD)。
@@ -213,7 +228,8 @@ async def get_low_price(industry: str = "", max_dev_pct: float = 15.0,
         hit = await pg.has_low_price_data(calc_date, industry)
         if hit > 0:
             rows = await pg.query_low_price(calc_date=calc_date, industry=industry,
-                                            max_dev_pct=max_dev_pct, limit=10000)
+                                            max_dev_pct=max_dev_pct, limit=10000,
+                                            filters=filters)
             return rows, True, calc_date
     except Exception:
         pass
@@ -222,6 +238,9 @@ async def get_low_price(industry: str = "", max_dev_pct: float = 15.0,
     if not allow_live:
         return [], False, calc_date
     items = await calc_low_price(max_dev_pct=max_dev_pct, industry=industry)
+    # 入库前应用 ROE/毛利率阈值 (与读库查询口径一致), 缺数据视为不满足阈值
+    if filters:
+        items = _apply_filters(items, filters)
     # 入库本次结果 (行业查询只入该行业结果, 供同行业下次读库; 全市场入全市场)
     try:
         await _store_items(items, calc_date, max_dev_pct)
@@ -230,8 +249,38 @@ async def get_low_price(industry: str = "", max_dev_pct: float = 15.0,
     return items, False, calc_date
 
 
+def _apply_filters(items: list[dict], filters: dict) -> list[dict]:
+    """对低价选股结果应用 ROE/毛利率阈值筛选 ({'roe': {'min': x, 'max': y}, 'gross_margin': ...})。
+
+    缺数据 (None) 视为不满足阈值 (与 SQL 查询 NULL 不匹配行为一致)。
+    """
+    out: list[dict] = []
+    for it in items:
+        ok = True
+        for key, flt in (filters or {}).items():
+            if key not in ("roe", "gross_margin"):
+                continue
+            if isinstance(flt, dict):
+                mn, mx = flt.get("min"), flt.get("max")
+            else:
+                mn, mx = flt, None
+            v = it.get(key)
+            if v is None:
+                ok = False
+                break
+            if mn is not None and v < mn:
+                ok = False
+                break
+            if mx is not None and v > mx:
+                ok = False
+                break
+        if ok:
+            out.append(it)
+    return out
+
+
 async def _store_items(items: list[dict], calc_date: str, max_dev_pct: float) -> int:
-    """把计算结果 upsert 入库 (供 _store_items 直接调用/测试)。"""
+    """把计算结果 upsert 入库 (供 get_low_price/定时任务调用)。"""
     rows = []
     for it in items:
         rows.append({
@@ -248,6 +297,8 @@ async def _store_items(items: list[dict], calc_date: str, max_dev_pct: float) ->
             "pe_ttm": it.get("pe_ttm"),
             "pb": it.get("pb"),
             "total_mv": it.get("total_mv"),
+            "roe": it.get("roe"),
+            "gross_margin": it.get("gross_margin"),
             "max_dev_pct": max_dev_pct,
         })
     return await pg.upsert_low_price_rows(rows)

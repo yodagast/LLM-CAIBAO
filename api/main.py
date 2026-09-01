@@ -23,6 +23,7 @@ from . import daily_recommend_service, etf_service, fundamental_service, hk_data
 from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvol_service
 from . import invest_ideas_service, strategy_service
 from . import low_price_service
+from . import hk_low_price_service
 from . import alpha158_service
 from . import portfolio_service
 from . import events_service
@@ -59,6 +60,7 @@ async def _startup() -> None:
         await pg_service.init_site_pages_schema()
         await pg_service.init_site_articles_schema()
         await pg_service.init_low_price_schema()
+        await pg_service.init_hk_low_price_schema()
         # 启动公司大事生成 worker (持久化任务队列, 多进程靠 pg 抢占安全)
         try:
             if events_service.worker_task is None or events_service.worker_task.done():
@@ -173,6 +175,17 @@ class LowPriceRequest(BaseModel):
     industry: str = Field("", description="行业名称(东财分类), 空表示全市场")
     max_dev_pct: float = Field(15.0, ge=0, le=100,
                                description="最大偏离阈值%%: 最近收盘价相对52周最低价的最大涨幅. 越小越接近年内低点")
+    filters: dict = Field(default_factory=dict,
+                          description="筛选条件 {字段: {min: x, max: y}}, 如 {'roe': {'min': 10}, 'gross_margin': {'min': 30}}")
+
+
+class HkLowPriceRequest(BaseModel):
+    """港股低价选股请求 (选股 tab 港股 × 低价选股: 筛选接近 52 周低点的港股公司)。"""
+    industry: str = Field("", description="行业名称(东财港股行业), 空表示全市场")
+    max_dev_pct: float = Field(15.0, ge=0, le=100,
+                               description="最大偏离阈值%%: 最近收盘价相对52周最低价的最大涨幅. 越小越接近年内低点")
+    filters: dict = Field(default_factory=dict,
+                          description="筛选条件 {字段: {min: x, max: y}}, 如 {'roe': {'min': 10}, 'gross_margin': {'min': 30}}")
 
 
 class HkScreenRequest(BaseModel):
@@ -1016,17 +1029,42 @@ async def lowprice_screen(req: LowPriceRequest) -> dict:
     """低价选股: 优先从 pgsql 读当日结果 (定时任务已入库), 无当日数据则实时计算并自动入库。
 
     核心条件: 52周最低价 <= 最近收盘价 且 (收盘价-52周最低)/52周最低 <= max_dev_pct%%,
-    按偏离度 (相对年内低点涨幅) 升序返回 (最接近低点的在前)。
+    按偏离度 (相对年内低点涨幅) 升序返回 (最接近低点的在前)。支持 ROE/毛利率阈值筛选。
     """
     industry = req.industry.strip()
     try:
         items, from_db, calc_date = await low_price_service.get_low_price(
-            industry=industry, max_dev_pct=req.max_dev_pct)
+            industry=industry, max_dev_pct=req.max_dev_pct, filters=req.filters)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"低价选股失败: {e}")
     return {
         "industry": industry,
         "max_dev_pct": req.max_dev_pct,
+        "filters": req.filters,
+        "count": len(items),
+        "items": items,
+        "source": "db" if from_db else "live",
+        "calc_date": calc_date,
+    }
+
+
+@app.post("/api/hk/lowprice/screen")
+async def hk_lowprice_screen(req: HkLowPriceRequest) -> dict:
+    """港股低价选股: 优先从 pgsql 读当日结果 (定时任务已入库), 无当日数据则实时计算并自动入库。
+
+    核心条件与 A 股低价选股一致: 52周最低价 <= 最近收盘价 且 偏离度 <= max_dev_pct%%,
+    按偏离度升序返回。支持 ROE/毛利率阈值筛选。
+    """
+    industry = req.industry.strip()
+    try:
+        items, from_db, calc_date = await hk_low_price_service.hk_get_low_price(
+            industry=industry, max_dev_pct=req.max_dev_pct, filters=req.filters)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"港股低价选股失败: {e}")
+    return {
+        "industry": industry,
+        "max_dev_pct": req.max_dev_pct,
+        "filters": req.filters,
         "count": len(items),
         "items": items,
         "source": "db" if from_db else "live",

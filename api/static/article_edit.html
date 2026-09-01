@@ -48,6 +48,10 @@
           <label for="ae-date">日期</label>
           <input type="text" id="ae-date" placeholder="如 2026-08-26" />
         </div>
+        <div class="field">
+          <label for="ae-date-en">日期 (English)</label>
+          <input type="text" id="ae-date-en" placeholder="如 February 2026" />
+        </div>
         <div class="field" style="grid-column:1/-1;">
           <label for="ae-title-input">标题 (中文) <em>*</em></label>
           <input type="text" id="ae-title-input" placeholder="文章标题 (列表展示)" />
@@ -59,6 +63,10 @@
         <div class="field" style="grid-column:1/-1;">
           <label for="ae-tags">标签 (逗号分隔)</label>
           <input type="text" id="ae-tags" placeholder="如 行业研究, 深度报告" />
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <label for="ae-tags-en">标签 (English, 逗号分隔)</label>
+          <input type="text" id="ae-tags-en" placeholder="如 Industry Research, Deep Dive" />
         </div>
         <div class="field" style="grid-column:1/-1;">
           <label for="ae-body">正文 (Markdown, 中文) <em>*</em></label>
@@ -156,9 +164,11 @@
           const it = d.item;
           document.getElementById("ae-kind").value = it.kind || defKind;
           document.getElementById("ae-date").value = it.date || "";
+          document.getElementById("ae-date-en").value = it.date_en || "";
           document.getElementById("ae-title-input").value = it.title || "";
           document.getElementById("ae-title-en").value = it.title_en || "";
           try { document.getElementById("ae-tags").value = (JSON.parse(it.tags || "[]") || []).join(", "); } catch (e) {}
+          try { document.getElementById("ae-tags-en").value = (JSON.parse(it.tags_en || "[]") || []).join(", "); } catch (e) {}
           document.getElementById("ae-body").value = it.body || "";
           document.getElementById("ae-body-en").value = it.body_en || "";
           updateBack(it.kind || defKind);
@@ -172,12 +182,15 @@
         const title = document.getElementById("ae-title-input").value.trim();
         const titleEn = document.getElementById("ae-title-en").value.trim();
         const date = document.getElementById("ae-date").value.trim();
+        const dateEn = document.getElementById("ae-date-en").value.trim();
         const tagsRaw = document.getElementById("ae-tags").value;
+        const tagsEnRaw = document.getElementById("ae-tags-en").value;
         const body = document.getElementById("ae-body").value;
         const bodyEn = document.getElementById("ae-body-en").value;
         if (!title) { showToast("保存失败: 标题不能为空", false); return; }
         if (!body) { showToast("保存失败: 正文不能为空", false); return; }
         const tags = tagsRaw.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean);
+        const tagsEn = tagsEnRaw.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean);
         const isNew = !aid;
         const btn = document.getElementById("ae-save-btn");
         btn.disabled = true;
@@ -188,7 +201,7 @@
           const r = await fetch(url, {
             method: aid ? "PUT" : "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ kind: kind, title: title, title_en: titleEn, date: date, tags: tags, body: body, body_en: bodyEn }),
+            body: JSON.stringify({ kind: kind, title: title, title_en: titleEn, date: date, date_en: dateEn, tags: tags, tags_en: tagsEn, body: body, body_en: bodyEn }),
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "保存失败");

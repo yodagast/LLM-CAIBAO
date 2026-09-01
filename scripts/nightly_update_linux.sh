@@ -19,14 +19,15 @@
 #   5) ETF  筛选数据          (init_etf.py         → etf_screen)
 #   6) A股  选股新字段回填    (backfill_margin_fcf.py → 补齐历史年份 毛利率/自由现金流, 全市场)
 #   7) 本地 日线+财务持久化   (sync_local_bars.py → 我的股票/策略Hub股票/ETF 最近10年日线+财务, 前端优先读库; 财务按本地已有年份增量补齐)
-#   8) A股  每日推荐          (不更新: 默认关闭 RUN_A_RECOMMEND=0, 不执行 scan_all_market.py)
-#   9) 公司大事               (sync_stock_events.py → 网络搜索+DeepSeek总结; 不足20件增量更新, 达到20件仅月度更新)
+#   8) A股  低价选股          (sync_low_price.py → 全市场扫描接近52周低点公司, 入库 low_price_screen, 前端优先读库)
+#   9) A股  每日推荐          (不更新: 默认关闭 RUN_A_RECOMMEND=0, 不执行 scan_all_market.py)
+#   10) 公司大事              (sync_stock_events.py → 网络搜索+DeepSeek总结; 不足20件增量更新, 达到20件仅月度更新)
 #
 # 默认更新最近 1 个完整财年 (当前年-1); 可用环境变量覆盖:
 #   PROJECT_ROOT  项目根目录 (默认: 本脚本所在目录的上级)
 #   PYTHON_BIN    解释器路径 (默认: $PROJECT_ROOT/.venv/bin/python, 可按部署环境指定)
 #   START_YEAR / END_YEAR   年份区间
-#   RUN_HK / RUN_A_RLV / RUN_A_FUND / RUN_A_FIN / RUN_A_ETF / RUN_A_BACKFILL / RUN_A_BARS / RUN_A_RECOMMEND / RUN_EVENTS  各步骤开关 (0=关 1=开)
+#   RUN_HK / RUN_A_RLV / RUN_A_FUND / RUN_A_FIN / RUN_A_ETF / RUN_A_BACKFILL / RUN_A_BARS / RUN_A_LOW / RUN_A_RECOMMEND / RUN_EVENTS  各步骤开关 (0=关 1=开)
 #
 # 日志写入 $PROJECT_ROOT/logs/nightly_<时间戳>.log; 锁文件防止上次未跑完导致本次重叠。
 # ============================================================================
@@ -77,6 +78,7 @@ RUN_A_FIN="${RUN_A_FIN:-1}"
 RUN_A_ETF="${RUN_A_ETF:-1}"
 RUN_A_BACKFILL="${RUN_A_BACKFILL:-1}"
 RUN_A_BARS="${RUN_A_BARS:-1}"
+RUN_A_LOW="${RUN_A_LOW:-1}"
 RUN_A_RECOMMEND="${RUN_A_RECOMMEND:-0}"
 RUN_EVENTS="${RUN_EVENTS:-1}"
 
@@ -144,13 +146,19 @@ if [ "$RUN_A_BARS" = "1" ]; then
     "$PYTHON_BIN" scripts/sync_local_bars.py
 fi
 
-# 8) A股 每日推荐 (可选, 默认关闭; 全市场估算区间交易参数较慢, 支持断点续跑)
+# 8) A股 低价选股 (全市场扫描接近52周低点公司, 入库 low_price_screen, 前端优先读库)
+if [ "$RUN_A_LOW" = "1" ]; then
+  run_step "A股 低价选股 (全市场, 接近52周低点)" \
+    "$PYTHON_BIN" scripts/sync_low_price.py
+fi
+
+# 9) A股 每日推荐 (可选, 默认关闭; 全市场估算区间交易参数较慢, 支持断点续跑)
 if [ "$RUN_A_RECOMMEND" = "1" ]; then
   run_step "A股 每日推荐 (全市场)" \
     "$PYTHON_BIN" scripts/scan_all_market.py
 fi
 
-# 9) 公司大事 (网络搜索 + DeepSeek 总结; 只补缺失, 不重复生成)
+# 10) 公司大事 (网络搜索 + DeepSeek 总结; 只补缺失, 不重复生成)
 if [ "$RUN_EVENTS" = "1" ]; then
   run_step "公司大事同步 (目标列表)" \
     "$PYTHON_BIN" scripts/sync_stock_events.py

@@ -28,6 +28,13 @@
   const rlvError = $("#rlv-error");
   const rlvResult = $("#rlv-result");
 
+  // 低价选股元素
+  const lowForm = $("#low-form");
+  const lowBtn = $("#low-btn");
+  const lowLoading = $("#low-loading");
+  const lowError = $("#low-error");
+  const lowResult = $("#low-result");
+
   // 区间交易参数估算元素
   const bandForm = $("#band-form");
   const bandBtn = $("#band-btn");
@@ -532,6 +539,7 @@
   }
   bindIndustrySuggest($("#sc_industry"), $("#sc-ind-panel"));
   bindIndustrySuggest($("#rlv_industry"), $("#rlv-ind-panel"));
+  bindIndustrySuggest($("#low_industry"), $("#low-ind-panel"));
 
   // 输入代码后尝试解析显示名称 + 加载最近行情
   stockInput.addEventListener("change", async () => {
@@ -712,6 +720,8 @@
     }
   })();
   function setScreenerView(mkt, strat) {
+    // 低价选股仅支持 A 股 (只有 data-view="a-low"); 港股/ETF 下选低价选股自动切回 A 股
+    if (strat === "low" && mkt !== "a") mkt = "a";
     screenerState.mkt = mkt; screenerState.strat = strat;
     document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mkt === mkt));
     document.querySelectorAll("#seg-strat .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.strat === strat));
@@ -1293,6 +1303,129 @@
     updateRlvSortArrows();
     rlvResult.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  // ---------- 低价选股 (接近 52 周低点) ----------
+  const LOW_SORT_LABELS = {
+    dev_pct: "距低点涨幅", name: "名称", close: "最近收盘",
+    week52_low: "52周最低", week52_high: "52周最高", pct_chg: "涨跌幅",
+    pe_ttm: "PE(TTM)", pb: "PB", total_mv: "总市值",
+  };
+  const lowSort = { by: "dev_pct", order: "asc" };
+
+  function buildLowPayload() {
+    const maxDev = parseFloat($("#low_max_dev").value);
+    return {
+      industry: $("#low_industry").value.trim(),
+      max_dev_pct: isNaN(maxDev) ? 15 : maxDev,
+    };
+  }
+
+  function renderLow(data, payload) {
+    const items = data.items || [];
+    lowResult.classList.remove("hidden");
+    const devLabel = `偏离 52周低点 ≤ ${payload.max_dev_pct}%`;
+    const sourceLabel = data.source === "db"
+      ? `数据来自 pgsql (定时任务已入库${data.calc_date ? ` · ${data.calc_date}` : ""})`
+      : "实时计算 (pgsql 无当日数据, 本次为实时计算并已入库)";
+    $("#low-title").textContent =
+      `低价选股 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"}`;
+    $("#low-sub").innerHTML =
+      `最近收盘价 ≥ 52周最低价 且 ${devLabel} · 按距低点涨幅升序 (最接近低点的在前) · <span class="hint">${sourceLabel}</span>`;
+
+    const body = items.map((it) => `
+      <tr>
+        <td class="num ${cls((it.dev_pct || 0) * -1)}">${fmtPctVal(it.dev_pct)}</td>
+        <td>${it.ts_code}</td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
+        <td>${it.industry || ""}</td>
+        <td class="num">${it.close == null ? "—" : Number(it.close).toFixed(2)}</td>
+        <td class="num">${it.week52_low == null ? "—" : Number(it.week52_low).toFixed(2)}</td>
+        <td class="num">${it.week52_high == null ? "—" : Number(it.week52_high).toFixed(2)}</td>
+        <td class="num ${cls(it.pct_chg || 0)}">${fmtPctVal(it.pct_chg)}</td>
+        <td class="num">${it.pe_ttm == null ? "—" : Number(it.pe_ttm).toFixed(2)}</td>
+        <td class="num">${it.pb == null ? "—" : Number(it.pb).toFixed(2)}</td>
+        <td class="num">${fmtYi(it.total_mv)}</td>
+      </tr>`).join("");
+    $("#low-table tbody").innerHTML = body ||
+      `<tr><td colspan="11" style="text-align:center;color:#9ca3af;padding:24px">无符合条件的数据 (可尝试调大偏离阈值)</td></tr>`;
+    updateLowSortArrows();
+    lowResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function updateLowSortArrows() {
+    document.querySelectorAll("#low-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === lowSort.by) {
+        arrow.textContent = lowSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
+    });
+  }
+
+  async function runLowScreen(payload) {
+    lowError.classList.add("hidden");
+    lowResult.classList.add("hidden");
+    $("#low-hint").textContent = "";
+    lowBtn.disabled = true;
+    lowLoading.classList.remove("hidden");
+    try {
+      const res = await fetch("/api/lowprice/screen", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "筛选失败");
+      renderLow(data, payload);
+    } catch (err) {
+      lowError.textContent = err.message || "请求失败, 请检查后端服务。";
+      lowError.classList.remove("hidden");
+    } finally {
+      lowLoading.classList.add("hidden");
+      lowBtn.disabled = false;
+    }
+  }
+
+  lowForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    runLowScreen(buildLowPayload());
+  });
+
+  // 表头点击排序 (客户端排序, 无需重新请求)
+  document.querySelectorAll("#low-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (lowSort.by === by) {
+        lowSort.order = lowSort.order === "desc" ? "asc" : "desc";
+      } else {
+        lowSort.by = by;
+        lowSort.order = by === "name" ? "asc" : "desc";
+      }
+      const tbody = $("#low-table tbody");
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      const num = (tdEl) => { const t = tdEl.textContent.trim(); if (t === "—") return -Infinity; const n = parseFloat(t.replace(/[亿,万]/g, "")); return isNaN(n) ? -Infinity : n; };
+      const txt = (tdEl) => tdEl.textContent.trim();
+      const idx = { dev_pct: 0, name: 2, close: 4, week52_low: 5, week52_high: 6, pct_chg: 7, pe_ttm: 8, pb: 9, total_mv: 10 }[by] ?? 0;
+      const isNum = !["name"].includes(by);
+      rows.sort((a, b) => {
+        const av = isNum ? num(a.children[idx]) : txt(a.children[idx]);
+        const bv = isNum ? num(b.children[idx]) : txt(b.children[idx]);
+        if (av === -Infinity && bv === -Infinity) return 0;
+        if (av === -Infinity) return 1;
+        if (bv === -Infinity) return -1;
+        if (isNum) return lowSort.order === "asc" ? av - bv : bv - av;
+        return lowSort.order === "asc"
+          ? String(av).localeCompare(String(bv), "zh-CN")
+          : String(bv).localeCompare(String(av), "zh-CN");
+      });
+      rows.forEach((tr) => tbody.appendChild(tr));
+      updateLowSortArrows();
+    });
+  });
 
   // ---------- 港股选股 (红利低波 / 基本面) ----------
   fillYearSelect($("#hk_sc_year"), 2025);

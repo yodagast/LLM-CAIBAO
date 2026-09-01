@@ -600,6 +600,106 @@ async def query_daily_recommend(calc_date: str | None = None, buy_above_close: b
     return [dict(r) for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# 低价选股结果表 low_price_screen (全市场每日扫描结果, 定时任务写入, 前端优先读库)
+# ---------------------------------------------------------------------------
+
+LOW_PRICE_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS low_price_screen (
+    id             BIGSERIAL PRIMARY KEY,
+    calc_date      VARCHAR(16)  NOT NULL,    -- 计算/收盘日 YYYYMMDD
+    ts_code        VARCHAR(16)  NOT NULL,
+    symbol         VARCHAR(8)   DEFAULT '',
+    name           VARCHAR(64)  DEFAULT '',
+    industry       VARCHAR(64)  DEFAULT '',   -- 东财行业 (用于按行业隔离)
+    close          DOUBLE PRECISION,          -- 最近收盘价
+    week52_high    DOUBLE PRECISION,          -- 52 周最高价
+    week52_low     DOUBLE PRECISION,          -- 52 周最低价
+    dev_pct        DOUBLE PRECISION,          -- 最近收盘价相对 52 周最低价涨幅 %
+    pct_chg        DOUBLE PRECISION,          -- 涨跌幅 %
+    pe_ttm         DOUBLE PRECISION,          -- PE(TTM)
+    pb             DOUBLE PRECISION,          -- PB
+    total_mv       DOUBLE PRECISION,          -- 总市值 (万元)
+    max_dev_pct    DOUBLE PRECISION,          -- 计算时使用的最大偏离阈值 % (记录来源)
+    updated_at     TIMESTAMP    DEFAULT now(),
+    UNIQUE (calc_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_lps_date ON low_price_screen (calc_date);
+"""
+
+LOW_PRICE_COLS = [
+    "calc_date", "ts_code", "symbol", "name", "industry",
+    "close", "week52_high", "week52_low", "dev_pct", "pct_chg",
+    "pe_ttm", "pb", "total_mv", "max_dev_pct",
+]
+
+_LPS_UPSERT_SQL = _upsert_sql("low_price_screen", LOW_PRICE_COLS, ("calc_date", "ts_code"))
+
+
+async def init_low_price_schema() -> None:
+    """创建 low_price_screen 表与索引 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(LOW_PRICE_SCHEMA_DDL)
+
+
+async def upsert_low_price_rows(rows: list[dict]) -> int:
+    """按 (calc_date, ts_code) upsert 写入低价选股结果, 返回行数。"""
+    if not rows:
+        return 0
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_LPS_UPSERT_SQL, [tuple(r.get(c) for c in LOW_PRICE_COLS) for r in rows])
+    return len(rows)
+
+
+async def latest_low_price_date() -> str:
+    """最近一次计算的 calc_date (空串=无数据)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        v = await conn.fetchval("SELECT max(calc_date) FROM low_price_screen;")
+    return str(v or "")
+
+
+async def has_low_price_data(calc_date: str, industry: str = "") -> int:
+    """统计某计算日 (可选行业) 已入库的低价选股行数; 用于命中判断。"""
+    if not calc_date:
+        return 0
+    sql = "SELECT COUNT(*) FROM low_price_screen WHERE calc_date = $1"
+    params: list = [calc_date]
+    if industry.strip():
+        sql += " AND industry LIKE $2"
+        params.append(f"%{industry.strip()}%")
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(sql, *params) or 0)
+
+
+async def query_low_price(calc_date: str = "", industry: str = "",
+                          max_dev_pct: float = 15.0, limit: int = 10000) -> list[dict]:
+    """查询某计算日低价选股结果, 按 dev_pct 升序 (最接近低点的在前), 返回全部命中。
+
+    industry 非空时按行业子串过滤; max_dev_pct 与入库时的阈值取小者 (避免显示入库时超阈值但当前查询阈值更小的结果)。
+    """
+    if not calc_date:
+        calc_date = await latest_low_price_date()
+    if not calc_date:
+        return []
+    sql = """SELECT ts_code, symbol, name, industry, close, week52_high, week52_low,
+                    dev_pct, pct_chg, pe_ttm, pb, total_mv, calc_date
+             FROM low_price_screen WHERE calc_date = $1 AND dev_pct <= LEAST(max_dev_pct, $2::float)"""
+    params: list = [calc_date, float(max_dev_pct)]
+    if industry.strip():
+        sql += f" AND industry LIKE ${len(params) + 1}"
+        params.append(f"%{industry.strip()}%")
+    sql += f" ORDER BY dev_pct ASC LIMIT ${len(params) + 1}::int"
+    params.append(int(limit))
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    return [dict(r) for r in rows]
+
+
 async def latest_rlv_year() -> int:
     """red_low_vol 最新数据年份。"""
     pool = await _get_pool()
@@ -2200,7 +2300,9 @@ CREATE TABLE IF NOT EXISTS site_articles (
     title       VARCHAR(200) NOT NULL,   -- 标题 (列表展示, 点击进正文) 中文
     title_en    VARCHAR(200) DEFAULT '', -- 英文标题
     date        VARCHAR(32)  DEFAULT '', -- 显示日期 (如 2026-08-26)
+    date_en     VARCHAR(32)  DEFAULT '', -- 英文显示日期 (如 February 2026)
     tags        TEXT         DEFAULT '', -- 标签 (JSON 数组字符串, 列表展示)
+    tags_en     TEXT         DEFAULT '', -- 英文标签 (JSON 数组字符串)
     body        TEXT         DEFAULT '', -- 正文 (Markdown, 正文页渲染) 中文
     body_en     TEXT         DEFAULT '', -- 英文正文 (Markdown)
     created_at  TIMESTAMP    DEFAULT now(),
@@ -2215,9 +2317,11 @@ async def init_site_articles_schema() -> None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(SITE_ARTICLES_SCHEMA_DDL)
-        # 迁移: 新增 title_en / body_en 列 (双语)
+        # 迁移: 新增 title_en / body_en / date_en / tags_en 列 (双语)
         await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS title_en VARCHAR(200) DEFAULT '';")
         await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS body_en TEXT DEFAULT '';")
+        await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS date_en VARCHAR(32) DEFAULT '';")
+        await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS tags_en TEXT DEFAULT '';")
         # 首次迁移: 表为空时, 将旧 site_pages 的行业研究/新闻 markdown 拆成文章
         n = await conn.fetchval("SELECT count(*) FROM site_articles")
         if n == 0:
@@ -2265,7 +2369,7 @@ async def list_site_articles(kind: str, limit: int = 100) -> list[dict]:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, kind, title, title_en, date, tags, updated_at "
+            "SELECT id, kind, title, title_en, date, date_en, tags, tags_en, updated_at "
             "FROM site_articles WHERE kind = $1 ORDER BY id DESC LIMIT $2::int",
             kind, int(limit))
     return [dict(r) for r in rows]
@@ -2276,33 +2380,35 @@ async def get_site_article(aid: int) -> dict | None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
-            "SELECT id, kind, title, title_en, date, tags, body, body_en, updated_at "
+            "SELECT id, kind, title, title_en, date, date_en, tags, tags_en, body, body_en, updated_at "
             "FROM site_articles WHERE id = $1", aid)
     return dict(r) if r else None
 
 
 async def create_site_article(kind: str, title: str, date: str, tags: str,
-                              body: str, title_en: str = "", body_en: str = "") -> int:
+                              body: str, title_en: str = "", body_en: str = "",
+                              date_en: str = "", tags_en: str = "") -> int:
     """创建文章, 返回 id。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         aid = await conn.fetchval(
-            "INSERT INTO site_articles (kind, title, title_en, date, tags, body, body_en) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
-            kind, title, title_en or "", date, tags, body, body_en or "")
+            "INSERT INTO site_articles (kind, title, title_en, date, date_en, tags, tags_en, body, body_en) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+            kind, title, title_en or "", date, date_en or "", tags, tags_en or "", body, body_en or "")
     return int(aid)
 
 
 async def update_site_article(aid: int, kind: str, title: str, date: str,
                               tags: str, body: str, title_en: str = "",
-                              body_en: str = "") -> int:
+                              body_en: str = "", date_en: str = "",
+                              tags_en: str = "") -> int:
     """更新文章, 返回受影响行数。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "UPDATE site_articles SET kind=$1, title=$2, title_en=$3, date=$4, tags=$5, "
-            "body=$6, body_en=$7, updated_at=now() WHERE id=$8 RETURNING id",
-            kind, title, title_en or "", date, tags, body, body_en or "", aid)
+            "UPDATE site_articles SET kind=$1, title=$2, title_en=$3, date=$4, date_en=$5, "
+            "tags=$6, tags_en=$7, body=$8, body_en=$9, updated_at=now() WHERE id=$10 RETURNING id",
+            kind, title, title_en or "", date, date_en or "", tags, tags_en or "", body, body_en or "", aid)
     return len(rows)
 
 

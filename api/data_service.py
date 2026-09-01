@@ -45,7 +45,7 @@ class _AsyncPro:
     调用示例: `await pro.daily(ts_code="600036.SH", start_date="20240101", end_date="20240201")`。
     """
 
-    BASE_URL = "http://api.tushare.pro"
+    BASE_URL = "https://api.tushare.pro"
 
     def __init__(self, token: str) -> None:
         self._token = token

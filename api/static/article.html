@@ -120,13 +120,15 @@
           var useEn = (window.I18N && window.I18N.getLang() === "en");
           var showTitle = (useEn && it.title_en) ? it.title_en : it.title;
           var showBody = (useEn && it.body_en) ? it.body_en : it.body;
+          var showDate = (useEn && it.date_en) ? it.date_en : it.date;
+          var showTagsRaw = (useEn && it.tags_en) ? it.tags_en : (it.tags || "");
           document.title = (showTitle || "") + t("article.suffix");
           var titleEl = document.getElementById("art-title");
           titleEl.textContent = showTitle || "";
           titleEl.removeAttribute("data-i18n");   // 已加载真实标题, 不再受语言切换影响
-          document.getElementById("art-date").textContent = it.date || "";
+          document.getElementById("art-date").textContent = showDate || "";
           var tags = [];
-          try { tags = JSON.parse(it.tags || "[]") || []; } catch (e) { tags = []; }
+          try { tags = JSON.parse(showTagsRaw || "[]") || []; } catch (e) { tags = []; }
           document.getElementById("art-tags").textContent = tags.join(" · ");
           document.getElementById("art-body").innerHTML = marked.parse(showBody || "");
           // 高亮对应导航 + 返回链接
@@ -156,9 +158,15 @@
               var useEn = (window.I18N && window.I18N.getLang() === "en");
               var showTitle = (useEn && it.title_en) ? it.title_en : it.title;
               var showBody = (useEn && it.body_en) ? it.body_en : it.body;
+              var showDate = (useEn && it.date_en) ? it.date_en : it.date;
+              var showTagsRaw = (useEn && it.tags_en) ? it.tags_en : (it.tags || "");
               document.title = (showTitle || "") + t("article.suffix");
               var titleEl = document.getElementById("art-title");
               titleEl.textContent = showTitle || "";
+              document.getElementById("art-date").textContent = showDate || "";
+              var tags = [];
+              try { tags = JSON.parse(showTagsRaw || "[]") || []; } catch (e) { tags = []; }
+              document.getElementById("art-tags").textContent = tags.join(" · ");
               document.getElementById("art-body").innerHTML = marked.parse(showBody || "");
               setActiveNav();
             })

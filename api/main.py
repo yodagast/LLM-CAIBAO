@@ -22,6 +22,7 @@ from . import auth_service, backtest_engine, band_service, caibao_service, data_
 from . import daily_recommend_service, etf_service, fundamental_service, hk_data_service
 from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvol_service
 from . import invest_ideas_service, strategy_service
+from . import low_price_service
 from . import alpha158_service
 from . import portfolio_service
 from . import events_service
@@ -57,6 +58,7 @@ async def _startup() -> None:
         await pg_service.init_stock_events_jobs_schema()
         await pg_service.init_site_pages_schema()
         await pg_service.init_site_articles_schema()
+        await pg_service.init_low_price_schema()
         # 启动公司大事生成 worker (持久化任务队列, 多进程靠 pg 抢占安全)
         try:
             if events_service.worker_task is None or events_service.worker_task.done():
@@ -166,6 +168,13 @@ class RedLowVolRequest(BaseModel):
     limit: int = Field(500, ge=1, le=1000, description="返回数量上限")
 
 
+class LowPriceRequest(BaseModel):
+    """低价选股请求 (选股 tab 新增策略: 筛选接近 52 周低点的公司)。"""
+    industry: str = Field("", description="行业名称(东财分类), 空表示全市场")
+    max_dev_pct: float = Field(15.0, ge=0, le=100,
+                               description="最大偏离阈值%%: 最近收盘价相对52周最低价的最大涨幅. 越小越接近年内低点")
+
+
 class HkScreenRequest(BaseModel):
     """港股基本面选股请求 (ROE 杜邦拆分)。"""
     industry: str = Field("", description="行业名称(东财港股行业, 如 银行/软件服务), 空表示全市场")
@@ -258,7 +267,9 @@ class SiteArticleRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200, description="标题")
     title_en: str = Field("", max_length=200, description="英文标题")
     date: str = Field("", max_length=32, description="展示日期 (如 2026-08-26)")
+    date_en: str = Field("", max_length=32, description="英文展示日期 (如 February 2026)")
     tags: list[str] = Field(default_factory=list, max_length=10, description="标签列表")
+    tags_en: list[str] = Field(default_factory=list, max_length=10, description="英文标签列表")
     body: str = Field("", max_length=50000, description="正文 (Markdown)")
     body_en: str = Field("", max_length=50000, description="英文正文 (Markdown)")
 
@@ -999,6 +1010,29 @@ async def redlowvol_screen(req: RedLowVolRequest) -> dict:
     }
 
 
+@app.post("/api/lowprice/screen")
+async def lowprice_screen(req: LowPriceRequest) -> dict:
+    """低价选股: 优先从 pgsql 读当日结果 (定时任务已入库), 无当日数据则实时计算并自动入库。
+
+    核心条件: 52周最低价 <= 最近收盘价 且 (收盘价-52周最低)/52周最低 <= max_dev_pct%%,
+    按偏离度 (相对年内低点涨幅) 升序返回 (最接近低点的在前)。
+    """
+    industry = req.industry.strip()
+    try:
+        items, from_db, calc_date = await low_price_service.get_low_price(
+            industry=industry, max_dev_pct=req.max_dev_pct)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"低价选股失败: {e}")
+    return {
+        "industry": industry,
+        "max_dev_pct": req.max_dev_pct,
+        "count": len(items),
+        "items": items,
+        "source": "db" if from_db else "live",
+        "calc_date": calc_date,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 港股 (红利低波 / 基本面选股) — 数据源: 东财港股财务/分红 + 腾讯日线 + tushare hk_basic
 # ---------------------------------------------------------------------------
@@ -1481,7 +1515,8 @@ async def site_articles_create(req: SiteArticleRequest, request: Request) -> dic
         aid = await pg_service.create_site_article(
             req.kind, req.title.strip(), req.date.strip(),
             __import__("json").dumps(req.tags, ensure_ascii=False), req.body,
-            req.title_en.strip(), req.body_en)
+            req.title_en.strip(), req.body_en,
+            req.date_en.strip(), __import__("json").dumps(req.tags_en, ensure_ascii=False))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建文章失败: {e}")
     return {"ok": True, "id": aid}
@@ -1497,7 +1532,8 @@ async def site_articles_update(aid: int, req: SiteArticleRequest, request: Reque
         n = await pg_service.update_site_article(
             aid, req.kind, req.title.strip(), req.date.strip(),
             __import__("json").dumps(req.tags, ensure_ascii=False), req.body,
-            req.title_en.strip(), req.body_en)
+            req.title_en.strip(), req.body_en,
+            req.date_en.strip(), __import__("json").dumps(req.tags_en, ensure_ascii=False))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新文章失败: {e}")
     if not n:

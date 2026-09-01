@@ -201,6 +201,7 @@
         <div class="seg-group" id="seg-strat">
           <button type="button" class="seg-btn active" data-strat="rlv">红利低波</button>
           <button type="button" class="seg-btn" data-strat="fund">基本面</button>
+          <button type="button" class="seg-btn" data-strat="low">低价选股</button>
         </div>
         <button type="button" class="btn-ghost btn-sm" id="screener-save-btn" title="把当前筛选结果保存为策略Hub中的自定义策略"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-plus"/></svg> 存入策略Hub</button>
       </div>
@@ -314,6 +315,68 @@
                   <th class="sortable" data-sort="payout_ratio">分红率<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="debt_to_assets">资产负债率<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <!-- A股 × 低价选股 (接近 52 周低点) -->
+      <div data-view="a-low">
+      <div class="card">
+        <form id="low-form" autocomplete="off">
+          <div class="grid">
+            <div class="field field-suggest">
+              <label for="low_industry">行业 (东财分类)</label>
+              <input type="text" id="low_industry" placeholder="如 白酒 / 银行 / 煤炭 / 空=全市场" autocomplete="off" />
+              <div class="ind-panel hidden" id="low-ind-panel"></div>
+            </div>
+            <div class="field">
+              <label for="low_max_dev">最大偏离 52周低点 (%)</label>
+              <input type="number" id="low_max_dev" value="15" min="0" max="100" step="1" />
+              <div class="field-tip">最近收盘价相对 52 周最低价的最大涨幅 (越小越接近年内低点)</div>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="low-btn">
+              <span class="btn-icon">▶</span> 开始选股
+            </button>
+            <span class="range-hint" id="low-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="loading hidden" id="low-loading">
+        <div class="spinner"></div>
+        <span>正在扫描全市场近一年行情, 计算 52 周高低点… (全市场约 30~90 秒)</span>
+      </div>
+      <div class="error hidden" id="low-error"></div>
+
+      <section class="result hidden" id="low-result">
+        <div class="result-head">
+          <h2 id="low-title">低价选股排序</h2>
+          <span class="hint" id="low-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap">
+            <table id="low-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="dev_pct">距低点涨幅<span class="sort-arrow"></span></th>
+                  <th>代码</th>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
+                  <th>行业</th>
+                  <th class="sortable" data-sort="close">最近收盘<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="week52_low">52周最低<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="week52_high">52周最高<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="pct_chg">涨跌幅<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="pe_ttm">PE(TTM)<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="pb">PB<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_mv">总市值<span class="sort-arrow"></span></th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -1352,6 +1415,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=5"></script>
-  <script src="/static/js/app.js?v=88"></script>
+  <script src="/static/js/app.js?v=89"></script>
 </body>
 </html>

@@ -93,15 +93,16 @@
         var useEn = lang() === "en";
         box.innerHTML = items.map(function (it) {
           var tags = [];
-          try { tags = JSON.parse(it.tags || "[]") || []; } catch (e) { tags = []; }
+          try { tags = JSON.parse((useEn && it.tags_en) ? it.tags_en : (it.tags || "[]")) || []; } catch (e) { tags = []; }
           var tagHtml = tags.map(function (x) {
             return '<span class="news-tag">' + esc(x) + "</span>";
           }).join("");
           var title = (useEn && it.title_en) ? it.title_en : it.title;
+          var date = (useEn && it.date_en) ? it.date_en : it.date;
           return (
             '<a class="article-item" href="/article/' + it.id + '">' +
             '  <div class="article-head">' +
-            '    <span class="news-date">' + esc(it.date || "") + "</span>" +
+            '    <span class="news-date">' + esc(date || "") + "</span>" +
             '    <span class="article-title">' + esc(title) + "</span>" +
             tagHtml +
             "  </div>" +

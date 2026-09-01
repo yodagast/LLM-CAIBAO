@@ -143,8 +143,13 @@ def _compute_metrics(info: dict, data: dict,
     close = float(last["close"])
     pct_chg = _num(last.get("pct_chg"))
     recent = daily.tail(_DAYS_52W)
-    high52 = float(recent["high"].max())
-    low52 = float(recent["low"].min())
+    # 52 周高低改用**月线**计算 (最近 12 个月月线 high/low 极值, 日线兜底)
+    monthly_52w = data_service._monthly_52week_high_low(daily)
+    if monthly_52w:
+        high52, low52 = monthly_52w
+    else:
+        high52 = float(recent["high"].max())
+        low52 = float(recent["low"].min())
     amt = daily["amount"].astype(float)
     avg_amount_20 = float(amt.tail(20).mean()) / 10          # 千元 → 万元
     avg_amount_5 = float(amt.tail(5).mean()) / 10

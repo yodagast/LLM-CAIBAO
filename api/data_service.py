@@ -738,6 +738,30 @@ def _df_to_agg_bars(df: pd.DataFrame, freq: str) -> list[dict]:
     return bars
 
 
+def _monthly_52week_high_low(df: pd.DataFrame, months: int = 12) -> tuple[float, float] | None:
+    """基于**月线**聚合计算 52 周最高/最低价 (要求: 52周高低均改用月线数据计算)。
+
+    把日线 df 按自然月聚合成月线 (resample ME, high=max / low=min), 取最近 months 个月
+    (默认 12 个月 ≈ 52 周) 的 high 最大值 / low 最小值作为 52 周高低点。
+    返回 (week52_high, week52_low); 数据不足 (无有效月份) 返回 None。
+    """
+    if df is None or df.empty or "trade_date" not in df.columns:
+        return None
+    d = df.copy()
+    d["_dt"] = pd.to_datetime(d["trade_date"], format="%Y%m%d")
+    g = d.set_index("_dt").resample("ME")
+    agg = pd.DataFrame({
+        "high": g["high"].max().values,
+        "low": g["low"].min().values,
+    }).dropna(subset=["high", "low"])
+    if agg.empty:
+        return None
+    agg = agg.tail(months)
+    if agg.empty:
+        return None
+    return float(agg["high"].max()), float(agg["low"].min())
+
+
 async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str = "",
                     start_date: str = "", end_date: str = "", hist_years: int = 10) -> list[dict]:
     """获取 K 线 bars (周期: D日/W周/M月; 复权: qfq前复权/hfq后复权/空不复权)。
@@ -910,8 +934,13 @@ async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
     recent = df.tail(days).reset_index(drop=True)  # 52 周窗口 (用于高低/最新价)
     last_close = float(quote_row["close"])
     last_date = str(quote_row["trade_date"])
-    week52_high = float(recent["high"].max())
-    week52_low = float(recent["low"].min())
+    # 52 周高低改用**月线**计算 (最近 12 个月月线 high/low 极值)
+    monthly_52w = _monthly_52week_high_low(df)
+    if monthly_52w:
+        week52_high, week52_low = monthly_52w
+    else:
+        week52_high = float(recent["high"].max())
+        week52_low = float(recent["low"].min())
 
     # 昨收: 优先 daily.pre_close, 否则取前一交易日收盘
     pre_close = _to_float(quote_row.get("pre_close"))
@@ -1053,8 +1082,13 @@ async def _get_hk_stock_detail(ts_code: str, days: int = 250,
     recent = df.tail(days).reset_index(drop=True)  # 52 周窗口
     last_close = float(quote_row["close"])
     last_date = str(quote_row["trade_date"])
-    week52_high = float(recent["high"].max())
-    week52_low = float(recent["low"].min())
+    # 港股 52 周高低改用**月线**计算 (最近 12 个月月线 high/low 极值)
+    monthly_52w = _monthly_52week_high_low(df)
+    if monthly_52w:
+        week52_high, week52_low = monthly_52w
+    else:
+        week52_high = float(recent["high"].max())
+        week52_low = float(recent["low"].min())
     pre_close = _to_float(quote_row.get("pre_close"))
     q_hi = _to_float(quote_row.get("high"))
     q_lo = _to_float(quote_row.get("low"))
@@ -1203,8 +1237,13 @@ async def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250)
     last_date = str(last["trade_date"])
     pct_chg = _to_float(last.get("pct_chg"))
     recent = df.tail(days)
-    week52_high = float(recent["high"].max())
-    week52_low = float(recent["low"].min())
+    # 52 周高低改用**月线**计算 (最近 12 个月月线 high/low 极值)
+    monthly_52w = _monthly_52week_high_low(df)
+    if monthly_52w:
+        week52_high, week52_low = monthly_52w
+    else:
+        week52_high = float(recent["high"].max())
+        week52_low = float(recent["low"].min())
 
     pb = pe = pe_ttm = total_mv = circ_mv = dv_ratio = None
     try:
@@ -1462,6 +1501,13 @@ async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str,
                 dv_ttm = b.get("dv_ttm")
                 dividend_yield = dv_ttm if dv_ttm is not None else (
                     div_per_share / last_close * 100.0 if (div_per_share and last_close) else None)
+                # 52 周高低改用**月线**计算 (最近 12 个月月线 high/low 极值, 日线兜底)
+                monthly_52w = _monthly_52week_high_low(df)
+                if monthly_52w:
+                    w52_high, w52_low = monthly_52w
+                else:
+                    w52_high = float(recent["high"].max())
+                    w52_low = float(recent["low"].min())
                 return {
                     "ts_code": code,
                     "last_close": last_close,
@@ -1475,8 +1521,8 @@ async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str,
                     "dv_ratio": dv_ttm,
                     "div_per_share": div_per_share,
                     "dividend_yield": dividend_yield,
-                    "week52_high": float(recent["high"].max()),
-                    "week52_low": float(recent["low"].min()),
+                    "week52_high": w52_high,
+                    "week52_low": w52_low,
                 }
             except Exception:
                 return None

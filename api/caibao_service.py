@@ -702,7 +702,9 @@ async def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 5000
       - 部分推理模型 (如 deepseek-reasoner) 不接受 temperature 参数, 收到 400 且含
         'temperature' 时自动去掉该参数重试;
       - content 为空时回退 reasoning_content (deepseek-v4-flash 等推理模型);
-      - 失败抛 RuntimeError 且保留状态码/响应信息, 便于线上定位 (401/403/无效key等)。
+      - **瞬时错误 (429 限流 / 5xx / 网络/超时) 保持原生 httpx 异常抛出**, 供上游
+        Tenacity 重试 (从报错处重试, 指数退避);
+      - 确定性错误 (401/403 无效 Key 等) 抛 RuntimeError 且保留响应信息, 便于定位。
     """
     _load_env()
     key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -730,9 +732,14 @@ async def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 5000
         # 推理模型不支持 temperature → 去掉该参数重试
         payload.pop("temperature", None)
         resp = await client.post(f"{base}/chat/completions", headers=headers, json=payload)
+    if resp.status_code >= 500 or resp.status_code == 429:
+        # 服务端瞬时错误 (5xx/限流): 保持 httpx 异常抛出 → 供上游 Tenacity 指数退避重试
+        raise httpx.HTTPStatusError(
+            f"LLM {model} HTTP {resp.status_code}", request=resp.request, response=resp)
     try:
         resp.raise_for_status()
     except Exception as e:
+        # 确定性错误 (4xx 如 401/403): 抛 RuntimeError 携带响应信息 (不重试)
         raise RuntimeError(f"LLM 调用失败 ({model}): {e}") from e
     data = resp.json()
     msg = data["choices"][0]["message"]

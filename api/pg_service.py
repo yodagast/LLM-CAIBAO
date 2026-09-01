@@ -2079,6 +2079,7 @@ CREATE TABLE IF NOT EXISTS stock_events_jobs (
     done_count  INTEGER DEFAULT 0,               -- 已入库条数 (分批生成进度)
     total_est   INTEGER DEFAULT 0,               -- 预估总条数
     last_error  TEXT DEFAULT '',
+    progress_log TEXT DEFAULT '',               -- 流式进度日志 (换行分隔, 供前端轮询展示)
     created_at  TIMESTAMP DEFAULT now(),
     updated_at  TIMESTAMP DEFAULT now()
 );
@@ -2087,10 +2088,11 @@ CREATE INDEX IF NOT EXISTS idx_sej_status ON stock_events_jobs (status, id);
 
 
 async def init_stock_events_jobs_schema() -> None:
-    """创建公司大事任务队列表 (幂等)。"""
+    """创建公司大事任务队列表 (幂等), 旧表迁移补 progress_log 列。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(STOCK_EVENTS_JOBS_SCHEMA_DDL)
+        await conn.execute("ALTER TABLE stock_events_jobs ADD COLUMN IF NOT EXISTS progress_log TEXT DEFAULT '';")
 
 
 async def enqueue_stock_events_job(ts_code: str, name: str = "", force: bool = False) -> bool:
@@ -2119,7 +2121,7 @@ async def get_stock_events_job(ts_code: str) -> dict | None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
-            "SELECT ts_code, status, done_count, total_est, last_error, updated_at "
+            "SELECT ts_code, status, done_count, total_est, last_error, progress_log, updated_at "
             "FROM stock_events_jobs WHERE ts_code = $1", ts_code)
     return dict(r) if r else None
 
@@ -2148,8 +2150,9 @@ async def claim_stock_events_job(stale_minutes: int = 5) -> dict | None:
 async def update_stock_events_job(ts_code: str, status: str | None = None,
                                   done_count: int | None = None,
                                   total_est: int | None = None,
-                                  last_error: str = "") -> None:
-    """更新任务状态/进度/错误。last_error 传 None 表示不改, 传字符串表示覆盖。"""
+                                  last_error: str = "",
+                                  progress_log: str | None = None) -> None:
+    """更新任务状态/进度/错误/流式日志。last_error/progress_log 传 None 表示不改。"""
     sets = ["updated_at = now()"]
     params: list = []
     if status is not None:
@@ -2164,6 +2167,9 @@ async def update_stock_events_job(ts_code: str, status: str | None = None,
     if last_error is not None:
         params.append(last_error)
         sets.append(f"last_error = ${len(params)}")
+    if progress_log is not None:
+        params.append(progress_log)
+        sets.append(f"progress_log = ${len(params)}")
     if not sets:
         return
     params.append(ts_code)

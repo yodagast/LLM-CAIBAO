@@ -622,6 +622,7 @@ async def stock_events(code: str) -> dict:
         "done": (job["done_count"] if job else 0) or len(items),
         "total": (job["total_est"] if job else 0) or 0,
         "last_error": (job["last_error"] if job else "") or "",
+        "progress_log": (job["progress_log"] if job else "") or "",
     }
 
 

@@ -380,12 +380,22 @@
     const items = data.items || [];
     const syncBtn = $("#events-sync-btn");
     if (data.generating) {
-      // 生成中: 展示进度 (分批生成, done 条已入库, 陆续更新)
+      // 生成中: 展示进度 (分批生成 + 流式过程日志, done 条已入库, 陆续更新)
       listEl.className = "events-empty";
       const done = data.done || 0;
       const total = data.total || 0;
       const prog = total ? `已生成 ${done} / ${total} 条` : `已生成 ${done} 条`;
-      listEl.innerHTML = `<span class="spin"></span>正在生成公司大事 (网络搜索 + AI 分批总结)…<br/>${prog}${done ? " · 已生成部分会陆续显示" : ""}`;
+      // 流式过程日志 (progress_log, 服务器生成时逐行追加)
+      let logHtml = "";
+      if (data.progress_log) {
+        const lines = String(data.progress_log).split("\n").filter(Boolean);
+        if (lines.length) {
+          logHtml = `<div class="events-progress-log"><span class="spin"></span>` +
+            lines.map((l) => `<div class="ev-prog-line">${escapeHtml(l)}</div>`).join("") +
+            `</div>`;
+        }
+      }
+      listEl.innerHTML = `<span class="spin"></span>正在生成公司大事 (网络搜索 + AI 分批总结)…<br/>${prog}${done ? " · 已生成部分会陆续显示" : ""}${logHtml ? "<br/>" + logHtml : ""}`;
       if (statusEl) statusEl.textContent = "生成中, 请稍候…";
       if (syncBtn) syncBtn.disabled = true;
       return;

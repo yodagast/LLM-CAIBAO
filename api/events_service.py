@@ -22,6 +22,13 @@ import re
 from datetime import datetime
 
 import httpx
+from tenacity import (
+    AsyncRetrying,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from . import pg_service
 
@@ -29,8 +36,8 @@ logger = logging.getLogger(__name__)
 
 # 分批生成参数: 每批最多 5 条, 共 4 批 ≈ 16~20 条
 _EVENTS_BATCH = 5        # 每批最多条数
-_EVENTS_BATCHES = 4      # 批数
-_EVENTS_TOTAL_EST = 18   # 预估总条数 (进度展示用)
+_EVENTS_BATCHES = 2      # 批数
+_EVENTS_TOTAL_EST = 10   # 预估总条数 (进度展示用)
 
 # 全局 httpx 客户端 (异步复用连接)
 _client: httpx.AsyncClient | None = None
@@ -39,11 +46,41 @@ _client: httpx.AsyncClient | None = None
 worker_task: asyncio.Task | None = None
 
 
+async def _append_progress(ts_code: str, msg: str) -> None:
+    """向任务的 progress_log 追加一行过程日志 (供前端流式展示)。
+
+    progress_log 以 \n 分隔存字符串; 每行带时间戳。失败静默 (不影响主流程)。
+    """
+    try:
+        job = await pg_service.get_stock_events_job(ts_code)
+        if not job:
+            return
+        prev = job.get("progress_log") or ""
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        new_log = (prev + "\n" + line if prev else line)[:4000]
+        await pg_service.update_stock_events_job(ts_code, progress_log=new_log)
+    except Exception:
+        pass
+
+
 def _http_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
         _client = httpx.AsyncClient(timeout=15.0, follow_redirects=True)
     return _client
+
+
+async def _upsert_with_retry(ts_code: str, name: str, events: list[dict]) -> int:
+    """入库公司大事, 网络/数据库瞬时故障时 Tenacity 从报错处重试 (最多 3 次指数退避)。
+
+    仅重试 (httpx.HTTPError, OSError, TimeoutError); 其他异常直接抛出 (调用方降级处理)。
+    """
+    retrying = AsyncRetrying(**_LLM_RETRY, reraise=True)
+    async for attempt_state in retrying:
+        with attempt_state:
+            return await pg_service.upsert_stock_events(ts_code, name, events)
+    return 0
 
 
 def _clean_html(text: str) -> str:
@@ -55,27 +92,66 @@ def _clean_html(text: str) -> str:
     return text[:400]
 
 
+# Tenacity 重试策略: 网络搜索失败时从报错处重试 (指数退避, 最多 3 次)
+_SEARCH_RETRY = dict(
+    retry=retry_if_exception_type((httpx.HTTPError, OSError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.6, min=0.6, max=5.0),
+)
+
+# Tenacity 重试策略: DeepSeek 批次总结 / 入库 失败时从报错处重试
+# 仅重试瞬时故障 (网络/超时/5xx), 业务错误 (无 Key / 无合法 JSON 等 RuntimeError) 不重试
+_LLM_RETRY = dict(
+    retry=retry_if_exception_type((httpx.HTTPError, OSError, TimeoutError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.8, min=0.8, max=6.0),
+)
+
+
 async def _search_web(name: str, code: str, limit: int = 18) -> list[dict]:
     """免 API Key 网络搜索公司大事, 返回 [{date, title, desc}]。
 
     依次尝试: DuckDuckGo HTML 端点 → Bing 网页搜索; 都失败返回 [] (上层回退 LLM 知识生成)。
+
+    使用 Tenacity 重试: 搜索请求失败 (网络/超时/5xx) 时从报错处重试,
+    指数退避 (初始 0.6s, 最多 3 次), 重试间隔让限频/临时故障恢复。
     """
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
     query = f"{name} 大事记 公司"
+
+    async def _try_ddg() -> list[dict]:
+        """DuckDuckGo 带 Tenacity 重试 (网络失败自动重试 3 次)。"""
+        retrying = AsyncRetrying(**_SEARCH_RETRY, reraise=False)
+        async for attempt_state in retrying:
+            with attempt_state:
+                items = await _ddg_search(query, limit, headers)
+                if items:
+                    return items
+        return []
+
+    async def _try_bing() -> list[dict]:
+        retrying = AsyncRetrying(**_SEARCH_RETRY, reraise=False)
+        async for attempt_state in retrying:
+            with attempt_state:
+                items = await _bing_search(query, limit, headers)
+                if items:
+                    return items
+        return []
+
     try:
-        items = await _ddg_search(query, limit, headers)
+        items = await _try_ddg()
         if items:
             return items
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("[events] DDG 搜索失败(已重试): %s", e)
     try:
-        items = await _bing_search(query, limit, headers)
+        items = await _try_bing()
         if items:
             return items
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("[events] Bing 搜索失败(已重试): %s", e)
     return []
 
 
@@ -196,9 +272,16 @@ async def _summarize_batch(name: str, code: str, snippets: list[dict],
     )
     try:
         # deepseek-v4-flash 为推理模型, 需足够 max_tokens 让推理完成后再输出内容 (否则 content 为空)
-        text = await _call_llm(sys_prompt, user, max_tokens=8000)
-    except Exception as e:
+        # Tenacity 重试: 网络/超时等瞬时故障自动从报错处重试 3 次 (指数退避); 业务错 (无Key/无合法JSON) 不重试
+        retrying = AsyncRetrying(**_LLM_RETRY, reraise=True)
+        async for attempt_state in retrying:
+            with attempt_state:
+                text = await _call_llm(sys_prompt, user, max_tokens=8000)
+    except RuntimeError as e:
         raise RuntimeError(f"DeepSeek 总结公司大事失败: {e}")
+    except Exception as e:
+        # 重试耗尽后的最终异常
+        raise RuntimeError(f"DeepSeek 总结公司大事失败 (已重试): {e}")
     events = _extract_json_array(text)
     if not events:
         raise RuntimeError(f"DeepSeek 第{batch_no}批未返回合法 JSON 数组")
@@ -224,8 +307,10 @@ async def process_job(ts_code: str, name: str = "") -> dict:
     try:
         await pg_service.update_stock_events_job(
             ts_code, status="processing", total_est=_EVENTS_TOTAL_EST, last_error=None)
+        await _append_progress(ts_code, f"开始生成 {name} 公司大事 (网络搜索 + AI 分批总结)")
         snippets = await _search_web(name, ts_code)
         logger.info("[events] %s %s 搜索到 %d 条片段, 开始分批生成", ts_code, name, len(snippets))
+        await _append_progress(ts_code, f"网络搜索完成, 获取 {len(snippets)} 条新闻片段 (未搜索到将基于公开常识生成)")
         # 以已有大事标题为初始去重集 → 增量更新只补新事件, 不重复生成
         prev_titles: set[str] = set()
         try:
@@ -236,6 +321,7 @@ async def process_job(ts_code: str, name: str = "") -> dict:
         batch_errors: list[str] = []
         for batch_no in range(1, _EVENTS_BATCHES + 1):
             events: list[dict] = []
+            await _append_progress(ts_code, f"第 {batch_no}/{_EVENTS_BATCHES} 批 AI 总结中…")
             try:
                 events = await _summarize_batch(name, ts_code, snippets,
                                                 batch_no, sorted(prev_titles))
@@ -243,6 +329,7 @@ async def process_job(ts_code: str, name: str = "") -> dict:
                 # 搜索片段异常/无结果时降级: 让 LLM 基于常识生成
                 logger.warning("[events] %s 第%d批失败(%s), 降级基于常识重试",
                                ts_code, batch_no, e1)
+                await _append_progress(ts_code, f"第 {batch_no} 批失败 ({str(e1)[:60]}), 降级基于常识重试")
                 try:
                     events = await _summarize_batch(name, ts_code, [], batch_no,
                                                     sorted(prev_titles))
@@ -251,25 +338,30 @@ async def process_job(ts_code: str, name: str = "") -> dict:
                     logger.warning("[events] %s 第%d批降级也失败(%s), 跳过该批",
                                    ts_code, batch_no, e2)
                     batch_errors.append(str(e2))
+                    await _append_progress(ts_code, f"第 {batch_no} 批降级仍失败, 跳过该批")
                     continue
             if not events:
                 batch_errors.append(f"第{batch_no}批返回空")
+                await _append_progress(ts_code, f"第 {batch_no} 批返回空, 跳过")
                 continue
             new = [e for e in events if e["title"] not in prev_titles][:_EVENTS_BATCH]
             if not new:
                 continue
             prev_titles.update(e["title"] for e in new)
-            n = await pg_service.upsert_stock_events(ts_code, name, new)
+            n = await _upsert_with_retry(ts_code, name, new)
             done += n
             await pg_service.update_stock_events_job(ts_code, done_count=done)
+            await _append_progress(ts_code, f"第 {batch_no} 批入库 {n} 条 (累计 {done} 条)")
             logger.info("[events] %s 第%d批入库 %d 条 (累计 %d)", ts_code, batch_no, n, done)
         if done == 0:
             # 全部批次失败: 暴露首个真实原因 (而非笼统提示), 便于线上定位
             detail = batch_errors[0] if batch_errors else "全部批次均未产出有效事件"
             msg = f"未生成到有效事件: {detail}"[:500]
             await pg_service.update_stock_events_job(ts_code, status="error", last_error=msg)
+            await _append_progress(ts_code, f"生成失败: {msg}")
             return {"status": "empty", "count": 0, "message": msg}
         await pg_service.update_stock_events_job(ts_code, status="done", done_count=done)
+        await _append_progress(ts_code, f"生成完成, 共 {done} 条")
         logger.info("[events] %s %s 完成, 共 %d 条", ts_code, name, done)
         return {"status": "ok", "count": done, "message": f"已生成 {done} 条大事"}
     except Exception as e:
@@ -277,6 +369,7 @@ async def process_job(ts_code: str, name: str = "") -> dict:
         try:
             await pg_service.update_stock_events_job(
                 ts_code, status="error", last_error=str(e)[:500])
+            await _append_progress(ts_code, f"生成过程异常: {str(e)[:100]}")
         except Exception:
             pass
         return {"status": "error", "count": 0, "message": str(e)}

@@ -440,8 +440,9 @@ async def industry_map(use_cache: bool = True) -> dict[str, str]:
 # 日线 (腾讯港股 K 线) — 波动率/年末收盘/最新收盘
 # ---------------------------------------------------------------------------
 
-# 腾讯港股日线缓存 (原 lru_cache 语义: 进程内永久缓存)
-_TENCENT_CACHE: dict[str, pd.DataFrame] = {}
+# 腾讯港股日线缓存: 15 分钟内复用，跨交易日或服务长时间运行时自动刷新。
+_TENCENT_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_TENCENT_CACHE_TTL = 15 * 60
 
 
 async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
@@ -450,8 +451,9 @@ async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
     腾讯 fqkline count 参数上限约 2000~3000, 超限返回空; 用 count=2000 取最近约 8 年
     (被截断时返回最近 2000 条), 足够近年选股 (2020+)。
     """
-    if ts_code in _TENCENT_CACHE:
-        return _TENCENT_CACHE[ts_code]
+    cached = _TENCENT_CACHE.get(ts_code)
+    if cached and time.time() - cached[0] < _TENCENT_CACHE_TTL:
+        return cached[1]
     symbol = ts_code.split(".")[0]
     end = datetime.now().strftime("%Y-%m-%d")
     params = {"param": f"hk{symbol},day,2000-01-01,{end},2000,"}
@@ -483,7 +485,7 @@ async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
         return df
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
-    _TENCENT_CACHE[ts_code] = df
+    _TENCENT_CACHE[ts_code] = (time.time(), df)
     return df
 
 

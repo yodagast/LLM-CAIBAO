@@ -3208,7 +3208,7 @@
     myLoading.classList.remove("hidden");
     myRefreshBtn.disabled = true;
     try {
-      const res = await fetch("/api/my_stocks");
+      const res = await fetch("/api/my_stocks", { cache: "no-store" });
       if (res.status === 401) { location.replace("/static/login.html"); return; }
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "获取失败");

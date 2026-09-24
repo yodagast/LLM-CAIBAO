@@ -25,6 +25,9 @@ import pandas as pd
 # 项目根目录 (api/ 的上一级)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# 本地行情只作为短暂断网时的兜底，超过该天数就必须重新取实时数据。
+_RECENT_DATA_MAX_AGE_DAYS = 7
+
 
 def _load_env_token() -> None:
     """加载 ../.env 中的环境变量 (若未设置)。"""
@@ -545,6 +548,18 @@ def _add_days(ymd: str, days: int) -> str:
         return ymd
 
 
+def _is_recent_trade_date(trade_date: str | None, reference_date: str,
+                          max_age_days: int = _RECENT_DATA_MAX_AGE_DAYS) -> bool:
+    """判断本地行情日期是否足够接近展示日。"""
+    try:
+        actual = datetime.strptime(str(trade_date)[:8], "%Y%m%d")
+        reference = datetime.strptime(str(reference_date)[:8], "%Y%m%d")
+    except (TypeError, ValueError):
+        return False
+    age = (reference - actual).days
+    return 0 <= age <= max_age_days
+
+
 async def _pg_daily_df(symbol: str, start_date: str, end_date: str, adj_key: str) -> pd.DataFrame | None:
     """从本地 pgsql stock_daily_bars 读取日线; 覆盖足够时返回 DataFrame (含 turnover_rate), 否则 None。
 
@@ -562,13 +577,14 @@ async def _pg_daily_df(symbol: str, start_date: str, end_date: str, adj_key: str
         return None
     s = (start_date or "20000101")[:8]
     e = (end_date or datetime.now().strftime("%Y%m%d"))[:8]
-    # 覆盖性: 本地最早日不晚于请求起始+400天, 最晚日不早于请求结束-45天
+    # 覆盖性: 本地最早日不晚于请求起始+400天, 最新日不能落后请求结束超过 7 天。
+    # 后者避免把长期未更新的本地库误当作“最近收盘价”。
     # (stats 中 min/max 为 date 类型, 转 str 形如 'YYYY-MM-DD', 先去横线)
     mn = stats["min_date"].replace("-", "")[:8]
     mx = stats["max_date"].replace("-", "")[:8]
     if mn > _add_days(s, 400):
         return None
-    if mx < _add_days(e, -45):
+    if mx < _add_days(e, -_RECENT_DATA_MAX_AGE_DAYS):
         return None
     try:
         rows = await pg_service.query_daily_bars(symbol, s, e)
@@ -929,6 +945,11 @@ async def get_stock_detail(ts_code: str, kind: str = "stock", days: int = 250,
             raise ValueError(f"交易日 {date} 无行情数据 (可能停牌或未上市)")
         quote_row = target.iloc[0]
     else:
+        pro = _init_pro()
+        _, display_td = await _display_trade_dates(pro)
+        df_t = df[df["trade_date"].astype(str) <= display_td]
+        if not df_t.empty:
+            df = df_t
         quote_row = df.iloc[-1]
 
     recent = df.tail(days).reset_index(drop=True)  # 52 周窗口 (用于高低/最新价)
@@ -1077,6 +1098,11 @@ async def _get_hk_stock_detail(ts_code: str, days: int = 250,
             raise ValueError(f"交易日 {date} 无行情数据 (可能停牌或未上市)")
         quote_row = target.iloc[0]
     else:
+        pro = _init_pro()
+        _, display_td = await _display_trade_dates(pro)
+        df_t = df[df["trade_date"].astype(str) <= display_td]
+        if not df_t.empty:
+            df = df_t
         quote_row = df.iloc[-1]
 
     recent = df.tail(days).reset_index(drop=True)  # 52 周窗口
@@ -1213,25 +1239,27 @@ async def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250)
     不取 20 年 K 线, 比 get_stock_detail 轻量; 股息率为 TTM 口径 (最新分红年度全年分红 / 最新收盘价)。
     结果带 15 分钟 TTL 缓存。
     """
-    cache_key = f"{ts_code}:{kind}"
+    pro = _init_pro()
+    display_td = datetime.now().strftime("%Y%m%d")
+    try:
+        _, display_td = await _display_trade_dates(pro)
+    except Exception:
+        display_td = datetime.now().strftime("%Y%m%d")
+    # 展示日变化时必须换缓存键，避免 17:00 前后的价格混用。
+    cache_key = f"{ts_code}:{kind}:{display_td}"
     _now = time.time()
     _hit = _SNAPSHOT_CACHE.get(cache_key)
     if _hit and _now - _hit[0] < _SNAPSHOT_TTL:
         return dict(_hit[1])
 
-    pro = _init_pro()
     end_date = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=int(days * 1.6) + 30)).strftime("%Y%m%d")
     df = await get_daily(ts_code, kind, start_date=start, end_date=end_date)
     # 收盘价展示规则: 17 点前显示前一交易日, 17 点后显示当天
-    try:
-        _, display_td = await _display_trade_dates(pro)
-        if display_td:
-            df_t = df[df["trade_date"].astype(str) <= display_td]
-            if not df_t.empty:
-                df = df_t
-    except Exception:
-        pass
+    if display_td:
+        df_t = df[df["trade_date"].astype(str) <= display_td]
+        if not df_t.empty:
+            df = df_t
     last = df.iloc[-1]
     last_close = float(last["close"])
     last_date = str(last["trade_date"])
@@ -1350,8 +1378,10 @@ async def _latest_daily_map(pro) -> dict[str, dict]:
     交易日按 _display_trade_dates 规则选取 (17 点前用前一交易日, 17 点后用当天),
     保证自选股列表"最近收盘价"符合展示规则。
     """
+    _, td = await _display_trade_dates(pro)
+    cache_key = f"all:{td}"
     now = time.time()
-    hit = _LATEST_DAILY_CACHE.get("all")
+    hit = _LATEST_DAILY_CACHE.get(cache_key)
     if hit and now - hit[0] < _LATEST_TTL:
         return hit[1]
     m: dict[str, dict] = {}
@@ -1361,13 +1391,14 @@ async def _latest_daily_map(pro) -> dict[str, dict]:
         if df is not None and not df.empty:
             for _, r in df.iterrows():
                 m[str(r["ts_code"])] = {
+                    "trade_date": td,
                     "close": _to_float(r.get("close")),
                     "pre_close": _to_float(r.get("pre_close")),
                     "pct_chg": _to_float(r.get("pct_chg")),
                 }
     except Exception:
         pass
-    _LATEST_DAILY_CACHE["all"] = (now, m)
+    _LATEST_DAILY_CACHE[cache_key] = (now, m)
     return m
 
 
@@ -1376,8 +1407,10 @@ async def _latest_basic_map(pro) -> dict[str, dict]:
 
     交易日按 _display_trade_dates 规则选取 (与 _latest_daily_map 一致, 保证估值与收盘价同日)。
     """
+    _, td = await _display_trade_dates(pro)
+    cache_key = f"all:{td}"
     now = time.time()
-    hit = _LATEST_BASIC_CACHE.get("all")
+    hit = _LATEST_BASIC_CACHE.get(cache_key)
     if hit and now - hit[0] < _LATEST_TTL:
         return hit[1]
     m: dict[str, dict] = {}
@@ -1396,7 +1429,7 @@ async def _latest_basic_map(pro) -> dict[str, dict]:
                 }
     except Exception:
         pass
-    _LATEST_BASIC_CACHE["all"] = (now, m)
+    _LATEST_BASIC_CACHE[cache_key] = (now, m)
     return m
 
 
@@ -1414,12 +1447,14 @@ async def _pg_latest_maps(symbols: list[str]) -> tuple[dict, dict]:
     try:
         for r in await pg_service.latest_daily_bars_batch(list(symbols)):
             dmap[r["symbol"]] = {
+                "trade_date": str(r["trade_date"]).replace("-", ""),
                 "close": _to_float(r.get("close")),
                 "pre_close": _to_float(r.get("pre_close")),
                 "pct_chg": _to_float(r.get("pct_chg")),
             }
         for r in await pg_service.latest_daily_basic_batch(list(symbols)):
             bmap[r["symbol"]] = {
+                "trade_date": str(r["trade_date"]).replace("-", ""),
                 "pb": _to_float(r.get("pb")), "pe": _to_float(r.get("pe")),
                 "pe_ttm": _to_float(r.get("pe_ttm")),
                 "total_share": _to_float(r.get("total_share")),
@@ -1464,9 +1499,11 @@ async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str,
     try:
         pg_d, pg_b = await _pg_latest_maps(a_codes)
         for c in a_codes:
-            if c not in dmap and pg_d.get(c):
+            if (c not in dmap and pg_d.get(c)
+                    and _is_recent_trade_date(pg_d[c].get("trade_date"), display_td)):
                 dmap[c] = pg_d[c]
-            if c not in bmap and pg_b.get(c):
+            if (c not in bmap and pg_b.get(c)
+                    and _is_recent_trade_date(pg_b[c].get("trade_date"), display_td)):
                 bmap[c] = pg_b[c]
     except Exception:
         pass
@@ -1490,7 +1527,7 @@ async def get_snapshots_batch(ts_codes: list[str], days: int = 250) -> dict[str,
                 # 收盘价/涨跌幅 以 tushare 批量(dmap, 已按 display_td) 为主, 缺失用 df 截断后最后一条
                 if d.get("close") is not None:
                     last_close = float(d["close"])
-                    last_date = display_td or str(last["trade_date"])
+                    last_date = str(d.get("trade_date") or display_td or last["trade_date"])
                     last_pct = d.get("pct_chg")
                 else:
                     last_close = float(last["close"])

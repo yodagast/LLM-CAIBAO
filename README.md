@@ -225,6 +225,27 @@ crontab -l
 crontab -r   # 注意: 会清空全部 crontab, 建议手动编辑删除对应行
 ```
 
+### 自选股/策略Hub 日线同步 (每日 17:30)
+
+`scripts/sync_target_daily.py` 每天收盘后把「我的股票 ∪ 策略Hub股票」的**A股/ETF(走
+tushare) + 港股(走腾讯K线)** 日线持久化到本地 `stock_daily_bars` (港股 `kind='hk'`)。
+适用于希望收盘后尽快落库、且无需跑全市场重算的场景。
+
+```bash
+# 手动运行 (默认最近 10 年, A股+港股)
+.venv/bin/python scripts/sync_target_daily.py
+.venv/bin/python scripts/sync_target_daily.py --only-hk        # 只同步港股
+LIMIT=20 .venv/bin/python scripts/sync_target_daily.py         # 仅前 20 只 (测试)
+
+# crontab (每天 17:30, 收盘数据落定后):
+# 30 17 * * * cd /path/to/LLM-CAIBAO && /path/to/LLM-CAIBAO/.venv/bin/python \
+#   /path/to/LLM-CAIBAO/scripts/sync_target_daily.py >> logs/sync_target_daily.log 2>&1
+```
+
+- 港股日线数据源为腾讯港股 K 线 (单次最多约 2000 条 ≈ 8 年), 故 `--years` 超过 8 时
+  实际只落库可得区间; 港股无复权因子/换手率, 对应列留空。
+- 夜间任务第 7 步 (`sync_local_bars.py`) 同样覆盖港股 (目标列表含 ETF), 两个入口互为补充, 均可幂等重跑。
+
 自动更新内容与顺序 (各步骤独立, 单个失败不阻塞后续, 日志记录):
 
 | 顺序 | 内容 | 脚本 | 表 | 说明 |
@@ -258,6 +279,7 @@ api/
 scripts/
   nightly_update.sh     # 每日 20:00 定时更新 A股+港股 (crontab, macOS 版)
   nightly_update_linux.sh # 同上, Linux 版 (Alibaba Cloud Linux/RHEL8, GNU date, 路径可配置)
+  sync_target_daily.py  # 每日 17:30 同步「我的股票 ∪ 策略Hub」的 A股/ETF + 港股 日线到本地库
   init_hk_all_market.py # 港股全市场初始化 (红利低波+基本面一次遍历, 支持并行/断点续跑)
   init_hk_redlowvol.py  # 港股红利低波数据初始化
   init_hk_fundamental.py# 港股基本面数据初始化

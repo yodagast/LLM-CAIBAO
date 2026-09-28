@@ -29,6 +29,9 @@ from api import data_service, pg_service  # noqa: E402
 
 
 def classify(ts_code: str) -> str:
+    """判断 ts_code 类型: hk(港股) / fund(ETF) / stock(A股)。"""
+    if str(ts_code).upper().endswith(".HK"):
+        return "hk"
     return "fund" if data_service._is_fund_code(str(ts_code)) else "stock"
 
 
@@ -48,15 +51,27 @@ async def main() -> None:
     print(f"[sync_local_bars] 目标 {len(codes)} 只")
     if args.limit and args.limit > 0:
         codes = codes[:args.limit]
-    targets = [{"ts_code": c, "kind": classify(c)} for c in codes if not c.endswith(".HK")]
-    print(f"[sync_local_bars] 待处理 {len(targets)} 只 (排除港股)")
+    # 港股走腾讯行情 (kind='hk'), A股/ETF 走 tushare
+    a_codes = [c for c in codes if not str(c).upper().endswith(".HK")]
+    hk_codes = [c for c in codes if str(c).upper().endswith(".HK")]
+    targets = [{"ts_code": c, "kind": classify(c)} for c in a_codes]
+    print(f"[sync_local_bars] A股/ETF {len(targets)} 只, 港股 {len(hk_codes)} 只")
 
-    if not args.only_fin:
-        print(f"[sync_local_bars] 回填日线 (最近 {args.years} 年)...")
+    if not args.only_fin and targets:
+        print(f"[sync_local_bars] 回填 A股/ETF 日线 (最近 {args.years} 年)...")
         res = await data_service.backfill_daily_bars(targets, years=args.years,
                                                      concurrency=args.concurrency)
-        print(f"[sync_local_bars] 日线回填完成: ok={res['ok']} skip={res['skip']} rows={res['rows']}")
+        print(f"[sync_local_bars] A股/ETF 日线回填完成: ok={res['ok']} skip={res['skip']} rows={res['rows']}")
         for e in res["errors"][:10]:
+            print(f"  !! {e['ts_code']}: {e['msg']}")
+
+    if not args.only_fin and hk_codes:
+        print(f"[sync_local_bars] 回填 港股 日线 (最近 {args.years} 年)...")
+        res_hk = await data_service.backfill_hk_daily_bars(
+            [{"ts_code": c} for c in hk_codes], years=args.years,
+            concurrency=args.concurrency)
+        print(f"[sync_local_bars] 港股 日线回填完成: ok={res_hk['ok']} skip={res_hk['skip']} rows={res_hk['rows']}")
+        for e in res_hk["errors"][:10]:
             print(f"  !! {e['ts_code']}: {e['msg']}")
 
     if not args.only_bars:

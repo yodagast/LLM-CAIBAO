@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -560,6 +560,17 @@ def _is_recent_trade_date(trade_date: str | None, reference_date: str,
     return 0 <= age <= max_age_days
 
 
+def _ymd_to_date(value) -> date | None:
+    """把 YYYYMMDD (或 YYYY-MM-DD) 转成 date, 非法值返回 None。"""
+    s = str(value or "")[:10].replace("-", "")
+    if len(s) < 8:
+        return None
+    try:
+        return datetime.strptime(s[:8], "%Y%m%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
 async def _pg_daily_df(symbol: str, start_date: str, end_date: str, adj_key: str) -> pd.DataFrame | None:
     """从本地 pgsql stock_daily_bars 读取日线; 覆盖足够时返回 DataFrame (含 turnover_rate), 否则 None。
 
@@ -632,9 +643,16 @@ async def get_daily(ts_code: str, kind: str = "stock",
     if hit and (time.time() - hit[0]) < _TTL_DAILY:
         return hit[1]
 
-    # 港股走腾讯日线
+    # 港股走腾讯日线 (实时为准); 腾讯不可用时回退本地 stock_daily_bars (kind='hk')
     if kind == "hk" or str(ts_code).endswith(".HK"):
-        df = await _get_hk_daily(ts_code, start_date, end_date, adj_key)
+        try:
+            df = await _get_hk_daily(ts_code, start_date, end_date, adj_key)
+        except Exception:
+            pg_df = await _pg_daily_df(ts_code, start_date, end_date, adj_key)
+            if pg_df is None or pg_df.empty:
+                raise
+            _DAILY_CACHE[cache_key] = (time.time(), pg_df)
+            return pg_df
         df = df.sort_values("trade_date").reset_index(drop=True)
         _DAILY_CACHE[cache_key] = (time.time(), df)
         return df
@@ -1098,8 +1116,8 @@ async def _get_hk_stock_detail(ts_code: str, days: int = 250,
             raise ValueError(f"交易日 {date} 无行情数据 (可能停牌或未上市)")
         quote_row = target.iloc[0]
     else:
-        pro = _init_pro()
-        _, display_td = await _display_trade_dates(pro)
+        # 港股按港股自身交易日历选取展示日 (沿用 A 股日历会把港股截断到更旧的日期)
+        _, display_td = await _display_trade_dates_hk()
         df_t = df[df["trade_date"].astype(str) <= display_td]
         if not df_t.empty:
             df = df_t
@@ -1242,7 +1260,11 @@ async def get_stock_snapshot(ts_code: str, kind: str = "stock", days: int = 250)
     pro = _init_pro()
     display_td = datetime.now().strftime("%Y%m%d")
     try:
-        _, display_td = await _display_trade_dates(pro)
+        if kind == "hk" or str(ts_code).upper().endswith(".HK"):
+            # 港股用港股自身交易日历 (A 股日历会把港股截断到更旧的日期)
+            _, display_td = await _display_trade_dates_hk()
+        else:
+            _, display_td = await _display_trade_dates(pro)
     except Exception:
         display_td = datetime.now().strftime("%Y%m%d")
     # 展示日变化时必须换缓存键，避免 17:00 前后的价格混用。
@@ -1368,6 +1390,31 @@ async def _display_trade_dates(pro) -> tuple[str, str]:
         return latest_td, prev_td
     except Exception:
         # 探测失败: 保守返回最新交易日 (不额外限制)
+        td = datetime.now().strftime("%Y%m%d")
+        return td, td
+
+
+async def _display_trade_dates_hk() -> tuple[str, str]:
+    """返回 (latest_td, display_td): 港股展示交易日 (用腾讯 00700.HK 推断港股日历)。
+
+    港股交易日历与 A 股不同, 若沿用 A 股 (000001) 日历会把港股截断到更旧的日期,
+    导致"最近收盘价"比实际滞后数个交易日。规则与 A 股一致:
+    17:00 后显示最新交易日(当天收盘), 17:00 前显示前一交易日。
+    """
+    try:
+        from . import hk_data_service
+        df = await hk_data_service._tencent_kline_df("00700.HK")
+        if df is None or df.empty:
+            raise ValueError("hk probe empty")
+        dates = [d.strftime("%Y%m%d") for d in df["date"].tolist()]
+        if len(dates) < 2:
+            raise ValueError("hk probe too short")
+        latest_td = dates[-1]
+        if datetime.now().hour >= _DISPLAY_HOUR:
+            return latest_td, latest_td
+        return latest_td, dates[-2]
+    except Exception:
+        # 探测失败: 保守返回当日 (不额外限制)
         td = datetime.now().strftime("%Y%m%d")
         return td, td
 
@@ -1857,6 +1904,57 @@ async def backfill_daily_bars(targets: list[dict], years: int = 10,
                     await pg_service.upsert_daily_basic_rows(basic_rows)
                 if div_rows:
                     await pg_service.upsert_dividend_rows(div_rows)
+                summary["ok"] += 1
+                summary["rows"] += n
+            except Exception as e:
+                summary["skip"] += 1
+                summary["errors"].append({"ts_code": ts_code, "msg": str(e)[:120]})
+
+    await asyncio.gather(*(_one(t) for t in targets))
+    return summary
+
+
+async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
+                                 concurrency: int = 4) -> dict:
+    """把港股最近 N 年日线 (腾讯行情) 同步到本地 stock_daily_bars (kind='hk')。
+
+    targets: [{"ts_code": "00700.HK"}, ...]
+    返回 {"ok": 同步成功数, "skip": 跳过/失败数, "rows": 写入行数, "errors": [...]},
+    与 backfill_daily_bars 同构 (幂等 upsert, 可重复续跑)。
+
+    说明: 腾讯港股 K 线单次最多返回约 2000 条 (约 8 年), 因此 years 大于 8 时
+    实际只落库可得区间; 港股无复权因子/换手率, 对应列留空。
+    """
+    from . import pg_service
+    await pg_service.init_alpha158_schema()  # 确保日线表存在 (含 kind 列)
+    end_date = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=int(years * 365.25) + 10)).strftime("%Y%m%d")
+    sem = asyncio.Semaphore(concurrency)
+    summary = {"ok": 0, "skip": 0, "rows": 0, "errors": []}
+
+    async def _one(t: dict):
+        ts_code = str(t["ts_code"])
+        async with sem:
+            try:
+                df = await _get_hk_daily(ts_code, start_date=start, end_date=end_date)
+                if df is None or df.empty:
+                    summary["skip"] += 1
+                    return
+                rows = []
+                for _, r in df.iterrows():
+                    td = _ymd_to_date(r.get("trade_date"))
+                    if td is None:
+                        continue
+                    vol = _to_float(r.get("vol"))
+                    amount = _to_float(r.get("amount"))
+                    # 港股 vol 单位为股, amount 为千元 → 均价(港元) = amount*1000/vol
+                    vwap = (amount * 1000.0 / vol) if (vol and amount and vol > 0) else None
+                    rows.append((ts_code, "hk", td, _to_float(r.get("open")),
+                                 _to_float(r.get("high")), _to_float(r.get("low")),
+                                 _to_float(r.get("close")), _to_float(r.get("pre_close")),
+                                 _to_float(r.get("pct_chg")), vol, amount, vwap,
+                                 None, None))
+                n = await pg_service.upsert_daily_bars(rows)
                 summary["ok"] += 1
                 summary["rows"] += n
             except Exception as e:

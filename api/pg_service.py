@@ -1478,6 +1478,19 @@ async def target_sync_codes() -> list[str]:
     return [str(r["ts_code"]) for r in rows]
 
 
+async def my_and_strategy_codes() -> list[str]:
+    """自选股 + 策略Hub 股票列表: 我的股票(全部用户) ∪ 策略Hub策略股票的 ts_code 去重。
+
+    含 A股 / ETF / 港股 (港股以 .HK 结尾), 供每日日线同步任务使用。
+    """
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ts_code FROM my_stocks "
+            "UNION SELECT ts_code FROM custom_strategy_stocks;")
+    return [str(r["ts_code"]) for r in rows]
+
+
 async def init_hk_fundamental_schema() -> None:
     """创建 hk_fundamental_screen 表与索引 (幂等), 并对旧表迁移新增列。"""
     pool = await _get_pool()

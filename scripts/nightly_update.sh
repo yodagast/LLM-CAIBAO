@@ -12,7 +12,7 @@
 #   4) A股  财报              (init_financial.py   → financial_data)
 #   5) ETF  筛选数据          (init_etf.py         → etf_screen)
 #   6) A股  选股新字段回填    (backfill_margin_fcf.py → 补齐历史年份 毛利率/自由现金流, 全市场)
-#   7) 本地 日线+财务持久化   (sync_local_bars.py → 我的股票/策略Hub股票/ETF 最近10年日线+财务, 前端优先读库; 财务按本地已有年份增量补齐)
+#   7) 本地 日线+财务持久化   (sync_local_bars.py → 我的股票/策略Hub股票/ETF 最近10年日线+财务, A股+港股, 前端优先读库; 财务按本地已有年份增量补齐)
 #   8) A股  低价选股          (sync_low_price.py → 全市场扫描接近52周低点公司, 入库 low_price_screen, 前端优先读库)
 #   9) 港股  低价选股          (sync_hk_low_price.py → 全市场扫描接近52周低点港股, 入库 hk_low_price_screen, 前端优先读库)
 #   10) A股  每日推荐          (不更新: 默认关闭 RUN_A_RECOMMEND=0, 不执行 scan_all_market.py)
@@ -120,9 +120,9 @@ if [ "$RUN_A_BACKFILL" = "1" ]; then
     "$VENV_PY" scripts/backfill_margin_fcf.py
 fi
 
-# 7) 本地 日线+财务持久化 (我的股票/策略Hub股票/ETF 最近10年日线 + 财务, 前端优先从 pgsql 加载)
+# 7) 本地 日线+财务持久化 (我的股票/策略Hub股票/ETF 最近10年日线(A股+港股) + 财务, 前端优先从 pgsql 加载)
 if [ "$RUN_A_BARS" = "1" ]; then
-  run_step "本地 日线+财务持久化 (目标列表)" \
+  run_step "本地 日线(A股+港股)+财务持久化 (目标列表)" \
     "$VENV_PY" scripts/sync_local_bars.py
 fi
 

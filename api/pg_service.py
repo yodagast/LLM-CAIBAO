@@ -1427,6 +1427,22 @@ async def upsert_daily_bars(rows: list[tuple]) -> int:
     return len(rows)
 
 
+async def latest_bar_dates(symbols: list[str]) -> dict[str, str]:
+    """批量查询每个 symbol 在 stock_daily_bars 的最新交易日 (YYYYMMDD)。
+
+    供日线增量同步使用: 已有本地数据的股票只需回看最近若干自然日, 无需重拉全量。
+    仅返回本地已有数据的 symbol, 未入库的不在结果中。
+    """
+    if not symbols:
+        return {}
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT symbol, max(trade_date) mx FROM stock_daily_bars "
+            "WHERE symbol = ANY($1::text[]) GROUP BY symbol", list(symbols))
+    return {str(r["symbol"]): str(r["mx"]).replace("-", "")[:8] for r in rows}
+
+
 async def daily_bars_stats(symbol: str) -> dict | None:
     """查询某 symbol 在 stock_daily_bars 的覆盖统计 {n, min_date, max_date}。"""
     pool = await _get_pool()

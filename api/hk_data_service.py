@@ -457,11 +457,20 @@ async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
     symbol = ts_code.split(".")[0]
     end = datetime.now().strftime("%Y-%m-%d")
     params = {"param": f"hk{symbol},day,2000-01-01,{end},2000,"}
-    try:
-        client = await _get_http_client()
-        r = await client.get(TENCENT_KLINE_URL, params=params)
-        j = r.json()
-    except Exception:
+    j = None
+    # 网络瞬时故障 (超时/连接重置) 重试, 避免批量同步把有效股票误判为无数据
+    for attempt in range(3):
+        try:
+            client = await _get_http_client()
+            r = await client.get(TENCENT_KLINE_URL, params=params)
+            j = r.json()
+            break
+        except Exception:
+            if attempt < 2:
+                await asyncio.sleep(0.8 * (attempt + 1))
+                continue
+            return pd.DataFrame()
+    if j is None:
         return pd.DataFrame()
     d = (j.get("data") or {}).get(f"hk{symbol}") or {}
     arr = d.get("day") or d.get("qfqday") or []

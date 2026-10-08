@@ -7,16 +7,19 @@
   - 之后再读这些股票的日线时可直接命中本地库, 减少外部接口调用
 
 用法:
-    python scripts/sync_target_daily.py                  # 默认最近 10 年, A股+港股
-    python scripts/sync_target_daily.py --years 5        # 最近 5 年
-    python scripts/sync_target_daily.py --only-a         # 只同步 A股/ETF
-    python scripts/sync_target_daily.py --only-hk        # 只同步港股
-    LIMIT=20 python scripts/sync_target_daily.py         # 仅处理前 20 只 (测试/续跑)
+    python scripts/sync_target_daily.py                  # 默认**增量**更新 (按本地最新日回看)
+    python scripts/sync_target_daily.py --full            # 强制全量 (最近 10 年)
+    python scripts/sync_target_daily.py --years 5 --full  # 全量最近 5 年
+    python scripts/sync_target_daily.py --only-a          # 只同步 A股/ETF
+    python scripts/sync_target_daily.py --only-hk         # 只同步港股
+    LIMIT=20 python scripts/sync_target_daily.py          # 仅处理前 20 只 (测试/续跑)
+
+增量策略: 已入库的股票只回看 --lookback-days 天 (默认 30) 并幂等 upsert;
+真正新加入自选股/策略Hub的股票 (本地无数据) 自动按 years 全量首次入库, 因此每日只跑增量即可。
 
 定时任务 (每天 17:30, 收盘数据落定后):
-    30 17 * * * /Users/huangyong/git/LLM-CAIBAO/.venv/bin/python \
-        /Users/huangyong/git/LLM-CAIBAO/scripts/sync_target_daily.py \
-        >> /Users/huangyong/git/LLM-CAIBAO/logs/sync_target_daily.log 2>&1
+    30 17 * * * cd /path/to/LLM-CAIBAO && .venv/bin/python scripts/sync_target_daily.py \
+        >> logs/sync_target_daily.log 2>&1
 
 依赖: 项目 .venv (tushare token 从根 .env 读取), 本地 PostgreSQL (llm_caibao)。
 幂等 upsert, 可重复执行。
@@ -49,9 +52,15 @@ async def main() -> None:
                         help="最多处理多少只 (0=全部, 测试/续跑用)")
     parser.add_argument("--concurrency", type=int, default=int(os.getenv("CONCURRENCY", "4")),
                         help="并发上限 (默认 4, 控接口限频)")
+    parser.add_argument("--full", action="store_true",
+                        help="强制全量拉取最近 years 年 (默认增量: 按本地最新交易日回看 lookback 天)")
+    parser.add_argument("--lookback-days", type=int, default=int(os.getenv("LOOKBACK_DAYS", "30")),
+                        help="增量回看自然日数 (默认 30, 覆盖长假)")
     parser.add_argument("--only-a", action="store_true", help="只同步 A股/ETF")
     parser.add_argument("--only-hk", action="store_true", help="只同步港股")
     args = parser.parse_args()
+
+    incremental = not args.full
 
     print("[sync_target_daily] 获取目标列表 (我的股票 ∪ 策略Hub股票)...")
     codes = await pg_service.my_and_strategy_codes()
@@ -60,6 +69,8 @@ async def main() -> None:
     a_targets = [{"ts_code": c, "kind": classify(c)} for c in codes if classify(c) != "hk"]
     hk_targets = [{"ts_code": c} for c in codes if classify(c) == "hk"]
     print(f"[sync_target_daily] 目标 {len(codes)} 只 (A股/ETF {len(a_targets)}, 港股 {len(hk_targets)})")
+    mode = f"增量 (回看 {args.lookback_days} 天)" if incremental else f"全量 ({args.years} 年)"
+    print(f"[sync_target_daily] 模式: {mode}; 本地无数据的股票自动全量首次入库")
 
     if not a_targets and not hk_targets:
         print("[sync_target_daily] 目标列表为空 (自选股与策略Hub均无股票), 跳过。")
@@ -67,18 +78,20 @@ async def main() -> None:
 
     failed = 0
     if a_targets and not args.only_hk:
-        print(f"[sync_target_daily] 同步 A股/ETF 日线 (最近 {args.years} 年)...")
+        print(f"[sync_target_daily] 同步 A股/ETF 日线 ({mode})...")
         res = await data_service.backfill_daily_bars(
-            a_targets, years=args.years, concurrency=args.concurrency)
+            a_targets, years=args.years, concurrency=args.concurrency,
+            incremental=incremental, lookback_days=args.lookback_days)
         print(f"[sync_target_daily] A股/ETF 完成: ok={res['ok']} skip={res['skip']} rows={res['rows']}")
         for e in res["errors"][:10]:
             print(f"  !! {e['ts_code']}: {e['msg']}")
         failed += res["skip"]
 
     if hk_targets and not args.only_a:
-        print(f"[sync_target_daily] 同步 港股 日线 (最近 {args.years} 年)...")
+        print(f"[sync_target_daily] 同步 港股 日线 ({mode})...")
         res = await data_service.backfill_hk_daily_bars(
-            hk_targets, years=args.years, concurrency=args.concurrency)
+            hk_targets, years=args.years, concurrency=args.concurrency,
+            incremental=incremental, lookback_days=args.lookback_days)
         print(f"[sync_target_daily] 港股 完成: ok={res['ok']} skip={res['skip']} rows={res['rows']}")
         for e in res["errors"][:10]:
             print(f"  !! {e['ts_code']}: {e['msg']}")

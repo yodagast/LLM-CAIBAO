@@ -530,14 +530,10 @@ async def stock_detail(code: str, date: str = Query("", description="交易日 Y
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取股票详情失败: {e}")
 
-    # 补充行业 (resolve_code 不返回行业)
-    try:
-        stocks = await data_service._stock_basic()
-        hit = stocks[stocks["ts_code"] == info["ts_code"]]
-        if not hit.empty:
-            info["industry"] = str(hit.iloc[0].get("industry") or "")
-    except Exception:
-        pass
+    # 补充行业 (resolve_code 不返回行业; 港股走东财行业缓存)
+    industry = await data_service.industry_of(info["ts_code"])
+    if industry:
+        info["industry"] = industry
 
     return {"info": info, **detail}
 
@@ -1302,11 +1298,6 @@ async def my_stocks_list(request: Request) -> dict:
     """
     user = await _require_user(request)
     stocks = await pg_service.list_my_stocks(user["id"])
-    try:
-        basic_df = await data_service._stock_basic()  # 取一次供全部股票补行业
-    except Exception:
-        basic_df = None
-
     snaps = await data_service.get_snapshots_batch([s["ts_code"] for s in stocks])
 
     items = []
@@ -1320,11 +1311,8 @@ async def my_stocks_list(request: Request) -> dict:
             snap["name"] = info["name"]
             snap["kind"] = info["kind"]
             snap["added_at"] = s["added_at"]
-            snap["industry"] = ""
-            if basic_df is not None:
-                hit = basic_df[basic_df["ts_code"] == info["ts_code"]]
-                if not hit.empty:
-                    snap["industry"] = str(hit.iloc[0].get("industry") or "")
+            # 行业: A股走 stock_basic, 港股走东财行业缓存 (港股不在 A 股表中)
+            snap["industry"] = await data_service.industry_of(info["ts_code"])
             items.append(snap)
         except Exception:
             continue

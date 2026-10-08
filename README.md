@@ -229,12 +229,14 @@ crontab -r   # 注意: 会清空全部 crontab, 建议手动编辑删除对应�
 
 `scripts/sync_target_daily.py` 每天收盘后把「我的股票 ∪ 策略Hub股票」的**A股/ETF(走
 tushare) + 港股(走腾讯K线)** 日线持久化到本地 `stock_daily_bars` (港股 `kind='hk'`)。
-适用于希望收盘后尽快落库、且无需跑全市场重算的场景。
+**默认增量**: 已入库的股票只回看 `--lookback-days` 天 (默认 30, 覆盖长假), 真正新加入
+自选股/策略Hub的股票 (本地无数据) 自动按 `--years` 全量首次入库。
 
 ```bash
-# 手动运行 (默认最近 10 年, A股+港股)
+# 手动运行 (默认增量, A股+港股)
 .venv/bin/python scripts/sync_target_daily.py
 .venv/bin/python scripts/sync_target_daily.py --only-hk        # 只同步港股
+.venv/bin/python scripts/sync_target_daily.py --full           # 强制全量 (最近 10 年)
 LIMIT=20 .venv/bin/python scripts/sync_target_daily.py         # 仅前 20 只 (测试)
 
 # crontab (每天 17:30, 收盘数据落定后):
@@ -244,7 +246,9 @@ LIMIT=20 .venv/bin/python scripts/sync_target_daily.py         # 仅前 20 只 (
 
 - 港股日线数据源为腾讯港股 K 线 (单次最多约 2000 条 ≈ 8 年), 故 `--years` 超过 8 时
   实际只落库可得区间; 港股无复权因子/换手率, 对应列留空。
-- 夜间任务第 7 步 (`sync_local_bars.py`) 同样覆盖港股 (目标列表含 ETF), 两个入口互为补充, 均可幂等重跑。
+- **夜间任务已包含该能力**: 第 7 步 (`sync_target_daily.py`, 开关 `RUN_TARGET_BARS`) 与
+  第 8 步 (`sync_local_bars.py`, 开关 `RUN_A_BARS`) 均默认增量运行, 两个入口互为补充, 幂等可重跑。
+- 增量回看天数可用 `LOOKBACK_DAYS` 环境变量覆盖。
 
 自动更新内容与顺序 (各步骤独立, 单个失败不阻塞后续, 日志记录):
 
@@ -254,7 +258,13 @@ LIMIT=20 .venv/bin/python scripts/sync_target_daily.py         # 仅前 20 只 (
 | 2 | A股红利低波 | `init_redlowvol.py` | `red_low_vol` | 全市场, 较慢 |
 | 3 | A股基本面 | `init_fundamental.py` | `fundamental_screen` | 全市场, 较慢 |
 | 4 | A股财报 | `init_financial.py` | `financial_data` | 全市场, 较慢 |
-| 5 | A股每日推荐 (默认关) | `scan_all_market.py` | `daily_band_recommend` | 设 `RUN_A_RECOMMEND=1` 开启, 很慢 |
+| 5 | A股选股新字段回填 | `backfill_margin_fcf.py` | `red_low_vol` / `fundamental_screen` | 仅回填 NULL 行 |
+| 6 | 自选股/策略Hub 日线增量同步 | `sync_target_daily.py --lookback-days 30` | `stock_daily_bars` | A股/ETF + 港股, 增量 |
+| 7 | 本地日线+财务持久化 | `sync_local_bars.py --lookback-days 30` | `stock_daily_bars` / `financial_data` | 增量为主, 新股票自动全量 |
+| 8 | A股低价选股 | `sync_low_price.py` | `low_price_screen` | 全市场扫描 |
+| 9 | 港股低价选股 | `sync_hk_low_price.py` | `hk_low_price_screen` | 全市场扫描 |
+| 10 | 公司大事 | `sync_stock_events.py` | `stock_events` | 增量/月度更新 |
+| 11 | A股每日推荐 (默认关) | `scan_all_market.py` | `daily_band_recommend` | 设 `RUN_A_RECOMMEND=1` 开启, 很慢 |
 
 - 默认更新年份 = 当前年-1 (最近完整财年), 可用 `START_YEAR`/`END_YEAR` 覆盖。
 - 日志写入 `logs/nightly_<时间戳>.log`; 锁文件防止上次未跑完导致本次重叠。

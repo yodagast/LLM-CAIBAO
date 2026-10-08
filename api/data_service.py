@@ -28,6 +28,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # 本地行情只作为短暂断网时的兜底，超过该天数就必须重新取实时数据。
 _RECENT_DATA_MAX_AGE_DAYS = 7
 
+# 港股本地日线的新鲜度容忍值 (天): 港股数据源(腾讯K线)本身只有约 8 年历史, 且部分
+# 港股(新股/长期停牌)在腾讯接口取不到数据 → 放宽到 30 天, 避免本地库已被 sync_target_daily
+# 落库却因"端点过旧"而弃用, 导致前端港股日线空白。已落库数据由每日定时任务增量刷新。
+_HK_STALE_MAX_AGE_DAYS = 30
+
 
 def _load_env_token() -> None:
     """加载 ../.env 中的环境变量 (若未设置)。"""
@@ -56,8 +61,16 @@ class _AsyncPro:
 
     async def _client_ensure(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(base_url=self.BASE_URL, timeout=30.0)
+            limits = httpx.Limits(max_connections=16, max_keepalive_connections=8)
+            self._client = httpx.AsyncClient(base_url=self.BASE_URL, timeout=60.0,
+                                             limits=limits)
         return self._client
+
+    async def aclose(self) -> None:
+        """关闭底层 HTTP 客户端 (释放连接)。"""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     @staticmethod
     def _nonempty(params: dict) -> dict:
@@ -71,8 +84,16 @@ class _AsyncPro:
         body = {"api_name": api_name, "token": self._token,
                 "params": params or {}, "fields": fields}
         for attempt in range(4):
-            resp = await client.post("", json=body)
-            data = resp.json()
+            try:
+                resp = await client.post("", json=body)
+                data = resp.json()
+            except Exception:
+                # 网络瞬时故障 (连接超时/重置等): 退避重试, 避免夜间批量同步因一次
+                # 抖动被标记失败 (异常消息常为空, 需按类型重试)
+                if attempt < 3:
+                    await asyncio.sleep(0.8 * (attempt + 1))
+                    continue
+                raise
             if data.get("code", -1) == 0:
                 flds = data["data"]["fields"]
                 items = data["data"]["items"] or []
@@ -285,6 +306,32 @@ async def resolve_code(code: str) -> dict:
 
 # A股股票代码前缀: 6(SH) 0/3(SZ) 4/8(北交所); 其余 1/5 开头多为基金/ETF
 FUND_PREFIXES = ("51", "56", "58", "50", "15", "16", "18", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169", "180", "181", "182", "183", "184", "185", "186", "187", "188", "189")
+
+
+async def industry_of(ts_code: str) -> str:
+    """查某 ts_code 的行业名 (A股/ETF 用 tushare stock_basic; 港股用东财行业缓存)。
+
+    `resolve_code` 不返回行业, 港股更是完全不在 A 股 stock_basic 中 —— 之前前端
+    港股详情的「行业」恒显示「—」。统一在此解析, 供详情页/自选股列表复用。
+    失败或无数据返回空字符串。
+    """
+    ts = str(ts_code or "").strip().upper()
+    if not ts:
+        return ""
+    if ts.endswith(".HK"):
+        try:
+            from . import hk_data_service
+            return str((await hk_data_service.industry_map()).get(ts) or "")
+        except Exception:
+            return ""
+    try:
+        stocks = await _stock_basic()
+        hit = stocks[stocks["ts_code"] == ts]
+        if not hit.empty:
+            return str(hit.iloc[0].get("industry") or "")
+    except Exception:
+        pass
+    return ""
 
 
 def _is_fund_code(ts_code: str) -> bool:
@@ -571,15 +618,22 @@ def _ymd_to_date(value) -> date | None:
         return None
 
 
-async def _pg_daily_df(symbol: str, start_date: str, end_date: str, adj_key: str) -> pd.DataFrame | None:
+async def _pg_daily_df(symbol: str, start_date: str, end_date: str, adj_key: str,
+                       kind: str = "", allow_stale: bool = False) -> pd.DataFrame | None:
     """从本地 pgsql stock_daily_bars 读取日线; 覆盖足够时返回 DataFrame (含 turnover_rate), 否则 None。
 
     这是「前端优先从 pgsql 加载」的核心: 本地已有数据时不再打 tushare。
     symbol 为完整 ts_code (如 600036.SH), 与 alpha158 写入约定一致。
     adj_key: "" 原始价 / "qfq" 前复权 / "hfq" 后复权 (用 adj_factor 重建)。
+    kind: stock/fund/hk; 留空时按 symbol 推断。**港股(腾讯源单次上限约 2000 条 ≈ 8 年),
+          不能用 A 股的 400 天起始容忍度**, 否则请求 10 年窗口时本地库永远判为
+          「起始覆盖不足」而被弃用。
+    allow_stale: True 时跳过「末端新鲜度」检查 (远端数据源完全取不到时的最后兜底,
+          如停牌/退市港股, 有历史数据总比报错好)。
     返回 df 带 attrs["data_source"]="pg", 供接口透出数据源。
     """
     from . import pg_service
+    is_hk = kind == "hk" or str(symbol).upper().endswith(".HK")
     try:
         stats = await pg_service.daily_bars_stats(symbol)
     except Exception:
@@ -593,9 +647,16 @@ async def _pg_daily_df(symbol: str, start_date: str, end_date: str, adj_key: str
     # (stats 中 min/max 为 date 类型, 转 str 形如 'YYYY-MM-DD', 先去横线)
     mn = stats["min_date"].replace("-", "")[:8]
     mx = stats["max_date"].replace("-", "")[:8]
-    if mn > _add_days(s, 400):
+    if is_hk:
+        # 港股: 本地库即「腾讯可得全量」(已按 count=2000 取满历史), 且部分港股腾讯接口
+        # 完全取不到数据 —— 因此不能用 A 股的起始覆盖要求(会把 IPO 较晚/取不到的港股
+        # 全部判为"覆盖不足"从而退回一个取不到数的腾讯接口), 只要求数据量足够且末端
+        # 不过期(放宽到 30 天, 容忍停牌/长期无成交的港股)。
+        if not allow_stale and mx < _add_days(e, -_HK_STALE_MAX_AGE_DAYS):
+            return None
+    elif mn > _add_days(s, 400):
         return None
-    if mx < _add_days(e, -_RECENT_DATA_MAX_AGE_DAYS):
+    if not is_hk and not allow_stale and mx < _add_days(e, -_RECENT_DATA_MAX_AGE_DAYS):
         return None
     try:
         rows = await pg_service.query_daily_bars(symbol, s, e)
@@ -643,16 +704,26 @@ async def get_daily(ts_code: str, kind: str = "stock",
     if hit and (time.time() - hit[0]) < _TTL_DAILY:
         return hit[1]
 
-    # 港股走腾讯日线 (实时为准); 腾讯不可用时回退本地 stock_daily_bars (kind='hk')
+    # 港股: **优先本地 pgsql** (sync_target_daily.py --only-hk 已落库, 不受腾讯接口
+    # 限频/取数失败影响); 本地无数据或覆盖不足时回退腾讯实时行情。
     if kind == "hk" or str(ts_code).endswith(".HK"):
+        try:
+            pg_df = await _pg_daily_df(ts_code, start_date, end_date, adj_key, "hk")
+            if pg_df is not None and not pg_df.empty:
+                _DAILY_CACHE[cache_key] = (time.time(), pg_df)
+                return pg_df
+        except Exception:
+            pass
+        # 腾讯取不到 (停牌/退市/新上市无 K 线) 时, 用本地历史数据兜底 (允许略旧)
         try:
             df = await _get_hk_daily(ts_code, start_date, end_date, adj_key)
         except Exception:
-            pg_df = await _pg_daily_df(ts_code, start_date, end_date, adj_key)
-            if pg_df is None or pg_df.empty:
+            stale = await _pg_daily_df(ts_code, start_date, end_date, adj_key, "hk",
+                                       allow_stale=True)
+            if stale is None or stale.empty:
                 raise
-            _DAILY_CACHE[cache_key] = (time.time(), pg_df)
-            return pg_df
+            _DAILY_CACHE[cache_key] = (time.time(), stale)
+            return stale
         df = df.sort_values("trade_date").reset_index(drop=True)
         _DAILY_CACHE[cache_key] = (time.time(), df)
         return df
@@ -878,13 +949,34 @@ async def get_kline(ts_code: str, kind: str = "stock", freq: str = "D", adj: str
 async def _hk_kline(ts_code: str, freq: str = "D", adj: str = "",
                     start_date: str = "", end_date: str = "",
                     hist_years: int = 10) -> list[dict]:
-    """港股 K 线 (腾讯日线, 不复权); D 直接返回, W/M 由日线聚合。"""
+    """港股 K 线 (D 直接返回, W/M 由日线聚合)。
+
+    与 get_daily 一致: **优先本地 pgsql** (已落库的港股日线, 不受腾讯接口限频影响),
+    本地无数据/覆盖不足才回退腾讯行情。
+    """
+    s = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
+    e = end_date or datetime.now().strftime("%Y%m%d")
+    # 优先本地 pgsql
+    try:
+        pg_df = await _pg_daily_df(ts_code, s, e, (adj or "").strip().lower(), "hk")
+        if pg_df is not None and not pg_df.empty:
+            if freq.upper() == "D":
+                return _df_to_bars(pg_df)
+            return _df_to_agg_bars(pg_df, freq.upper())
+    except Exception:
+        pass
+
     from . import hk_data_service
     df = await hk_data_service._tencent_kline_df(ts_code)
     if df.empty:
-        raise ValueError(f"未获取到 {ts_code} 的港股日线数据。")
-    s = start_date or (datetime.now() - timedelta(days=int(hist_years * 365.25) + 10)).strftime("%Y%m%d")
-    e = end_date or datetime.now().strftime("%Y%m%d")
+        # 腾讯取不到 (停牌/退市/新上市无 K 线) 时, 用本地历史数据兜底 (允许略旧)
+        stale = await _pg_daily_df(ts_code, s, e, (adj or "").strip().lower(), "hk",
+                                   allow_stale=True)
+        if stale is None or stale.empty:
+            raise ValueError(f"未获取到 {ts_code} 的港股日线数据。")
+        if freq.upper() == "D":
+            return _df_to_bars(stale)
+        return _df_to_agg_bars(stale, freq.upper())
     df = df[(df["date"] >= pd.to_datetime(s)) & (df["date"] <= pd.to_datetime(e))].copy()
     if df.empty:
         raise ValueError(f"未获取到 {ts_code} 在 {s}~{e} 的港股K线数据。")
@@ -1791,10 +1883,13 @@ def _classify_ts_code(ts_code: str) -> str:
 
 
 async def backfill_daily_bars(targets: list[dict], years: int = 10,
-                              concurrency: int = 4) -> dict:
+                              concurrency: int = 4, incremental: bool = False,
+                              lookback_days: int = 30) -> dict:
     """把目标股票/ETF 最近 N 年日线(原始价+复权因子+换手率)同步到本地 stock_daily_bars。
 
     targets: [{"ts_code": "600036.SH", "kind": "stock"|"fund"}, ...]
+    incremental: True 时按每只股票本地最新交易日只回看 lookback_days 天 (增量更新);
+                 本地无数据的股票仍按 years 全量拉取 (首次入库)。
     返回 {"ok": 同步成功数, "skip": 跳过/失败数, "rows": 写入行数, "errors": [...]}。
     供 scripts/sync_local_bars.py 与每日定时任务调用 (幂等 upsert, 可重复续跑)。
     """
@@ -1803,9 +1898,22 @@ async def backfill_daily_bars(targets: list[dict], years: int = 10,
     await pg_service.init_daily_basic_schema()  # 估值/换手率表
     await pg_service.init_dividend_schema()     # 分红明细表
     end_date = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=int(years * 365.25) + 10)).strftime("%Y%m%d")
+    full_start = (datetime.now() - timedelta(days=int(years * 365.25) + 10)).strftime("%Y%m%d")
+    # 增量模式: 先查每只股票本地最新交易日, 有数据则只回看 lookback_days 天
+    incr_start: dict[str, str] = {}
+    if incremental:
+        try:
+            latest = await pg_service.latest_bar_dates([t["ts_code"] for t in targets])
+            for t in targets:
+                mx = latest.get(str(t["ts_code"]))
+                if mx:
+                    incr_start[str(t["ts_code"])] = _add_days(mx, -lookback_days)
+        except Exception:
+            incr_start = {}
     sem = asyncio.Semaphore(concurrency)
     summary = {"ok": 0, "skip": 0, "rows": 0, "errors": []}
+    # 整批复用同一 HTTP 客户端 (每只股票各建客户端会耗尽连接, 导致 ConnectTimeout)
+    shared_pro = _init_pro()
 
     def _d(v):
         if v is None:
@@ -1829,9 +1937,10 @@ async def backfill_daily_bars(targets: list[dict], years: int = 10,
         ts_code = t["ts_code"]
         kind = t.get("kind") or _classify_ts_code(ts_code)
         symbol = str(ts_code)  # 与 alpha158 约定一致: symbol = 完整 ts_code (带后缀)
+        start = incr_start.get(str(ts_code), full_start)  # 增量: 从本地最新日回看
         async with sem:
             try:
-                pro = _init_pro()
+                pro = shared_pro
                 df = await pro.daily(ts_code=ts_code, start_date=start, end_date=end_date)
                 if df is None or df.empty:
                     if kind == "fund":
@@ -1908,17 +2017,22 @@ async def backfill_daily_bars(targets: list[dict], years: int = 10,
                 summary["rows"] += n
             except Exception as e:
                 summary["skip"] += 1
-                summary["errors"].append({"ts_code": ts_code, "msg": str(e)[:120]})
+                summary["errors"].append({"ts_code": ts_code,
+                                          "msg": f"{type(e).__name__}: {e}".strip()[:140]})
 
     await asyncio.gather(*(_one(t) for t in targets))
+    await shared_pro.aclose()
     return summary
 
 
 async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
-                                 concurrency: int = 4) -> dict:
+                                 concurrency: int = 4, incremental: bool = False,
+                                 lookback_days: int = 30) -> dict:
     """把港股最近 N 年日线 (腾讯行情) 同步到本地 stock_daily_bars (kind='hk')。
 
     targets: [{"ts_code": "00700.HK"}, ...]
+    incremental: True 时按每只股票本地最新交易日只回看 lookback_days 天 (增量更新);
+                 本地无数据的股票仍按 years 全量拉取 (首次入库)。
     返回 {"ok": 同步成功数, "skip": 跳过/失败数, "rows": 写入行数, "errors": [...]},
     与 backfill_daily_bars 同构 (幂等 upsert, 可重复续跑)。
 
@@ -1928,12 +2042,23 @@ async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
     from . import pg_service
     await pg_service.init_alpha158_schema()  # 确保日线表存在 (含 kind 列)
     end_date = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=int(years * 365.25) + 10)).strftime("%Y%m%d")
+    full_start = (datetime.now() - timedelta(days=int(years * 365.25) + 10)).strftime("%Y%m%d")
+    incr_start: dict[str, str] = {}
+    if incremental:
+        try:
+            latest = await pg_service.latest_bar_dates([str(t["ts_code"]) for t in targets])
+            for t in targets:
+                mx = latest.get(str(t["ts_code"]))
+                if mx:
+                    incr_start[str(t["ts_code"])] = _add_days(mx, -lookback_days)
+        except Exception:
+            incr_start = {}
     sem = asyncio.Semaphore(concurrency)
     summary = {"ok": 0, "skip": 0, "rows": 0, "errors": []}
 
     async def _one(t: dict):
         ts_code = str(t["ts_code"])
+        start = incr_start.get(ts_code, full_start)  # 增量: 从本地最新日回看
         async with sem:
             try:
                 df = await _get_hk_daily(ts_code, start_date=start, end_date=end_date)
@@ -1959,7 +2084,8 @@ async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
                 summary["rows"] += n
             except Exception as e:
                 summary["skip"] += 1
-                summary["errors"].append({"ts_code": ts_code, "msg": str(e)[:120]})
+                summary["errors"].append({"ts_code": ts_code,
+                                          "msg": f"{type(e).__name__}: {e}".strip()[:140]})
 
     await asyncio.gather(*(_one(t) for t in targets))
     return summary

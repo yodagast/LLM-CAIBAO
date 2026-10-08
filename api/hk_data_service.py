@@ -44,6 +44,14 @@ EM_DATACENTER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get
 
 # 腾讯港股 K 线
 TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+# 腾讯实时行情 (含当日 OHLC, 可批量) — 日线接口被反爬拦截时的增量兜底
+#   ⚠️ 2026-10 起 web.ifzq.gtimg.cn 日线域会被腾讯 WAF 拦 (HTTP 501 → waf.tencent.com),
+#      东财 push2his 也间歇拒绝; 而 qt.gtimg.cn 实时域稳定可用, 至少能保证"当日收盘"
+#      落库, 使前端「最近收盘价」不冻结。
+TENCENT_QT_URL = "https://qt.gtimg.cn/q="
+# 东方财富 K 线域 (第 2 历史数据源)
+EM_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+EM_HK_MARKET_ID = "116"   # 东财 secid 的港股市场号
 
 _UA = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -443,6 +451,8 @@ async def industry_map(use_cache: bool = True) -> dict[str, str]:
 # 腾讯港股日线缓存: 15 分钟内复用，跨交易日或服务长时间运行时自动刷新。
 _TENCENT_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _TENCENT_CACHE_TTL = 15 * 60
+# 最近一次腾讯 K 线请求的异常 (""=成功); 用于区分「接口不可用」与「该股票无数据」
+_TENCENT_LAST_ERROR: str = ""
 
 
 async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
@@ -450,6 +460,9 @@ async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
 
     腾讯 fqkline count 参数上限约 2000~3000, 超限返回空; 用 count=2000 取最近约 8 年
     (被截断时返回最近 2000 条), 足够近年选股 (2020+)。
+
+    返回空 DataFrame 可能是两种原因, 调用方需注意: ①该股票确实无数据(停牌/次新);
+    ②腾讯接口不可用(限频/网络/DNS)。用 `_tencent_last_error()` 区分。
     """
     cached = _TENCENT_CACHE.get(ts_code)
     if cached and time.time() - cached[0] < _TENCENT_CACHE_TTL:
@@ -458,18 +471,24 @@ async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
     end = datetime.now().strftime("%Y-%m-%d")
     params = {"param": f"hk{symbol},day,2000-01-01,{end},2000,"}
     j = None
-    # 网络瞬时故障 (超时/连接重置) 重试, 避免批量同步把有效股票误判为无数据
-    for attempt in range(3):
+    last_err = None
+    # 网络瞬时故障 (超时/连接重置/DNS) 重试 4 次, 指数退避 →
+    # 夜间批量同步时一次网络抖动不该让整批港股被标记失败
+    for attempt in range(4):
         try:
             client = await _get_http_client()
             r = await client.get(TENCENT_KLINE_URL, params=params)
+            r.raise_for_status()
             j = r.json()
+            last_err = None
             break
-        except Exception:
-            if attempt < 2:
-                await asyncio.sleep(0.8 * (attempt + 1))
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            if attempt < 3:
+                await asyncio.sleep(0.8 * (2 ** attempt))
                 continue
-            return pd.DataFrame()
+    global _TENCENT_LAST_ERROR
+    _TENCENT_LAST_ERROR = last_err or ""
     if j is None:
         return pd.DataFrame()
     d = (j.get("data") or {}).get(f"hk{symbol}") or {}
@@ -496,6 +515,164 @@ async def _tencent_kline_df(ts_code: str) -> pd.DataFrame:
     df = df.sort_values("date").reset_index(drop=True)
     _TENCENT_CACHE[ts_code] = (time.time(), df)
     return df
+
+
+def _tencent_last_error() -> str:
+    """最近一次腾讯港股 K 线请求的异常信息 (空=最近一次请求成功)。
+
+    供调用方区分「接口不可用」与「该股票真无数据」: 前者应提示网络问题, 后者才是
+    正常的无数据。
+    """
+    return _TENCENT_LAST_ERROR
+
+
+def _parse_kline_rows(arr: list) -> pd.DataFrame:
+    """把 [[date, open, close, high, low, vol], ...] 解析成标准 df (date/open/close/high/low/vol)。
+
+    open/high/low/close 可空 (如停牌日返回 0 或空串) → 置 NaN, 由调用方丢弃。
+    """
+    rows = []
+    for item in arr or []:
+        try:
+            rows.append({
+                "date": item[0],
+                "open": float(item[1]),
+                "close": float(item[2]),
+                "high": float(item[3]),
+                "low": float(item[4]),
+                "vol": float(item[5]) if len(item) > 5 and item[5] not in (None, "") else None,
+            })
+        except (IndexError, TypeError, ValueError):
+            continue
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.dropna(subset=["close"])
+    if df.empty:
+        return df
+    df = df.sort_values("date").drop_duplicates(subset="date", keep="last")
+    return df.reset_index(drop=True)
+
+
+async def _em_kline_df(ts_code: str) -> pd.DataFrame:
+    """东方财富港股日线 (第 2 数据源)。失败返回空 DataFrame。
+
+    接口: push2his.eastmoney.com/api/qt/stock/kline/get, secid=116.<5位代码>
+    返回 klines: ["2026-01-02,开,收,高,低,成交量,成交额", ...] (前复权=fqt 1, 不复权=0)
+    """
+    global _TENCENT_LAST_ERROR
+    symbol = ts_code.split(".")[0]
+    params = {
+        "secid": f"{EM_HK_MARKET_ID}.{symbol}",
+        "fields1": "f1,f2,f3,f4,f5",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57",
+        "klt": "101",           # 日线
+        "fqt": "0",             # 不复权 (与腾讯口径一致)
+        "beg": "19900101", "end": "20500101",
+    }
+    for attempt in range(3):
+        try:
+            client = await _get_http_client()
+            r = await client.get(EM_KLINE_URL, params=params)
+            r.raise_for_status()
+            data = r.json().get("data") or {}
+            arr = [ln.split(",")[:6] for ln in (data.get("klines") or [])]
+            return _parse_kline_rows(arr)
+        except Exception as e:
+            if attempt < 2:
+                await asyncio.sleep(0.6 * (attempt + 1))
+                continue
+            _TENCENT_LAST_ERROR = f"{type(e).__name__}: {e}"
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
+async def _tencent_qt_quotes(codes: list[str]) -> pd.DataFrame:
+    """腾讯实时行情批量查询 (qt.gtimg.cn), 返回当日 OHLC。
+
+    用途: 日线历史接口(腾讯 fqkline / 东财 push2his)被反爬拦截时, 至少把**当日收盘**
+    落库, 保证前端「最近收盘价」不冻结。列: date/open/close/high/low/vol/pre_close/pct_chg。
+    可一次请求多只 (逗号分隔), 日常增量只需 1~2 次请求。
+    """
+    out_rows = []
+    if not codes:
+        return pd.DataFrame()
+    symbols = [c.split(".")[0] for c in codes]
+    # 分批 (URL 长度限制), 每批 60 只
+    for i in range(0, len(symbols), 60):
+        batch = symbols[i:i + 60]
+        q = ",".join(f"hk{s}" for s in batch)
+        try:
+            client = await _get_http_client()
+            r = await client.get(f"{TENCENT_QT_URL}{q}")
+            r.raise_for_status()
+            text = r.content.decode("gbk", errors="replace")
+        except Exception:
+            continue
+        for line in text.splitlines():
+            if "=" not in line:
+                continue
+            _, _, val = line.partition("=")
+            parts = val.strip().rstrip(";").strip('"').split("~")
+            if len(parts) < 38:
+                continue
+            def _f(idx):
+                try:
+                    v = parts[idx].strip()
+                    return float(v) if v not in ("", "-") else None
+                except (IndexError, ValueError):
+                    return None
+            ts = str(parts[30]).strip()          # "2026/10/08 16:08:24"
+            day = ts.split(" ")[0].replace("/", "-") if ts else ""
+            if not day:
+                continue
+            close = _f(3)      # 当前价/收盘
+            if close is None:
+                continue
+            # 停牌股会返回 open/high/low = 0 → 视为无数据 (NaN), 避免落下 0 价
+            o, h, l = _f(5), _f(33), _f(34)
+            out_rows.append({
+                "date": day, "close": close,
+                "open": o if o else None,
+                "high": h if h else None,
+                "low": l if l else None,
+                "vol": _f(6),
+                "pre_close": _f(4), "pct_chg": _f(32),
+                "symbol": "hk" + str(parts[2]).strip(),
+            })
+    if not out_rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(out_rows)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values("date").reset_index(drop=True)
+
+
+# 实时行情缓存 (5 分钟): 逐只调用时避免重复请求同一批
+_QT_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_QT_CACHE_TTL = 300
+
+
+async def qt_quotes_cached(codes: list[str]) -> pd.DataFrame:
+    """带缓存的腾讯实时行情批量查询 (5 分钟 TTL)。全部命中缓存时 0 次请求。"""
+    if not codes:
+        return pd.DataFrame()
+    now = time.time()
+    missing = [c for c in codes
+               if not (_QT_CACHE.get(c) and now - _QT_CACHE[c][0] < _QT_CACHE_TTL)]
+    if missing:
+        df = await _tencent_qt_quotes(missing)
+        got = set(df["symbol"].tolist()) if not df.empty else set()
+        # 未返回的也写空缓存, 避免每次重试
+        for c in missing:
+            sym = "hk" + c.split(".")[0]
+            sub = df[df["symbol"] == sym] if sym in got else pd.DataFrame()
+            _QT_CACHE[c] = (now, sub.reset_index(drop=True))
+    parts = [_QT_CACHE[c][1] for c in codes if _QT_CACHE.get(c) is not None]
+    parts = [p for p in parts if not p.empty]
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True)
 
 
 async def year_volatility(ts_code: str, year: int) -> tuple[float | None, float | None]:

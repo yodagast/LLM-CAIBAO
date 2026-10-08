@@ -95,6 +95,9 @@ async def main() -> None:
         print(f"[sync_target_daily] 港股 完成: ok={res['ok']} skip={res['skip']} rows={res['rows']}")
         for e in res["errors"][:10]:
             print(f"  !! {e['ts_code']}: {e['msg']}")
+        if res.get("source_unavailable"):
+            print("  !! 港股数据源整体不可用 (见上方根因)。已有本地日线不受影响, "
+                  "前端会读库兜底; 请检查服务器出网/DNS 后重跑。")
         failed += res["skip"]
 
     print(f"[sync_target_daily] 全部完成 (跳过节数: {failed})。")

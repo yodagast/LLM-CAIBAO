@@ -554,36 +554,64 @@ def _adj_close(df: pd.DataFrame) -> pd.Series:
 
 async def _get_hk_daily(ts_code: str, start_date: str, end_date: str,
                         adj: str = "") -> pd.DataFrame:
-    """港股日线 (数据源: 腾讯港股 K 线, 不复权), 返回 tushare daily 同构 DataFrame。
+    """港股日线, 返回 tushare daily 同构 DataFrame (列: trade_date/open/high/low/
+    close/vol/amount/pre_close/pct_chg)。
 
-    列: trade_date(YYYYMMDD) / open / high / low / close / vol / amount /
-        pre_close / pct_chg。amount 为近似值 (成交量×收盘价)。
+    **多数据源容错** (2026-10 起腾讯日线域被 WAF 拦 501, 东财也间歇拒绝,
+    故不能只依赖单一来源):
+      1) 腾讯 fqkline (历史全量 ~8 年)  ← 首选
+      2) 东财 push2his kline (历史全量, 见底更深)
+      3) 腾讯 qt 实时行情 (仅当日 OHLC) ← 兜底, 保证「最近收盘」不冻结
     注意: 港股不提供可靠前复权序列, adj="qfq" 时仍返回原始价 (与 A 股 qfq 口径不同)。
     """
     from . import hk_data_service
-    df = await hk_data_service._tencent_kline_df(ts_code)
-    if df.empty:
-        raise ValueError(f"未获取到 {ts_code} 的港股日线数据。")
-    # 日期过滤 (start_date/end_date 为 YYYYMMDD)
     s = start_date or "20000101"
     e = end_date or datetime.now().strftime("%Y%m%d")
+    src = ""
+
+    # 1) 腾讯 fqkline
+    df = await hk_data_service._tencent_kline_df(ts_code)
+    if not df.empty:
+        src = "tencent"
+    # 2) 东财 push2his
+    if df.empty:
+        em = await hk_data_service._em_kline_df(ts_code)
+        if not em.empty:
+            df = em
+            src = "eastmoney"
+    # 3) 腾讯 qt 实时 (仅当日) — 历史源都不可用时的兜底
+    if df.empty:
+        qt = await hk_data_service.qt_quotes_cached([ts_code])
+        sym = "hk" + str(ts_code).split(".")[0]
+        qt = qt[qt["symbol"] == sym] if not qt.empty else qt
+        if not qt.empty:
+            df = qt
+            src = "tencent_qt"
+
+    if df is None or df.empty:
+        raise ValueError(f"未获取到 {ts_code} 的港股日线数据 (腾讯/东财/实时源均失败)。")
+
+    # 日期过滤 (start_date/end_date 为 YYYYMMDD)
     df = df[(df["date"] >= pd.to_datetime(s)) & (df["date"] <= pd.to_datetime(e))]
     if df.empty:
         raise ValueError(f"未获取到 {ts_code} 在 {s}~{e} 的港股日线数据。")
     df = df.reset_index(drop=True)
     close = df["close"].astype(float)
+    pre = df["pre_close"].astype(float) if "pre_close" in df.columns else close.shift(1)
+    pct = df["pct_chg"].astype(float) if "pct_chg" in df.columns else close.pct_change().fillna(0.0) * 100.0
+    vol = df["vol"].astype(float) if "vol" in df.columns else pd.Series(0.0, index=df.index)
     out = pd.DataFrame({
         "trade_date": df["date"].dt.strftime("%Y%m%d"),
         "open": df["open"].astype(float),
         "high": df["high"].astype(float),
         "low": df["low"].astype(float),
         "close": close,
-        "vol": df["vol"].astype(float),
         # 成交额统一为千元 (与 tushare daily 口径一致); 港股 vol 单位为股, 成交额≈量×价
-        "amount": (df["vol"] * df["close"] / 1000.0).astype(float),
-        "pre_close": close.shift(1).fillna(close),
-        "pct_chg": close.pct_change().fillna(0.0) * 100.0,
+        "amount": (vol * close / 1000.0).astype(float),
+        "pre_close": pre.fillna(close),
+        "pct_chg": pct.fillna(0.0),
     })
+    out.attrs["hk_source"] = src
     return out
 
 
@@ -2038,6 +2066,11 @@ async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
 
     说明: 腾讯港股 K 线单次最多返回约 2000 条 (约 8 年), 因此 years 大于 8 时
     实际只落库可得区间; 港股无复权因子/换手率, 对应列留空。
+
+    **数据源不可用时整体跳过**: 若全部标的都失败且腾讯接口报了网络错 (DNS/超时),
+    说明是数据源整体不可用而非个股问题 —— 此时不把 37 只逐一标记为失败, 而在
+    errors 里给一条汇总提示 (便于定时任务日志一眼看出根因, 而非刷屏 37 行)。
+    已有本地历史数据不受影响 (前端仍会读库兜底)。
     """
     from . import pg_service
     await pg_service.init_alpha158_schema()  # 确保日线表存在 (含 kind 列)
@@ -2088,6 +2121,21 @@ async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
                                           "msg": f"{type(e).__name__}: {e}".strip()[:140]})
 
     await asyncio.gather(*(_one(t) for t in targets))
+
+    # 数据源整体不可用 (全部失败 + 腾讯报网络错): 汇总为一条根因提示, 避免刷屏
+    if targets and summary["ok"] == 0 and summary["skip"] == len(targets):
+        try:
+            from . import hk_data_service
+            net_err = hk_data_service._tencent_last_error()
+        except Exception:
+            net_err = ""
+        if net_err:
+            summary["errors"] = [{
+                "ts_code": "*",
+                "msg": f"港股数据源(腾讯K线)不可用, {len(targets)} 只全部跳过: {net_err}"
+                       " — 检查服务器出网/DNS; 已有本地日线仍会作为前端兜底",
+            }]
+            summary["source_unavailable"] = True
     return summary
 
 

@@ -244,27 +244,41 @@ LIMIT=20 .venv/bin/python scripts/sync_target_daily.py         # 仅前 20 只 (
 #   /path/to/LLM-CAIBAO/scripts/sync_target_daily.py >> logs/sync_target_daily.log 2>&1
 ```
 
-- 港股日线数据源为腾讯港股 K 线 (单次最多约 2000 条 ≈ 8 年), 故 `--years` 超过 8 时
-  实际只落库可得区间; 港股无复权因子/换手率, 对应列留空。
-- **夜间任务已包含该能力**: 第 7 步 (`sync_target_daily.py`, 开关 `RUN_TARGET_BARS`) 与
-  第 8 步 (`sync_local_bars.py`, 开关 `RUN_A_BARS`) 均默认增量运行, 两个入口互为补充, 幂等可重跑。
+- 港股日线**多数据源容错** (2026-10 起必需): 腾讯日线域 `web.ifzq.gtimg.cn` 会被
+  腾讯 WAF 拦截 (HTTP **501** → `waf.tencent.com`), 东财 `push2his` 也间歇拒绝。
+  因此 `_get_hk_daily` 依次尝试 **①腾讯 fqkline → ②东财 push2his → ③腾讯 qt 实时**
+  (`qt.gtimg.cn`, 仅当日 OHLC 但稳定可用)。前两个源都挂时, 第三步至少保证**当日收盘**
+  落库, 前端「最近收盘价」不会冻结。腾讯 fqkline 单次最多约 2000 条 (≈8 年), 故
+  `--years` 超过 8 时实际只落库可得区间; 港股无复权因子/换手率, 对应列留空。
+- **【线上排查】前端数据冻结在旧日期** → 运行 `python scripts/check_daily_data.py`
+  (只读体检: 环境/连接、各 kind 最新交易日、目标标的落后清单、crontab、锁文件、
+  最近 nightly 日志失败步骤与根因)。加 `--fix` 可自动补齐落后标的的日线。
+- **夜间任务已包含该能力**: 第 0 步 (`sync_target_daily.py`, 开关 `RUN_TARGET_BARS`,
+  **已提到最前**) 与第 8 步 (`sync_local_bars.py`, 开关 `RUN_A_BARS`) 均默认增量运行,
+  两个入口互为补充, 幂等可重跑。
+- **每步独立超时** (`STEP_TIMEOUT`, 默认 1800s): 某步卡死 (如线上 DNS 故障时全市场扫描
+  速率跌到 0.1 只/s、预计 46 小时) 会被强制终止并**继续后续步骤**。历史上曾因第 1 步
+  卡死导致后面的日线同步整晚没跑到 → 前端数据冻结, 故日线同步已提到第 0 步。
 - 增量回看天数可用 `LOOKBACK_DAYS` 环境变量覆盖。
 
 自动更新内容与顺序 (各步骤独立, 单个失败不阻塞后续, 日志记录):
 
 | 顺序 | 内容 | 脚本 | 表 | 说明 |
 | --- | --- | --- | --- | --- |
+| 0 | 自选股/策略Hub 日线增量同步 | `sync_target_daily.py --lookback-days 30` | `stock_daily_bars` | **最高优先级** (前端读库的行情), A股/ETF + 港股 |
 | 1 | 港股红利低波+基本面 | `init_hk_all_market.py --workers 6 --force` | `hk_red_low_vol` / `hk_fundamental_screen` | 约 7 分钟 |
 | 2 | A股红利低波 | `init_redlowvol.py` | `red_low_vol` | 全市场, 较慢 |
 | 3 | A股基本面 | `init_fundamental.py` | `fundamental_screen` | 全市场, 较慢 |
 | 4 | A股财报 | `init_financial.py` | `financial_data` | 全市场, 较慢 |
 | 5 | A股选股新字段回填 | `backfill_margin_fcf.py` | `red_low_vol` / `fundamental_screen` | 仅回填 NULL 行 |
-| 6 | 自选股/策略Hub 日线增量同步 | `sync_target_daily.py --lookback-days 30` | `stock_daily_bars` | A股/ETF + 港股, 增量 |
-| 7 | 本地日线+财务持久化 | `sync_local_bars.py --lookback-days 30` | `stock_daily_bars` / `financial_data` | 增量为主, 新股票自动全量 |
-| 8 | A股低价选股 | `sync_low_price.py` | `low_price_screen` | 全市场扫描 |
-| 9 | 港股低价选股 | `sync_hk_low_price.py` | `hk_low_price_screen` | 全市场扫描 |
-| 10 | 公司大事 | `sync_stock_events.py` | `stock_events` | 增量/月度更新 |
-| 11 | A股每日推荐 (默认关) | `scan_all_market.py` | `daily_band_recommend` | 设 `RUN_A_RECOMMEND=1` 开启, 很慢 |
+| 6 | ETF 筛选数据 | `init_etf.py` | `etf_screen` | 全市场 |
+| 8 | 本地日线+财务持久化 | `sync_local_bars.py --lookback-days 30` | `stock_daily_bars` / `financial_data` | 增量为主, 新股票自动全量 |
+| 9 | A股低价选股 | `sync_low_price.py` | `low_price_screen` | 全市场扫描 |
+| 10 | 港股低价选股 | `sync_hk_low_price.py` | `hk_low_price_screen` | 全市场扫描 |
+| 11 | 公司大事 | `sync_stock_events.py` | `stock_events` | 增量/月度更新 |
+| 12 | A股每日推荐 (默认关) | `scan_all_market.py` | `daily_band_recommend` | 设 `RUN_A_RECOMMEND=1` 开启, 很慢 |
+
+> 每步独立超时 (`STEP_TIMEOUT`, 默认 1800s); 某步失败/超时不阻塞后续步骤。
 
 - 默认更新年份 = 当前年-1 (最近完整财年), 可用 `START_YEAR`/`END_YEAR` 覆盖。
 - 日志写入 `logs/nightly_<时间戳>.log`; 锁文件防止上次未跑完导致本次重叠。

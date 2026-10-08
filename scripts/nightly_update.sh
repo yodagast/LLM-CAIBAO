@@ -34,12 +34,23 @@ LOG_DIR="$PROJECT_ROOT/logs"
 mkdir -p "$LOG_DIR"
 
 # 防止重叠运行 (若上次仍在跑, 直接跳过本次)
+# 锁文件格式: "<pid> <epoch秒>"; 仅当 PID 存活**且**锁未陈旧时才跳过。
+# 只存 PID 会在 PID 被复用时误判"上次仍在跑"而静默跳过整晚任务 (数据不更新)。
 LOCK_FILE="$LOG_DIR/nightly.lock"
-if [ -f "$LOCK_FILE" ] && kill -0 "$(cat "$LOCK_FILE" 2>/dev/null)" 2>/dev/null; then
-  echo "$(date '+%F %T') 上次运行仍在进行, 跳过本次。"
-  exit 0
+LOCK_STALE_SECS="${LOCK_STALE_SECS:-43200}"   # 12h 视为陈旧
+if [ -f "$LOCK_FILE" ]; then
+  read -r LOCK_PID LOCK_TS _ < "$LOCK_FILE" 2>/dev/null || LOCK_PID=""; LOCK_TS=""
+  NOW_TS="$(date +%s)"
+  if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null \
+     && [ -n "$LOCK_TS" ] && [ "$((NOW_TS - LOCK_TS))" -lt "$LOCK_STALE_SECS" ]; then
+    echo "$(date '+%F %T') 上次运行仍在进行 (pid=$LOCK_PID), 跳过本次。"
+    exit 0
+  fi
+  if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    echo "$(date '+%F %T') 发现陈旧锁 (pid=$LOCK_PID 存活但锁已超 ${LOCK_STALE_SECS}s), 接管本次运行。"
+  fi
 fi
-echo "$$" > "$LOCK_FILE"
+echo "$$ $(date +%s)" > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
 
 # 本次日志文件 (全部输出重定向到日志, 同时保留控制台)
@@ -67,10 +78,36 @@ RUN_EVENTS="${RUN_EVENTS:-1}"
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
+# 单步超时 (秒, 可用 STEP_TIMEOUT 覆盖)。**防止某步卡死导致后续步骤永不执行**:
+# 曾出现线上 DNS 故障时第 1 步(港股全市场)速率跌到 0.1只/s、预计需 46 小时, 于是
+# 后面的日线同步步骤整晚都没跑到, 前端数据冻结在旧日期。
+STEP_TIMEOUT="${STEP_TIMEOUT:-1800}"
+
 run_step() {
+  local timeout="$STEP_TIMEOUT"
+  # 可选第 1 参数为数字时作为本步超时 (秒)
+  if [ "${1:-}" != "" ] && [ "$1" -eq "$1" ] 2>/dev/null; then
+    timeout="$1"; shift
+  fi
   local label="$1"; shift
-  log ">>> [$label] 开始"
-  "$@"
+  log ">>> [$label] 开始 (超时 ${timeout}s)"
+  "$@" &
+  local pid=$!
+  local waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$timeout" ]; then
+      log "!!! [$label] 超时 (${timeout}s), 终止该步骤并继续后续步骤"
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 3
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      FAILED=1
+      return
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  wait "$pid"
   local rc=$?
   if [ "$rc" -eq 0 ]; then
     log ">>> [$label] 完成"
@@ -83,9 +120,19 @@ run_step() {
 log "==================== 每日数据更新开始 ===================="
 log "项目: $PROJECT_ROOT | Python: $VENV_PY"
 log "年份区间: $START_YEAR ~ $END_YEAR"
+log "单步超时: ${STEP_TIMEOUT}s"
 cd "$PROJECT_ROOT" || exit 1
 
 FAILED=0
+
+# 0) 【最高优先级】自选股/策略Hub 日线增量同步 (A股/ETF + 港股)
+#    前端详情页/自选股「最近收盘」优先读 stock_daily_bars —— 这一步决定前端看到
+#    的数据是否新鲜。放在最前面, 确保即使后面的全市场重算步骤失败/超时, 也不会
+#    出现"日线冻结在旧日期"的问题 (历史上曾因第 1 步港股全市场卡死而整晚没跑到)。
+if [ "$RUN_TARGET_BARS" = "1" ]; then
+  run_step "自选股/策略Hub 日线增量同步 (A股+港股)" \
+    "$VENV_PY" scripts/sync_target_daily.py --lookback-days "${LOOKBACK_DAYS:-30}"
+fi
 
 # 1) 港股全市场 (红利低波 + 基本面, 一次遍历), --force 全量刷新 (约 7 分钟)
 if [ "$RUN_HK" = "1" ]; then
@@ -121,12 +168,6 @@ fi
 if [ "$RUN_A_BACKFILL" = "1" ]; then
   run_step "A股 选股新字段回填 (毛利率/自由现金流, 全市场)" \
     "$VENV_PY" scripts/backfill_margin_fcf.py
-fi
-
-# 7) 自选股/策略Hub 日线增量同步 (A股/ETF + 港股, 只回看最近 LOOKBACK_DAYS 天, 幂等 upsert)
-if [ "$RUN_TARGET_BARS" = "1" ]; then
-  run_step "自选股/策略Hub 日线增量同步 (A股+港股)" \
-    "$VENV_PY" scripts/sync_target_daily.py --lookback-days "${LOOKBACK_DAYS:-30}"
 fi
 
 # 8) 本地 日线+财务持久化 (目标列表日线增量 + 财务; 本地无数据的股票自动全量首次入库)

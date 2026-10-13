@@ -557,61 +557,116 @@ async def _get_hk_daily(ts_code: str, start_date: str, end_date: str,
     """港股日线, 返回 tushare daily 同构 DataFrame (列: trade_date/open/high/low/
     close/vol/amount/pre_close/pct_chg)。
 
-    **多数据源容错** (2026-10 起腾讯日线域被 WAF 拦 501, 东财也间歇拒绝,
-    故不能只依赖单一来源):
-      1) 腾讯 fqkline (历史全量 ~8 年)  ← 首选
-      2) 东财 push2his kline (历史全量, 见底更深)
-      3) 腾讯 qt 实时行情 (仅当日 OHLC) ← 兜底, 保证「最近收盘」不冻结
+    **数据源策略 (历史 + 最新 合并, 2026-10 修订)**:
+      1) 本地 pgsql stock_daily_bars(kind='hk') — 历史更全(腾讯源本身有 8 年上限,
+         本地库经每日累积可更长); 失败时跳过
+      2) 远端: 腾讯 fqkline → 东财 push2his → 腾讯 qt 实时(仅当日 OHLC)
+      3) **按 trade_date 合并**: 本地数据补足远端缺口, 远端数据覆盖同日并补上最新交易日
+
+    ⚠️ 关键(曾出严重 bug): 不能"本地优先、本地够新就不查远端" —— 若每日同步中断,
+    本地末端会停在旧日期(如 9/28), 而远端已有最新日(10/13); 一旦本地被判为"够新"
+    就会**用旧数据覆盖前端**, 出现"库里有10月数据但前端只显示9月"。因此二者必须
+    合并, 且以远端为最新交易日的唯一来源(无实时源可用时才退回本地旧数据)。
+
     注意: 港股不提供可靠前复权序列, adj="qfq" 时仍返回原始价 (与 A 股 qfq 口径不同)。
     """
     from . import hk_data_service
     s = start_date or "20000101"
     e = end_date or datetime.now().strftime("%Y%m%d")
+    lo, hi = pd.to_datetime(s), pd.to_datetime(e)
     src = ""
 
-    # 1) 腾讯 fqkline
+    # 1) 本地库 (历史更全; 覆盖性检查放宽, 见 _pg_daily_df kind="hk")
+    local = None
+    try:
+        local = await _pg_daily_df(ts_code, s, e, str(adj).strip().lower(), "hk")
+    except Exception:
+        local = None
+
+    # 2) 远端最新 (腾讯 fqkline → 东财 → qt 实时)
+    remote = None
     df = await hk_data_service._tencent_kline_df(ts_code)
     if not df.empty:
-        src = "tencent"
-    # 2) 东财 push2his
-    if df.empty:
+        remote, src = df, "tencent"
+    if remote is None:
         em = await hk_data_service._em_kline_df(ts_code)
         if not em.empty:
-            df = em
-            src = "eastmoney"
-    # 3) 腾讯 qt 实时 (仅当日) — 历史源都不可用时的兜底
-    if df.empty:
+            remote, src = em, "eastmoney"
+    if remote is None:
+        # 历史源都不可用 → 腾讯实时仅当日 OHLC (保证「最近收盘」不冻结)
         qt = await hk_data_service.qt_quotes_cached([ts_code])
         sym = "hk" + str(ts_code).split(".")[0]
         qt = qt[qt["symbol"] == sym] if not qt.empty else qt
         if not qt.empty:
-            df = qt
-            src = "tencent_qt"
+            remote, src = qt, "tencent_qt"
 
-    if df is None or df.empty:
-        raise ValueError(f"未获取到 {ts_code} 的港股日线数据 (腾讯/东财/实时源均失败)。")
+    if remote is None and (local is None or local.empty):
+        # 远端全部不可用, 且本地被判为"过期" (超过 _HK_STALE_MAX_AGE_DAYS, 如长期停牌)
+        # → 最后兜底: 放宽新鲜度要求返回本地历史数据 (有数据总比报错好)
+        try:
+            local = await _pg_daily_df(ts_code, s, e, str(adj).strip().lower(), "hk",
+                                       allow_stale=True)
+        except Exception:
+            local = None
+    if remote is None and (local is None or local.empty):
+        raise ValueError(f"未获取到 {ts_code} 的港股日线数据 (本地库与腾讯/东财/实时源均失败)。")
 
-    # 日期过滤 (start_date/end_date 为 YYYYMMDD)
-    df = df[(df["date"] >= pd.to_datetime(s)) & (df["date"] <= pd.to_datetime(e))]
-    if df.empty:
+    # 3) 合并: 远端为准(同日覆盖 + 补最新日), 本地补足远端未覆盖的历史区间
+    frames: list[pd.DataFrame] = []
+    if local is not None and not local.empty:
+        def _col(name):
+            """取本地库某列 (可能不存在) 并转数值; 缺列返回 NaN Series。"""
+            if name in local.columns:
+                return pd.to_numeric(local[name], errors="coerce")
+            return pd.Series(float("nan"), index=local.index, dtype="float64")
+
+        frames.append(pd.DataFrame({
+            "date": pd.to_datetime(local["trade_date"].astype(str), format="%Y%m%d"),
+            "open": _col("open"),
+            "high": _col("high"),
+            "low": _col("low"),
+            "close": _col("close"),
+            "vol": _col("vol"),
+            "pre_close": _col("pre_close"),
+            "pct_chg": _col("pct_chg"),
+        }))
+    if remote is not None and not remote.empty:
+        rem = remote[["date", "open", "high", "low", "close"]].copy()
+        for extra in ("vol", "pre_close", "pct_chg"):
+            rem[extra] = remote[extra].values if extra in remote.columns else pd.Series(
+                float("nan"), index=rem.index, dtype="float64")
+        frames.append(rem)
+    # concat 顺序 [本地, 远端] + 去重 keep="last" → 同日以远端为准, 远端缺失的历史取本地
+    merged = pd.concat(frames, ignore_index=True)
+    merged = merged.dropna(subset=["close"])
+    merged = merged[(merged["date"] >= lo) & (merged["date"] <= hi)]
+    if merged.empty:
         raise ValueError(f"未获取到 {ts_code} 在 {s}~{e} 的港股日线数据。")
-    df = df.reset_index(drop=True)
+    df = (merged.sort_values("date").drop_duplicates(subset="date", keep="last")
+          .reset_index(drop=True))
+
     close = df["close"].astype(float)
-    pre = df["pre_close"].astype(float) if "pre_close" in df.columns else close.shift(1)
-    pct = df["pct_chg"].astype(float) if "pct_chg" in df.columns else close.pct_change().fillna(0.0) * 100.0
-    vol = df["vol"].astype(float) if "vol" in df.columns else pd.Series(0.0, index=df.index)
+    vol = (df["vol"].astype(float) if "vol" in df.columns
+           else pd.Series(0.0, index=df.index)).fillna(0.0)
+    pre_raw = pd.to_numeric(df["pre_close"], errors="coerce") if "pre_close" in df.columns else close.shift(1)
+    pct_raw = pd.to_numeric(df["pct_chg"], errors="coerce") if "pct_chg" in df.columns else close.pct_change() * 100.0
+    pre = pre_raw.fillna(close.shift(1))
+    pct = pct_raw.where(pre_raw.notna(), (close / pre - 1) * 100.0).fillna(0.0)
     out = pd.DataFrame({
         "trade_date": df["date"].dt.strftime("%Y%m%d"),
         "open": df["open"].astype(float),
         "high": df["high"].astype(float),
         "low": df["low"].astype(float),
         "close": close,
+        # vol 必须保留 (调用方 _df_to_bars / backfill_hk_daily_bars / 详情页成交量都读它;
+        # 曾因误删导致港股「成交量」显示 — 且日线入库 vol 恒为 NULL)
+        "vol": vol,
         # 成交额统一为千元 (与 tushare daily 口径一致); 港股 vol 单位为股, 成交额≈量×价
         "amount": (vol * close / 1000.0).astype(float),
         "pre_close": pre.fillna(close),
-        "pct_chg": pct.fillna(0.0),
+        "pct_chg": pct,
     })
-    out.attrs["hk_source"] = src
+    out.attrs["hk_source"] = src or "pg"
     return out
 
 
@@ -690,7 +745,12 @@ async def _pg_daily_df(symbol: str, start_date: str, end_date: str, adj_key: str
         rows = await pg_service.query_daily_bars(symbol, s, e)
     except Exception:
         return None
-    if not rows or len(rows) < 30:
+    # 窗口内最少行数: A股窗口通常以月/年计, 30 行下限可过滤"库近乎空"的情况;
+    # **港股必须放宽到 1** —— 增量同步只回看 30 天, 停牌/长期无成交的港股在该窗口
+    # 内可能只有 1~2 个交易日, 用 30 会把有效数据误判为"不足"而丢弃, 导致
+    # 远端(仅历史)也为空时报错、前端显示旧日期。(整体数据量已由上面的 stats["n"]>=60 保证)
+    min_rows = 1 if is_hk else 30
+    if not rows or len(rows) < min_rows:
         return None
     df = pd.DataFrame(rows)
     df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "")
@@ -2056,7 +2116,7 @@ async def backfill_daily_bars(targets: list[dict], years: int = 10,
 async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
                                  concurrency: int = 4, incremental: bool = False,
                                  lookback_days: int = 30) -> dict:
-    """把港股最近 N 年日线 (腾讯行情) 同步到本地 stock_daily_bars (kind='hk')。
+    """把港股最近 N 年日线同步到本地 stock_daily_bars (kind='hk')。
 
     targets: [{"ts_code": "00700.HK"}, ...]
     incremental: True 时按每只股票本地最新交易日只回看 lookback_days 天 (增量更新);
@@ -2064,13 +2124,14 @@ async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
     返回 {"ok": 同步成功数, "skip": 跳过/失败数, "rows": 写入行数, "errors": [...]},
     与 backfill_daily_bars 同构 (幂等 upsert, 可重复续跑)。
 
-    说明: 腾讯港股 K 线单次最多返回约 2000 条 (约 8 年), 因此 years 大于 8 时
-    实际只落库可得区间; 港股无复权因子/换手率, 对应列留空。
+    说明: 港股历史来自本地库 + 远端(腾讯/东财/实时)合并, 不限于单一源约 2000 条上限;
+    港股无复权因子/换手率, 对应列留空。
 
-    **数据源不可用时整体跳过**: 若全部标的都失败且腾讯接口报了网络错 (DNS/超时),
-    说明是数据源整体不可用而非个股问题 —— 此时不把 37 只逐一标记为失败, 而在
-    errors 里给一条汇总提示 (便于定时任务日志一眼看出根因, 而非刷屏 37 行)。
-    已有本地历史数据不受影响 (前端仍会读库兜底)。
+    **"窗口内无数据"不计为失败**: 停牌/长期无成交/次新港股在增量回看窗口内本就没有
+    新交易日 (远端最新日也早于窗口起点) —— 这是正常情况, 归入 skip 且不写 errors,
+    否则每日日志会稳定报错并让退出码非 0。
+    **数据源不可用时整体汇总**: 若全部标的都失败且腾讯报网络错 (DNS/超时/501),
+    在 errors 里给一条根因提示而非刷屏 N 行。已有本地历史不受影响 (前端仍读库兜底)。
     """
     from . import pg_service
     await pg_service.init_alpha158_schema()  # 确保日线表存在 (含 kind 列)
@@ -2095,9 +2156,16 @@ async def backfill_hk_daily_bars(targets: list[dict], years: int = 10,
         async with sem:
             try:
                 df = await _get_hk_daily(ts_code, start_date=start, end_date=end_date)
-                if df is None or df.empty:
-                    summary["skip"] += 1
-                    return
+            except Exception as e:
+                summary["skip"] += 1
+                summary["errors"].append({"ts_code": ts_code,
+                                          "msg": f"{type(e).__name__}: {e}".strip()[:140]})
+                return
+            if df is None or df.empty:
+                # 增量窗口内无交易日 (停牌/长期无成交) → 正常跳过, 不算失败
+                summary["skip"] += 1
+                return
+            try:
                 rows = []
                 for _, r in df.iterrows():
                     td = _ymd_to_date(r.get("trade_date"))

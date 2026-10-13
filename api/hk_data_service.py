@@ -82,17 +82,67 @@ def _init_pro():
     return data_service._init_pro()
 
 
+async def _persist_hk_stock_list(df: pd.DataFrame) -> None:
+    """把港股列表写入本地 pgsql (hk_stock_basic), 失败静默。
+
+    保证"任一来源读到的列表都会落库", 这样线上 (无文件缓存) 也能直接命中库。
+    """
+    try:
+        from . import pg_service
+        await pg_service.init_hk_stock_basic_schema()
+        rows = []
+        for _, r in df.iterrows():
+            tc = str(r.get("ts_code") or "")
+            if not tc:
+                continue
+            rows.append((tc, str(r.get("symbol") or tc.split(".")[0]),
+                         str(r.get("name") or ""), str(r.get("market") or ""),
+                         str(r.get("list_status") or ""), str(r.get("list_date") or ""),
+                         str(r.get("trade_unit") or ""), str(r.get("curr_type") or "")))
+        if rows:
+            await pg_service.upsert_hk_stock_basic(rows)
+    except Exception:
+        pass
+
+
 async def hk_stock_list(use_cache: bool = True) -> pd.DataFrame:
-    """港股股票列表 (tushare hk_basic), 默认带本地缓存 (避免频繁调用限频接口)。
+    """港股股票列表, 三级兜底: 本地 pgsql → JSON 文件缓存 → tushare hk_basic。
 
     返回列: ts_code, symbol, name, market, list_status, list_date, trade_unit, curr_type。
+
+    ⚠️ 为什么要落库: 原实现只缓存到 cache/hk_stock_list.json, 而 `/cache/` 在
+    .gitignore 中 → **线上部署后文件缺失**, 只能实时打 tushare hk_basic; 线上限频/
+    无权限时会抛错, 导致 resolve_code/search_stock/自选股快照的港股链路**全部失效**
+    (现象: "我的股票"无港股行情、搜索无港股候选)。故优先读库, 保证部署即可用。
     """
+    # 1) 本地 pgsql (线上部署即有, 不依赖文件缓存与外部接口)
+    try:
+        from . import pg_service
+        rows = await pg_service.list_hk_stock_basic()
+        if rows:
+            df = pd.DataFrame(rows)
+            for c in ("ts_code", "symbol", "name", "market", "list_status"):
+                if c in df.columns:
+                    df[c] = df[c].astype(str)
+            df = df[df["ts_code"].str.endswith(".HK", na=False)]
+            if not df.empty:
+                return df.reset_index(drop=True)
+    except Exception:
+        pass
+
+    # 2) JSON 文件缓存 (开发机已有缓存; 命中时回填库, 供线上复用)
     cache_path = CACHE_DIR / "hk_stock_list.json"
     if use_cache and cache_path.exists():
         # convert_dates=False: list_date 等日期字符串保持原样, 避免 pandas 逐个推断格式告警
-        df = pd.read_json(cache_path, dtype={"ts_code": str, "symbol": str}, convert_dates=False)
-        if not df.empty:
-            return df
+        try:
+            df = pd.read_json(cache_path, dtype={"ts_code": str, "symbol": str}, convert_dates=False)
+            if not df.empty:
+                await _persist_hk_stock_list(df)
+                return df
+        except Exception:
+            pass
+
+    # 3) tushare hk_basic (成功则同时写库 + 写文件, 供后续与线上复用)
     pro = _init_pro()
     df = await pro.hk_basic(fields="ts_code,name,market,list_status,list_date,trade_unit,curr_type")
     if df is None or df.empty:
@@ -101,7 +151,11 @@ async def hk_stock_list(use_cache: bool = True) -> pd.DataFrame:
     # symbol 由 ts_code 推导 (00700.HK → 00700)
     if "symbol" not in df.columns:
         df["symbol"] = df["ts_code"].str.split(".").str[0]
-    df.to_json(cache_path, orient="records", force_ascii=False)
+    try:
+        df.to_json(cache_path, orient="records", force_ascii=False)
+    except Exception:
+        pass
+    await _persist_hk_stock_list(df)
     return df
 
 
@@ -410,14 +464,30 @@ async def _balance_map(ts_code: str) -> dict[int, dict]:
 async def industry_map(use_cache: bool = True) -> dict[str, str]:
     """全部港股 代码→行业 映射 {ts_code: industry}, 带本地缓存。
 
-    一次批量请求 (约 140 页) 覆盖全部港股 (含主板/创业板), 结果按 tushare hk_basic 过滤。
+    三级兜底: ① JSON 文件缓存 → ② 已入库选股表 hk_red_low_vol 派生 (单条 SQL, 秒回)
+    → ③ 东财 RPT_HKF10_INFO_ORGPROFILE 全量抓取 (约 140 页, 慢)。
+
+    ⚠️ ② 不可省: `/cache/` 被 .gitignore → 线上没有 JSON 缓存; 若直接走 ③, 线上首次
+    访问详情页/自选股就要等约 1 分钟抓完全量行业, 期间「行业」显示为空。
     """
     cache_path = CACHE_DIR / "hk_industry.json"
     if use_cache and cache_path.exists():
         try:
-            return json.loads(cache_path.read_text(encoding="utf-8"))
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if data:
+                return data
         except Exception:
             pass
+
+    # 从库里已入库的选股表派生 (线上部署即有的现成数据)
+    try:
+        from . import pg_service
+        mapping_db = await pg_service.hk_industry_map_from_screen()
+        if mapping_db:
+            return mapping_db
+    except Exception:
+        pass
+
     stocks = await hk_stock_list()
     valid = set(stocks["ts_code"].astype(str))
     mapping: dict[str, str] = {}

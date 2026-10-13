@@ -53,8 +53,12 @@ async def check_env() -> bool:
 
     env_file = PROJECT_ROOT / ".env"
     print(f".env       : {'存在' if env_file.exists() else '!! 缺失 !!'}  ({env_file})")
+    # DATABASE_URL 由 pg_service 从 .env 读取 (不依赖 shell 环境变量), 故此处以实际连接为准
     dsn = os.environ.get("DATABASE_URL", "")
-    print(f"DATABASE_URL: {mask_dsn(dsn) if dsn else '!! 未设置 !!'}")
+    if dsn:
+        print(f"DATABASE_URL: {mask_dsn(dsn)} (来自环境变量)")
+    else:
+        print("DATABASE_URL: (环境变量未设置 → 由 pg_service 读取 .env)")
 
     from api import pg_service
 
@@ -64,6 +68,16 @@ async def check_env() -> bool:
             ver = await conn.fetchval("SELECT version()")
             await conn.fetchval("SELECT 1 FROM stock_daily_bars LIMIT 1")
         print(f"连接       : OK ({str(ver).split(',')[0]})")
+        # 港股基础字典 (港股解析/搜索的前提; 为空会导致"我的股票"无港股行情/搜索无港股候选)
+        try:
+            n = await pg_service.count_hk_stock_basic()
+            if n:
+                print(f"hk_stock_basic: {n} 条 (港股代码解析/搜索基础字典, 正常)")
+            else:
+                print("hk_stock_basic: !! 0 条 !! (港股字典未初始化或 cache/ 缺失且 hk_basic 不可用)")
+                print("  → 会自动尝试从 tushare hk_basic 重建; 若失败则港股搜索/自选股行情失效")
+        except Exception as e:
+            print(f"hk_stock_basic: 查询失败 {type(e).__name__}: {str(e)[:80]}")
         return True
     except Exception as e:
         print(f"连接       : !! 失败 !! {type(e).__name__}: {e}")

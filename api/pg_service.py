@@ -1384,6 +1384,89 @@ async def init_dividend_schema() -> None:
         await conn.execute(DIVIDEND_SCHEMA_DDL)
 
 
+# ---------------------------------------------------------------------------
+# 港股股票列表 hk_stock_basic (港股代码解析/搜索/行业的基础字典)
+#   原来只缓存在 cache/hk_stock_list.json, 而 /cache/ 被 .gitignore → **线上部署后
+#   该文件缺失**, 只能实时打 tushare hk_basic; 线上限频/无权限时 hk_stock_list()
+#   抛错 → resolve_code/search_stock/snapshot 的港股链路全部失效 (表现为"我的股票"
+#   无港股行情、搜索无港股候选)。持久化到库可跨部署存活。
+# ---------------------------------------------------------------------------
+
+HK_STOCK_BASIC_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS hk_stock_basic (
+    ts_code     VARCHAR(16) PRIMARY KEY,
+    symbol      VARCHAR(8),
+    name        VARCHAR(64),
+    market      VARCHAR(16),
+    list_status VARCHAR(8),
+    list_date   VARCHAR(16),
+    trade_unit  VARCHAR(16),
+    curr_type   VARCHAR(16),
+    updated_at  TIMESTAMP DEFAULT now()
+);
+"""
+
+
+async def init_hk_stock_basic_schema() -> None:
+    """创建 hk_stock_basic 表 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(HK_STOCK_BASIC_SCHEMA_DDL)
+
+
+async def upsert_hk_stock_basic(rows: list[tuple]) -> int:
+    """按 ts_code upsert 港股基础信息, 返回行数。
+
+    rows: [(ts_code, symbol, name, market, list_status, list_date, trade_unit, curr_type)]
+    """
+    if not rows:
+        return 0
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            "INSERT INTO hk_stock_basic (ts_code, symbol, name, market, list_status, "
+            "list_date, trade_unit, curr_type, updated_at) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now()) "
+            "ON CONFLICT (ts_code) DO UPDATE SET "
+            "symbol=EXCLUDED.symbol, name=EXCLUDED.name, market=EXCLUDED.market, "
+            "list_status=EXCLUDED.list_status, list_date=EXCLUDED.list_date, "
+            "trade_unit=EXCLUDED.trade_unit, curr_type=EXCLUDED.curr_type, "
+            "updated_at=now()", rows)
+    return len(rows)
+
+
+async def list_hk_stock_basic() -> list[dict]:
+    """读取全部港股基础信息 (ts_code 升序)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ts_code, symbol, name, market, list_status, list_date, "
+            "trade_unit, curr_type FROM hk_stock_basic ORDER BY ts_code")
+    return [dict(r) for r in rows]
+
+
+async def count_hk_stock_basic() -> int:
+    """港股基础信息条数 (0 表示从未初始化)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval("SELECT count(*) FROM hk_stock_basic") or 0)
+
+
+async def hk_industry_map_from_screen() -> dict[str, str]:
+    """从已入库的港股选股表 (hk_red_low_vol) 派生 代码→行业 映射。
+
+    供 `hk_data_service.industry_map()` 在文件缓存缺失时快速兜底 —— 否则线上首次
+    请求就要发起约 140 次东财分页请求 (约 1 分钟), 期间详情页/自选股的「行业」无法
+    显示。单条 SQL, 覆盖约 2700 只港股。
+    """
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ts_code, max(industry) AS industry FROM hk_red_low_vol "
+            "WHERE industry IS NOT NULL AND industry <> '' GROUP BY ts_code")
+    return {str(r["ts_code"]): str(r["industry"]) for r in rows}
+
+
 async def upsert_dividend_rows(rows: list[tuple]) -> int:
     """按 (symbol, end_date, div_proc) upsert 写入分红明细, 返回行数。"""
     if not rows:

@@ -247,12 +247,19 @@ LIMIT=20 .venv/bin/python scripts/sync_target_daily.py         # 仅前 20 只 (
 - 港股日线**多数据源容错** (2026-10 起必需): 腾讯日线域 `web.ifzq.gtimg.cn` 会被
   腾讯 WAF 拦截 (HTTP **501** → `waf.tencent.com`), 东财 `push2his` 也间歇拒绝。
   因此 `_get_hk_daily` 依次尝试 **①腾讯 fqkline → ②东财 push2his → ③腾讯 qt 实时**
-  (`qt.gtimg.cn`, 仅当日 OHLC 但稳定可用)。前两个源都挂时, 第三步至少保证**当日收盘**
-  落库, 前端「最近收盘价」不会冻结。腾讯 fqkline 单次最多约 2000 条 (≈8 年), 故
-  `--years` 超过 8 时实际只落库可得区间; 港股无复权因子/换手率, 对应列留空。
-- **【线上排查】前端数据冻结在旧日期** → 运行 `python scripts/check_daily_data.py`
-  (只读体检: 环境/连接、各 kind 最新交易日、目标标的落后清单、crontab、锁文件、
-  最近 nightly 日志失败步骤与根因)。加 `--fix` 可自动补齐落后标的的日线。
+  (`qt.gtimg.cn`, 仅当日 OHLC 但稳定可用), 并与**本地库合并**(本地补历史、远端补最新)。
+  腾讯 fqkline 单次最多约 2000 条 (≈8 年), 故 `--years` 超过 8 时实际只落库可得区间;
+  港股无复权因子/换手率, 对应列留空。
+- **【部署须知】港股基础字典必须落库**: `/cache/` 在 `.gitignore` 中 → 线上没有
+  `cache/hk_stock_list.json`; 若线上 tushare `hk_basic` 限频/无权限, 港股代码解析
+  (`resolve_code`)、搜索候选、自选股行情会**全部失效**(现象: "我的股票"无港股行情、
+  搜索无港股候选)。现已持久化到 PG 表 **`hk_stock_basic`** (三级兜底: 库 → 文件缓存
+  → tushare, 任一来源成功即回填库), 行业走 **`hk_red_low_vol` 派生**避免首次慢抓取。
+  排查: `python scripts/check_daily_data.py` 会打印 `hk_stock_basic` 条数。
+- **【线上排查】前端数据冻结在旧日期 / 港股行情或搜索异常** → 运行
+  `python scripts/check_daily_data.py` (只读体检: 环境/连接、`hk_stock_basic` 字典、
+  各 kind 最新交易日、目标标的落后清单、crontab、锁文件、最近 nightly 日志失败步骤与
+  根因)。加 `--fix` 可自动补齐落后标的的日线。
 - **夜间任务已包含该能力**: 第 0 步 (`sync_target_daily.py`, 开关 `RUN_TARGET_BARS`,
   **已提到最前**) 与第 8 步 (`sync_local_bars.py`, 开关 `RUN_A_BARS`) 均默认增量运行,
   两个入口互为补充, 幂等可重跑。

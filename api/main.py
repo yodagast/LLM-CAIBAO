@@ -61,6 +61,7 @@ async def _startup() -> None:
         await pg_service.init_site_articles_schema()
         await pg_service.init_low_price_schema()
         await pg_service.init_hk_low_price_schema()
+        await pg_service.init_hk_stock_basic_schema()
         # 启动公司大事生成 worker (持久化任务队列, 多进程靠 pg 抢占安全)
         try:
             if events_service.worker_task is None or events_service.worker_task.done():

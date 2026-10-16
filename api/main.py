@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import html as _html
-import re
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,8 +29,12 @@ from . import hk_low_price_service
 from . import alpha158_service
 from . import portfolio_service
 from . import events_service
+from . import site_html_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# 导入 HTML 报告的页面标题后缀 (与 static/article.html 的 article.suffix 一致)
+SITE_TITLE_SUFFIX = " · 杭州波动粒子 Hangzhou Wave Particle"
 
 # 官网文章正文上限 (导入的完整 HTML 文件可能上百 KB, 放宽校验)
 MAX_ARTICLE_BODY = 8_000_000
@@ -109,6 +113,57 @@ async def _require_site_admin(request: Request) -> dict:
     if user["username"] != SITE_ADMIN:
         raise HTTPException(status_code=403, detail="无权限: 仅管理员可管理官网内容")
     return user
+
+
+# ---------------------------------------------------------------------------
+# 导入 HTML 报告的页面内嵌渲染 (站点头部/页脚保留, 报告样式作用域隔离, 不用 iframe)
+# ---------------------------------------------------------------------------
+
+def _article_tags(raw) -> list[str]:
+    """解析文章的标签 JSON 字符串为列表 (兼容空值/脏数据)。"""
+    try:
+        tags = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(t) for t in tags] if isinstance(tags, list) else []
+
+
+def _render_html_article_page(art: dict) -> HTMLResponse:
+    """把导入的 HTML 报告渲染进站点外壳页 (static/article_html.html)。
+
+    报告自带样式经 site_html_service 加作用域前缀后注入 <head>, 正文注入 .html-doc
+    容器, 自带脚本在正文之后按原顺序执行 (图表等依赖脚本正常运行)。
+    """
+    template = (STATIC_DIR / "article_html.html").read_text(encoding="utf-8")
+    scoped_css, content, scripts = site_html_service.build_embedded(str(art.get("body") or ""))
+    kind = "news" if str(art.get("kind") or "") == "news" else "research"
+    title = str(art.get("title") or "")
+    is_news = kind == "news"
+    tags = _article_tags(art.get("tags"))
+    # 报告自带 <h1> 时不再重复渲染站点标题
+    title_block = "" if site_html_service.has_own_heading(content) else (
+        '<h1 class="html-doc-title">' + _html.escape(title) + "</h1>")
+    tokens = {
+        "{{PAGE_TITLE}}": _html.escape(title + SITE_TITLE_SUFFIX),
+        "{{DATE}}": _html.escape(str(art.get("date") or "")),
+        "{{TAGS_BLOCK}}": ('<span class="news-tag">' + _html.escape(" · ".join(tags)) + "</span>"
+                           if tags else ""),
+        "{{TITLE_BLOCK}}": title_block,
+        "{{BACK_HREF}}": "/news" if is_news else "/research",
+        "{{BACK_I18N_KEY}}": "html.back.news" if is_news else "html.back.research",
+        "{{BACK_LABEL}}": "← 返回新闻浏览" if is_news else "← 返回行业研究",
+        "{{NAV_NEWS_ACTIVE}}": " active" if is_news else "",
+        "{{NAV_RESEARCH_ACTIVE}}": "" if is_news else " active",
+        # 页面标题由前端脚本拼接, 这里以 JSON 形式注入标题 (转义 < 防 </script> 截断)
+        "{{TITLE_JSON}}": json.dumps(title, ensure_ascii=False).replace("<", "\\u003c"),
+    }
+    for token, value in tokens.items():
+        template = template.replace(token, value)
+    # 报告内容/样式/脚本最后注入, 避免其正文里出现同名字样时被误替换
+    return HTMLResponse(content=template.replace("{{SCOPED_CSS}}", scoped_css)
+                        .replace("{{CONTENT}}", content)
+                        .replace("{{SCRIPTS}}", scripts),
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -438,15 +493,25 @@ async def article_edit_page() -> FileResponse:
 
 
 @app.get("/article/{aid}", include_in_schema=False)
-async def article_page(aid: int) -> FileResponse:
-    """文章正文页 (行业研究/新闻 详情, 前端按 id 拉取渲染)。"""
+async def article_page(aid: int) -> Response:
+    """文章正文页 (行业研究/新闻 详情)。
+
+    - format=html 的导入报告: 在站点外壳页内嵌渲染 (保留站点头部/页脚, 不使用 iframe)
+    - format=md 的文章: 返回 article.html, 前端按 id 拉取渲染
+    """
+    try:
+        art = await pg_service.get_site_article(aid)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取文章失败: {e}")
+    if art and str(art.get("format") or "md") == "html" and art.get("body"):
+        return _render_html_article_page(art)
     return FileResponse(STATIC_DIR / "article.html",
                         headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/article/{aid}/html", include_in_schema=False)
 async def article_html_page(aid: int) -> HTMLResponse:
-    """导入的 HTML 文章原文 (format=html), 供正文页 iframe 内嵌 / 直接打开。"""
+    """导入的 HTML 报告原文 (format=html), 用于直接查看/存档原始文件。"""
     try:
         art = await pg_service.get_site_article(aid)
     except Exception as e:
@@ -1538,36 +1603,9 @@ async def site_content_save(req: SiteContentBatchRequest, request: Request) -> d
 
 # ---------------------------------------------------------------------------
 # 官网文章管理 (行业研究 / 新闻浏览, 后台文章管理; 前台 /research /news 列表 + /article/{id} 正文)
-# 正文支持两种格式: format=md 的 Markdown, 或 format=html 的导入完整 HTML 文档 (iframe 原样展示)
+# 正文支持两种格式: format=md 的 Markdown, 或 format=html 的导入报告 (内嵌于站点外壳页)
+# HTML 文档拆解 / CSS 作用域隔离见 site_html_service
 # ---------------------------------------------------------------------------
-
-_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
-_DATE_RE = re.compile(
-    r"(?:数据截至|数据截止|报告日期|发布日期|更新日期|发布时间|报告时间|编制日期|日期)"
-    r"\s*[:：]?\s*(20\d{2})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})")
-
-
-def _extract_html_title(html_text: str, fallback: str = "") -> str:
-    """取 HTML 的 <title> 作为文章标题 (空则回退文件名)。"""
-    m = _TITLE_RE.search(html_text)
-    if m:
-        title = _html.unescape(m.group(1)).strip()
-        title = re.sub(r"\s+", " ", title)
-        if title:
-            return title[:200]
-    return (fallback or "").strip()[:200]
-
-
-def _extract_html_date(html_text: str, filename: str = "", fallback: str = "") -> str:
-    """识别 HTML 中「数据截至 / 报告日期」等日期, 其次文件名中的 YYYY-MM-DD, 再次 fallback, 最后取今天。"""
-    m = _DATE_RE.search(html_text[:200000])
-    if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-    m2 = re.search(r"(20\d{2})[-_.](\d{1,2})[-_.](\d{1,2})", filename or "")
-    if m2:
-        return f"{m2.group(1)}-{int(m2.group(2)):02d}-{int(m2.group(3)):02d}"
-    return (fallback or "").strip() or datetime.now().strftime("%Y-%m-%d")
-
 
 @app.get("/api/site/articles")
 async def site_articles_list(kind: str = Query("research", description="research 行业研究 / news 新闻浏览"),
@@ -1621,10 +1659,12 @@ async def site_articles_import(req: SiteArticleImportRequest, request: Request) 
     if not raw.lstrip().lower().startswith(("<!doctype", "<html")):
         raise HTTPException(status_code=400, detail="不是有效的 HTML 文件 (缺少 <html> 根标签)")
     filename = Path(req.filename.strip()).name[:255]
-    title = req.title.strip() or _extract_html_title(raw, Path(filename).stem)
+    title = req.title.strip() or site_html_service.extract_title(raw, Path(filename).stem)
     if not title:
         raise HTTPException(status_code=400, detail="无法识别标题, 请填写标题后重试")
-    date = _extract_html_date(raw, filename, req.date)
+    # 日期优先级: 报告内「数据截至/报告日期」 > 文件名 > 前端给的文件时间 > 今天
+    date = (site_html_service.extract_date(raw, filename) or req.date.strip()
+            or datetime.now().strftime("%Y-%m-%d"))
     try:
         aid = await pg_service.create_site_article(
             req.kind, title, date,

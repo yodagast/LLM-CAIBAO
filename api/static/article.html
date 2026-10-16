@@ -6,7 +6,7 @@
   <link rel="icon" href="/static/img/apple-touch-icon.png?v=3" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v=3" />
   <title data-i18n-title="article.title">文章 · 杭州波动粒子 Hangzhou Wave Particle</title>
-  <link rel="stylesheet" href="/static/css/home.css?v=9" />
+  <link rel="stylesheet" href="/static/css/home.css?v=12" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="/static/js/i18n.js?v=3"></script>
 </head>
@@ -114,10 +114,9 @@
           if (navNews) navNews.classList.remove("active");
         }
       }
-      // 渲染一篇文章 (format=html 的导入文章用 iframe 原样展示, 保留其自身样式与图表脚本)
+      // 渲染一篇文章 (format=html 的导入报告由服务端渲染成独立的站点外壳页)
       function paint(it) {
         var useEn = (window.I18N && window.I18N.getLang() === "en");
-        var isHtml = String(it.format || "md") === "html";
         var showTitle = (useEn && it.title_en) ? it.title_en : it.title;
         var showBody = (useEn && it.body_en) ? it.body_en : it.body;
         var showDate = (useEn && it.date_en) ? it.date_en : it.date;
@@ -130,15 +129,7 @@
         var tags = [];
         try { tags = JSON.parse(showTagsRaw || "[]") || []; } catch (e) { tags = []; }
         document.getElementById("art-tags").textContent = tags.join(" · ");
-        var bodyEl = document.getElementById("art-body");
-        if (isHtml) {
-          bodyEl.className = "md-body html-embed";
-          bodyEl.innerHTML = '<iframe class="html-frame" title="' + esc(showTitle) +
-            '" src="/article/' + aid + '/html" loading="lazy"></iframe>';
-        } else {
-          bodyEl.className = "md-body";
-          bodyEl.innerHTML = marked.parse(showBody || "");
-        }
+        document.getElementById("art-body").innerHTML = marked.parse(showBody || "");
         // 高亮对应导航 + 返回链接
         if (it.kind === "news") {
           back.dataset.kind = "news";
@@ -160,7 +151,7 @@
           document.getElementById("art-body").innerHTML = "";
         });
       if (window.I18N) {
-        // 语言切换时重载文章正文 (标题/正文切换中英; HTML 导入文章正文不变)
+        // 语言切换时重载文章正文 (标题/正文切换中英)
         window.I18N.onApply = function () {
           fetch("/api/site/articles/" + aid)
             .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })

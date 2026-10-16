@@ -289,7 +289,7 @@ blockquote.quote {
   padding: 60px 28px 40px; font-size: 13px;
 }
 .footer-inner { max-width: 1080px; margin: 0 auto; }
-.footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 40px; margin-bottom: 40px; }
+.footer-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 40px; margin-bottom: 40px; }
 .footer h5 { color: #fff; font-size: 13px; letter-spacing: 2px; margin-bottom: 14px; text-transform: uppercase; }
 .footer p { margin-bottom: 8px; line-height: 1.9; }
 .footer a { color: rgba(255, 255, 255, .6); }

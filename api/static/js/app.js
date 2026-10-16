@@ -341,18 +341,24 @@
       tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-soft)">暂无文章, 点击「新建文章」创建</td></tr>';
       return;
     }
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     tbody.innerHTML = list.map((a) => {
       let tags = [];
       try { tags = JSON.parse(a.tags || "[]") || []; } catch (e) { tags = []; }
+      const isHtml = String(a.format || "md") === "html";
+      const srcTip = isHtml && a.src_file ? ' title="' + esc("导入自 " + a.src_file) + '"' : "";
       return (
         '<tr>' +
         '  <td>' + a.id + "</td>" +
-        '  <td><a href="/article/' + a.id + '" target="_blank" class="stock-link">' + (a.title || "") + "</a></td>" +
-        '  <td>' + (a.date || "") + "</td>" +
-        '  <td>' + (tags.map((t) => { const escT = String(t).replace(/</g, "&lt;"); return '<span class="filter-badge">' + escT + "</span>"; }).join(" ") || "") + "</td>" +
+        '  <td><a href="/article/' + a.id + '" target="_blank" class="stock-link">' + esc(a.title) + "</a>" +
+        (isHtml ? ' <span class="filter-badge" style="background:var(--accent,#b08d57);color:#fff"' + srcTip + ">HTML</span>" : "") + "</td>" +
+        '  <td>' + esc(a.date || "") + "</td>" +
+        '  <td>' + (tags.map((t) => '<span class="filter-badge">' + esc(t) + "</span>").join(" ") || "") + "</td>" +
         '  <td>' + String(a.updated_at || "").slice(0, 16).replace("T", " ") + "</td>" +
         '  <td style="white-space:nowrap">' +
         '    <a class="btn-ghost btn-sm" href="/admin/article_edit?id=' + a.id + '&kind=' + a.kind + '">编辑</a> ' +
+        (isHtml ? '<button type="button" class="btn-ghost btn-sm" data-act="replace" data-id="' + a.id + '">替换HTML</button> ' : "") +
         '    <button type="button" class="btn-ghost btn-sm" data-act="del" data-id="' + a.id + '">删除</button>' +
         "  </td>" +
         "</tr>"
@@ -361,7 +367,8 @@
     tbody.querySelectorAll("[data-act]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = parseInt(btn.dataset.id, 10);
-        deleteArticle(id);
+        if (btn.dataset.act === "replace") pickHtmlFile(id, spView);
+        else deleteArticle(id);
       });
     });
   }
@@ -390,6 +397,76 @@
     } catch (e) {
       alert("删除失败: " + (e.message || e));
     }
+  }
+
+  // ---------- 导入本地 HTML 文件为文章 (行业研究 / 新闻浏览 共用) ----------
+  let importReplaceId = null;   // null=导入新文章; 数字=替换该文章的 HTML 原文
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ""));
+      fr.onerror = () => reject(new Error("读取本地文件失败"));
+      fr.readAsText(file, "utf-8");
+    });
+  }
+
+  function pickHtmlFile(replaceId, kind) {
+    const input = $("#article-import-file");
+    if (!input) return;
+    importReplaceId = replaceId || null;
+    input.dataset.kind = kind || spView;
+    input.value = "";     // 允许连续选择同一个文件
+    input.click();
+  }
+
+  async function importHtmlFile(file, kind, replaceId) {
+    const html = await readFileAsText(file);
+    if (!/^\s*(<!doctype|<html)/i.test(html)) {
+      throw new Error("请选择完整的 HTML 文件 (.html)");
+    }
+    const r = await fetch(replaceId ? "/api/site/articles/" + replaceId + "/html" : "/api/site/articles/import", {
+      method: replaceId ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: kind,
+        html: html,
+        filename: file.name,
+        date: new Date(file.lastModified || Date.now()).toISOString().slice(0, 10),
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "导入失败");
+    return d;
+  }
+
+  function initHtmlImport() {
+    const btn = $("#article-import-btn");
+    const input = $("#article-import-file");
+    if (!btn || !input) return;
+    btn.addEventListener("click", () => pickHtmlFile(null, spView));
+    input.addEventListener("change", async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const hint = $("#sp-art-hint");
+      const kind = input.dataset.kind || spView;
+      const replaceId = importReplaceId;
+      btn.disabled = true;
+      if (hint) hint.textContent = (replaceId ? "替换中… " : "导入中… ") + file.name;
+      try {
+        const d = await importHtmlFile(file, kind, replaceId);
+        if (hint) hint.textContent = "✅ 已" + (replaceId ? "替换" : "导入") + ": " + (d.title || file.name);
+        loadArticles();
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (hint) hint.textContent = "导入失败: " + msg;
+        alert("导入失败: " + msg);
+      } finally {
+        importReplaceId = null;
+        input.value = "";
+        btn.disabled = false;
+      }
+    });
   }
 
   // ---------- 页面管理权限: 仅管理员 (yodagast) 可见/可编辑 ----------
@@ -442,6 +519,7 @@
         location.href = "/admin/article_edit?kind=" + kind;
       });
     }
+    initHtmlImport();   // 导入本地 HTML 文件为文章
     // 从编辑页返回时 (URL ?sitepage=kind) 自动激活「页面管理」tab 并恢复对应视图
     const q = new URLSearchParams(location.search);
     const initView = q.get("sitepage");

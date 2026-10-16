@@ -53,16 +53,16 @@ ARTICLES_EN = {
          "packaging, specialized in borosilicate glass tubing and injectable vials."),
     1: ("Baijiu Industry Deep Dive",
          "Premiumization and inventory cycles…"),
-    6: ("CaiBao Capital Donated to Xinhua Education Foundation",
-         "In February 2026, CaiBao Capital donated to the Xinhua Education Foundation to "
+    6: ("Hangzhou Wave Particle Donated to Xinhua Education Foundation",
+         "In February 2026, Hangzhou Wave Particle donated to the Xinhua Education Foundation to "
          "support the training of young financial talent."),
-    5: ("CaiBao Capital Hosted an Invitation-Only Investor Salon on Long-Termism & Compounding",
+    5: ("Hangzhou Wave Particle Hosted an Invitation-Only Investor Salon on Long-Termism & Compounding",
          "*April 2026*\nTag: Investor Relations"),
-    4: ("CaiBao Capital Spoke at the Asia Value Investing Forum",
+    4: ("Hangzhou Wave Particle Spoke at the Asia Value Investing Forum",
          "*June 2026*\nTag: Industry Exchange"),
-    3: ("CaiBao Capital Published Its Annual Value Investing Outlook",
+    3: ("Hangzhou Wave Particle Published Its Annual Value Investing Outlook",
          "*July 2026*\nTag: Research Publication"),
-    2: ("CaiBao Capital Launched Its Smart Stock Screening & Backtesting Platform",
+    2: ("Hangzhou Wave Particle Launched Its Smart Stock Screening & Backtesting Platform",
          "*August 2026*\nTag: Company News"),
 }
 

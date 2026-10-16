@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="icon" href="/static/favicon.ico" sizes="32x32" />
-  <link rel="icon" href="/static/img/favicon-192.png" sizes="192x192" />
-  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
+  <link rel="icon" href="/static/img/apple-touch-icon.png?v=3" />
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v=3" />
   <title>智能选股回测平台</title>
   <link rel="stylesheet" href="/static/css/style.css?v=58" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
@@ -1440,7 +1439,11 @@
             <button type="button" class="btn-primary" id="article-create-btn">
               <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-plus"/></svg> 新建文章
             </button>
-            <span class="hint" id="sp-art-hint">前端展示标题、时间与标签, 点击进入正文页</span>
+            <button type="button" class="btn-ghost" id="article-import-btn">
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-upload"/></svg> 导入 HTML
+            </button>
+            <input type="file" id="article-import-file" accept=".html,.htm,text/html" class="hidden" />
+            <span class="hint" id="sp-art-hint">前端展示标题、时间与标签, 点击进入正文页 (导入的 HTML 原样展示)</span>
           </div>
           <div class="table-wrap" style="max-height:560px;overflow:auto;">
             <table id="articles-table">
@@ -1515,6 +1518,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=5"></script>
-  <script src="/static/js/app.js?v=92"></script>
+  <script src="/static/js/app.js?v=93"></script>
 </body>
 </html>

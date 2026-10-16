@@ -2500,7 +2500,7 @@ SITE_PAGES_DEFAULTS = [
     ("industry_research", "行业研究",
      '# 行业研究\n\n我们持续对重点行业与企业展开深度研究，以下为部分研究成果。\n\n## 白酒行业深度\n\n高端化与库存周期……\n'),
     ("news", "新闻浏览",
-     '# 新闻浏览\n\n## 研究平台上线\n\n财宝资本研究平台全面上线智能选股回测系统。\n'),
+     '# 新闻浏览\n\n## 研究平台上线\n\n杭州波动粒子研究平台全面上线智能选股回测系统。\n'),
 ]
 
 
@@ -2591,6 +2591,8 @@ CREATE TABLE IF NOT EXISTS site_articles (
     tags_en     TEXT         DEFAULT '', -- 英文标签 (JSON 数组字符串)
     body        TEXT         DEFAULT '', -- 正文 (Markdown, 正文页渲染) 中文
     body_en     TEXT         DEFAULT '', -- 英文正文 (Markdown)
+    format      VARCHAR(8)   DEFAULT 'md', -- 正文格式: md Markdown / html 导入的完整 HTML 文档
+    src_file    VARCHAR(255) DEFAULT '',   -- 导入来源文件名 (format=html 时记录)
     created_at  TIMESTAMP    DEFAULT now(),
     updated_at  TIMESTAMP    DEFAULT now()
 );
@@ -2608,6 +2610,9 @@ async def init_site_articles_schema() -> None:
         await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS body_en TEXT DEFAULT '';")
         await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS date_en VARCHAR(32) DEFAULT '';")
         await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS tags_en TEXT DEFAULT '';")
+        # 迁移: 新增 format / src_file 列 (支持导入完整 HTML 文件作为正文)
+        await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS format VARCHAR(8) DEFAULT 'md';")
+        await conn.execute("ALTER TABLE site_articles ADD COLUMN IF NOT EXISTS src_file VARCHAR(255) DEFAULT '';")
         # 首次迁移: 表为空时, 将旧 site_pages 的行业研究/新闻 markdown 拆成文章
         n = await conn.fetchval("SELECT count(*) FROM site_articles")
         if n == 0:
@@ -2655,7 +2660,7 @@ async def list_site_articles(kind: str, limit: int = 100) -> list[dict]:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, kind, title, title_en, date, date_en, tags, tags_en, updated_at "
+            "SELECT id, kind, title, title_en, date, date_en, tags, tags_en, format, src_file, updated_at "
             "FROM site_articles WHERE kind = $1 ORDER BY id DESC LIMIT $2::int",
             kind, int(limit))
     return [dict(r) for r in rows]
@@ -2666,35 +2671,52 @@ async def get_site_article(aid: int) -> dict | None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
-            "SELECT id, kind, title, title_en, date, date_en, tags, tags_en, body, body_en, updated_at "
-            "FROM site_articles WHERE id = $1", aid)
+            "SELECT id, kind, title, title_en, date, date_en, tags, tags_en, body, body_en, "
+            "format, src_file, updated_at FROM site_articles WHERE id = $1", aid)
     return dict(r) if r else None
 
 
 async def create_site_article(kind: str, title: str, date: str, tags: str,
                               body: str, title_en: str = "", body_en: str = "",
-                              date_en: str = "", tags_en: str = "") -> int:
-    """创建文章, 返回 id。"""
+                              date_en: str = "", tags_en: str = "",
+                              format: str = "md", src_file: str = "") -> int:
+    """创建文章, 返回 id。format=html 时 body 为完整 HTML 文档。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         aid = await conn.fetchval(
-            "INSERT INTO site_articles (kind, title, title_en, date, date_en, tags, tags_en, body, body_en) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
-            kind, title, title_en or "", date, date_en or "", tags, tags_en or "", body, body_en or "")
+            "INSERT INTO site_articles (kind, title, title_en, date, date_en, tags, tags_en, "
+            "body, body_en, format, src_file) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id",
+            kind, title, title_en or "", date, date_en or "", tags, tags_en or "", body, body_en or "",
+            format or "md", src_file or "")
     return int(aid)
 
 
 async def update_site_article(aid: int, kind: str, title: str, date: str,
                               tags: str, body: str, title_en: str = "",
                               body_en: str = "", date_en: str = "",
-                              tags_en: str = "") -> int:
+                              tags_en: str = "", format: str = "md",
+                              src_file: str = "") -> int:
     """更新文章, 返回受影响行数。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "UPDATE site_articles SET kind=$1, title=$2, title_en=$3, date=$4, date_en=$5, "
-            "tags=$6, tags_en=$7, body=$8, body_en=$9, updated_at=now() WHERE id=$10 RETURNING id",
-            kind, title, title_en or "", date, date_en or "", tags, tags_en or "", body, body_en or "", aid)
+            "tags=$6, tags_en=$7, body=$8, body_en=$9, format=$10, src_file=$11, updated_at=now() "
+            "WHERE id=$12 RETURNING id",
+            kind, title, title_en or "", date, date_en or "", tags, tags_en or "", body, body_en or "",
+            format or "md", src_file or "", aid)
+    return len(rows)
+
+
+async def update_site_article_html(aid: int, body: str, src_file: str = "") -> int:
+    """替换文章正文为导入的 HTML (保留标题/日期/标签等其它字段), 返回受影响行数。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "UPDATE site_articles SET body=$1, format='html', src_file=$2, updated_at=now() "
+            "WHERE id=$3 RETURNING id",
+            body, src_file or "", aid)
     return len(rows)
 
 

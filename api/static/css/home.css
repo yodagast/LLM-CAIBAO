@@ -1,4 +1,4 @@
-/* 财宝资本 CaiBao Capital - 公司官网样式 (参考喜马拉雅资本风格: 庄重/留白/衬线标题) */
+/* 杭州波动粒子 Hangzhou Wave Particle - 公司官网样式 (参考喜马拉雅资本风格: 庄重/留白/衬线标题) */
 :root {
   --navy: #0f2540;
   --navy-2: #1e3d63;
@@ -253,6 +253,12 @@ blockquote.quote {
 }
 .md-body pre code { background: transparent; padding: 0; color: inherit; }
 .md-body hr { border: none; border-top: 1px solid var(--line); margin: 2em 0; }
+/* 导入的 HTML 文章 (format=html): 整篇原样嵌入 iframe, 保留其自身样式与图表脚本 */
+.md-body.html-embed { padding: 0; }
+.html-frame {
+  display: block; width: 100%; height: 84vh; min-height: 560px;
+  border: 1px solid var(--line); border-radius: 12px; background: #fff;
+}
 .loading-inline { color: var(--soft); font-size: 14px; padding: 20px 0; }
 
 /* ---------- CTA ---------- */
@@ -281,6 +287,15 @@ blockquote.quote {
   display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;
   color: rgba(255, 255, 255, .42); font-size: 12px;
 }
+/* 矢量图标 (stroke 风格, 继承 currentColor; 与后台 style.css 的 .icon 一致) */
+.icon {
+  width: 1em; height: 1em; display: inline-block;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+  vertical-align: -0.125em; flex: 0 0 auto;
+}
+.footer-bottom .filing .icon { width: 12px; height: 12px; margin-right: 4px; }
+.footer-bottom .filing img { width: 20px; height: 20px; vertical-align: -5px; margin-right: 4px; }
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 768px) {

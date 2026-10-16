@@ -10,11 +10,13 @@
 from __future__ import annotations
 
 import asyncio
+import html as _html
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -29,6 +31,9 @@ from . import portfolio_service
 from . import events_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# 官网文章正文上限 (导入的完整 HTML 文件可能上百 KB, 放宽校验)
+MAX_ARTICLE_BODY = 8_000_000
 
 app = FastAPI(
     title="单股四策略回测系统",
@@ -284,8 +289,20 @@ class SiteArticleRequest(BaseModel):
     date_en: str = Field("", max_length=32, description="英文展示日期 (如 February 2026)")
     tags: list[str] = Field(default_factory=list, max_length=10, description="标签列表")
     tags_en: list[str] = Field(default_factory=list, max_length=10, description="英文标签列表")
-    body: str = Field("", max_length=50000, description="正文 (Markdown)")
-    body_en: str = Field("", max_length=50000, description="英文正文 (Markdown)")
+    body: str = Field("", max_length=MAX_ARTICLE_BODY, description="正文 (Markdown, 或 format=html 时的完整 HTML)")
+    body_en: str = Field("", max_length=MAX_ARTICLE_BODY, description="英文正文 (Markdown)")
+    format: str = Field("md", description="正文格式: md Markdown / html 导入的完整 HTML 文档")
+    src_file: str = Field("", max_length=255, description="导入来源文件名 (format=html 时记录)")
+
+
+class SiteArticleImportRequest(BaseModel):
+    """导入本地 HTML 文件为官网文章 (后台「内容管理」导入 HTML 用)。"""
+    kind: str = Field(..., description="类型: research 行业研究 / news 新闻浏览")
+    html: str = Field(..., min_length=1, max_length=MAX_ARTICLE_BODY, description="HTML 文件全文")
+    filename: str = Field("", max_length=255, description="原始文件名 (如 盐湖股份000792-SZ深度调研报告.html)")
+    title: str = Field("", max_length=200, description="标题 (空=自动取 <title>)")
+    date: str = Field("", max_length=32, description="展示日期 (空=自动识别, 否则取今天)")
+    tags: list[str] = Field(default_factory=list, max_length=10, description="标签列表")
 
 
 class BandOptimizeRequest(BaseModel):
@@ -425,6 +442,19 @@ async def article_page(aid: int) -> FileResponse:
     """文章正文页 (行业研究/新闻 详情, 前端按 id 拉取渲染)。"""
     return FileResponse(STATIC_DIR / "article.html",
                         headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/article/{aid}/html", include_in_schema=False)
+async def article_html_page(aid: int) -> HTMLResponse:
+    """导入的 HTML 文章原文 (format=html), 供正文页 iframe 内嵌 / 直接打开。"""
+    try:
+        art = await pg_service.get_site_article(aid)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取文章失败: {e}")
+    if not art or str(art.get("format") or "md") != "html" or not art.get("body"):
+        raise HTTPException(status_code=404, detail="该文章没有 HTML 原文")
+    return HTMLResponse(content=str(art["body"]),
+                        headers={"X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/admin", include_in_schema=False)
@@ -1508,7 +1538,36 @@ async def site_content_save(req: SiteContentBatchRequest, request: Request) -> d
 
 # ---------------------------------------------------------------------------
 # 官网文章管理 (行业研究 / 新闻浏览, 后台文章管理; 前台 /research /news 列表 + /article/{id} 正文)
+# 正文支持两种格式: format=md 的 Markdown, 或 format=html 的导入完整 HTML 文档 (iframe 原样展示)
 # ---------------------------------------------------------------------------
+
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
+_DATE_RE = re.compile(
+    r"(?:数据截至|数据截止|报告日期|发布日期|更新日期|发布时间|报告时间|编制日期|日期)"
+    r"\s*[:：]?\s*(20\d{2})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})")
+
+
+def _extract_html_title(html_text: str, fallback: str = "") -> str:
+    """取 HTML 的 <title> 作为文章标题 (空则回退文件名)。"""
+    m = _TITLE_RE.search(html_text)
+    if m:
+        title = _html.unescape(m.group(1)).strip()
+        title = re.sub(r"\s+", " ", title)
+        if title:
+            return title[:200]
+    return (fallback or "").strip()[:200]
+
+
+def _extract_html_date(html_text: str, filename: str = "", fallback: str = "") -> str:
+    """识别 HTML 中「数据截至 / 报告日期」等日期, 其次文件名中的 YYYY-MM-DD, 再次 fallback, 最后取今天。"""
+    m = _DATE_RE.search(html_text[:200000])
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m2 = re.search(r"(20\d{2})[-_.](\d{1,2})[-_.](\d{1,2})", filename or "")
+    if m2:
+        return f"{m2.group(1)}-{int(m2.group(2)):02d}-{int(m2.group(3)):02d}"
+    return (fallback or "").strip() or datetime.now().strftime("%Y-%m-%d")
+
 
 @app.get("/api/site/articles")
 async def site_articles_list(kind: str = Query("research", description="research 行业研究 / news 新闻浏览"),
@@ -1539,14 +1598,56 @@ async def site_articles_create(req: SiteArticleRequest, request: Request) -> dic
     await _require_site_admin(request)
     if req.kind not in ("research", "news"):
         raise HTTPException(status_code=400, detail="kind 须为 research 或 news")
+    fmt = "html" if (req.format or "").strip().lower() == "html" else "md"
     try:
         aid = await pg_service.create_site_article(
             req.kind, req.title.strip(), req.date.strip(),
             __import__("json").dumps(req.tags, ensure_ascii=False), req.body,
             req.title_en.strip(), req.body_en,
-            req.date_en.strip(), __import__("json").dumps(req.tags_en, ensure_ascii=False))
+            req.date_en.strip(), __import__("json").dumps(req.tags_en, ensure_ascii=False),
+            fmt, req.src_file.strip())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建文章失败: {e}")
+    return {"ok": True, "id": aid}
+
+
+@app.post("/api/site/articles/import")
+async def site_articles_import(req: SiteArticleImportRequest, request: Request) -> dict:
+    """导入本地 HTML 文件为文章 (仅管理员)。标题/日期缺省时自动从 HTML 内容识别。"""
+    await _require_site_admin(request)
+    if req.kind not in ("research", "news"):
+        raise HTTPException(status_code=400, detail="kind 须为 research 或 news")
+    raw = req.html
+    if not raw.lstrip().lower().startswith(("<!doctype", "<html")):
+        raise HTTPException(status_code=400, detail="不是有效的 HTML 文件 (缺少 <html> 根标签)")
+    filename = Path(req.filename.strip()).name[:255]
+    title = req.title.strip() or _extract_html_title(raw, Path(filename).stem)
+    if not title:
+        raise HTTPException(status_code=400, detail="无法识别标题, 请填写标题后重试")
+    date = _extract_html_date(raw, filename, req.date)
+    try:
+        aid = await pg_service.create_site_article(
+            req.kind, title, date,
+            __import__("json").dumps(req.tags, ensure_ascii=False), raw,
+            format="html", src_file=filename)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"导入失败: {e}")
+    return {"ok": True, "id": aid, "title": title, "date": date, "src_file": filename}
+
+
+@app.put("/api/site/articles/{aid}/html")
+async def site_articles_replace_html(aid: int, req: SiteArticleImportRequest, request: Request) -> dict:
+    """用新导入的 HTML 替换文章正文 (仅管理员, 保留标题/日期/标签)。"""
+    await _require_site_admin(request)
+    raw = req.html
+    if not raw.lstrip().lower().startswith(("<!doctype", "<html")):
+        raise HTTPException(status_code=400, detail="不是有效的 HTML 文件 (缺少 <html> 根标签)")
+    try:
+        n = await pg_service.update_site_article_html(aid, raw, Path(req.filename.strip()).name[:255])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"替换失败: {e}")
+    if not n:
+        raise HTTPException(status_code=404, detail="文章不存在")
     return {"ok": True, "id": aid}
 
 
@@ -1556,12 +1657,14 @@ async def site_articles_update(aid: int, req: SiteArticleRequest, request: Reque
     await _require_site_admin(request)
     if req.kind not in ("research", "news"):
         raise HTTPException(status_code=400, detail="kind 须为 research 或 news")
+    fmt = "html" if (req.format or "").strip().lower() == "html" else "md"
     try:
         n = await pg_service.update_site_article(
             aid, req.kind, req.title.strip(), req.date.strip(),
             __import__("json").dumps(req.tags, ensure_ascii=False), req.body,
             req.title_en.strip(), req.body_en,
-            req.date_en.strip(), __import__("json").dumps(req.tags_en, ensure_ascii=False))
+            req.date_en.strip(), __import__("json").dumps(req.tags_en, ensure_ascii=False),
+            fmt, req.src_file.strip())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新文章失败: {e}")
     if not n:

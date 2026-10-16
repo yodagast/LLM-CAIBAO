@@ -3,12 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="icon" href="/static/favicon.ico" sizes="32x32" />
-  <link rel="icon" href="/static/img/favicon-192.png" sizes="192x192" />
-  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
-  <title data-i18n-title="news.title">新闻浏览 · 财宝资本 CaiBao Capital</title>
-  <link rel="stylesheet" href="/static/css/home.css?v=6" />
-  <script src="/static/js/i18n.js"></script>
+  <link rel="icon" href="/static/img/apple-touch-icon.png?v=3" />
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v=3" />
+  <title data-i18n-title="news.title">新闻浏览 · 杭州波动粒子 Hangzhou Wave Particle</title>
+  <link rel="stylesheet" href="/static/css/home.css?v=9" />
+  <script src="/static/js/i18n.js?v=3"></script>
 </head>
 <body>
 
@@ -16,8 +15,8 @@
   <header class="nav">
     <div class="nav-inner">
       <a class="brand" href="/">
-        <span class="brand-mark">财</span>
-        <span class="brand-text"><b data-i18n="brand.name">财宝资本</b><span data-i18n="brand.sub">CaiBao Capital</span></span>
+        <span class="brand-mark">波</span>
+        <span class="brand-text"><b data-i18n="brand.name">杭州波动粒子</b><span data-i18n="brand.sub">Hangzhou Wave Particle</span></span>
       </a>
       <nav class="nav-links">
         <a class="lnk" data-i18n="nav.culture" href="/">公司文化</a>
@@ -43,7 +42,7 @@
     <div class="footer-inner">
       <div class="footer-grid">
         <div>
-          <h5 data-i18n="footer.capital">财宝资本</h5>
+          <h5 data-i18n="footer.capital">杭州波动粒子</h5>
           <p data-i18n="footer.desc">创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
         </div>
         <div>
@@ -54,13 +53,15 @@
         </div>
         <div>
           <h5 data-i18n="footer.contact">联系我们</h5>
-          <p data-i18n="footer.email">邮箱：contact@caibaocapital.com</p>
+          <p data-i18n="footer.email">邮箱：contact@qicifier.com</p>
           <p data-i18n="footer.tel">电话：+86 000 0000 0000</p>
           <p data-i18n="footer.addr">地址：中国 · 上海</p>
         </div>
       </div>
       <div class="footer-bottom">
-        <span data-i18n="footer.rights">© 2026 财宝资本 CaiBao Capital. 保留所有权利。</span>
+        <span data-i18n="footer.rights">© 2026 杭州余杭波动粒子信息经营部 版权所有</span>
+        <span class="filing"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-globe"/></svg><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">浙ICP备2026077052号</a></span>
+        <span class="filing"><img src="/static/img/gongan-beian.png" alt="公安备案" width="20" height="20" /><a href="https://beian.mps.gov.cn/#/query/webSearch?code=33011002020623" target="_blank" rel="noopener">浙公网安备33011002020623号</a></span>
         <span data-i18n="footer.disclaimer">本站内容仅供研究参考，不构成投资建议。</span>
       </div>
     </div>
@@ -70,8 +71,8 @@
     /* 新闻浏览列表页词典 */
     if (window.I18N) {
       window.I18N.register({
-        zh: { "news.title": "新闻浏览 · 财宝资本 CaiBao Capital", "news.title2": "新闻浏览" },
-        en: { "news.title": "News · CaiBao Capital", "news.title2": "News" }
+        zh: { "news.title": "新闻浏览 · 杭州波动粒子 Hangzhou Wave Particle", "news.title2": "新闻浏览" },
+        en: { "news.title": "News · Hangzhou Wave Particle", "news.title2": "News" }
       });
     }
     // 新闻浏览列表页: 从 API 读取文章列表 (标题/日期/标签), 点击进正文页

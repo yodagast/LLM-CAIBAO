@@ -1,4 +1,4 @@
-/* 财宝资本官网 i18n: 中英文切换 (localStorage 持久化)
+/* 杭州波动粒子官网 i18n: 中英文切换 (localStorage 持久化)
  *
  * 用法:
  *   1. 各页面 <head> 引入本脚本 (须在 DOMContentLoaded 之前)
@@ -21,22 +21,22 @@
   /* 通用词典 (导航 / 页脚 / 列表 / 文章公用文案) */
   var DICT = {
     zh: {
-      "brand.name": "财宝资本",
-      "brand.sub": "CaiBao Capital",
+      "brand.name": "杭州波动粒子",
+      "brand.sub": "Hangzhou Wave Particle",
       "nav.culture": "公司文化",
       "nav.research": "行业研究",
       "nav.news": "新闻浏览",
-      "footer.capital": "财宝资本",
+      "footer.capital": "杭州波动粒子",
       "footer.desc": "创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。",
       "footer.nav": "快捷导航",
       "footer.culture": "公司文化",
       "footer.research": "行业研究",
       "footer.news": "新闻浏览",
       "footer.contact": "联系我们",
-      "footer.email": "邮箱：contact@caibaocapital.com",
+      "footer.email": "邮箱：contact@qicifier.com",
       "footer.tel": "电话：+86 000 0000 0000",
       "footer.addr": "地址：中国 · 上海",
-      "footer.rights": "© 2026 财宝资本 CaiBao Capital. 保留所有权利。",
+      "footer.rights": "© 2026 杭州余杭波动粒子信息经营部 版权所有",
       "footer.disclaimer": "本站内容仅供研究参考，不构成投资建议。",
       "list.loading": "加载中…",
       "list.empty": "暂无内容",
@@ -46,22 +46,22 @@
       "back.list": "← 返回列表"
     },
     en: {
-      "brand.name": "财宝资本",
-      "brand.sub": "CaiBao Capital",
+      "brand.name": "杭州波动粒子",
+      "brand.sub": "Hangzhou Wave Particle",
       "nav.culture": "Culture",
       "nav.research": "Research",
       "nav.news": "News",
-      "footer.capital": "CaiBao Capital",
+      "footer.capital": "Hangzhou Wave Particle",
       "footer.desc": "Create compounding of time and knowledge. Serve every client impartially, with reasonable, sustainable returns above the social average.",
       "footer.nav": "Quick Links",
       "footer.culture": "Culture",
       "footer.research": "Research",
       "footer.news": "News",
       "footer.contact": "Contact Us",
-      "footer.email": "Email: contact@caibaocapital.com",
+      "footer.email": "Email: contact@qicifier.com",
       "footer.tel": "Tel: +86 000 0000 0000",
       "footer.addr": "Address: Shanghai, China",
-      "footer.rights": "© 2026 CaiBao Capital. All rights reserved.",
+      "footer.rights": "© 2026 Hangzhou Wave Particle Information Business Department. All rights reserved.",
       "footer.disclaimer": "Content for research reference only, not investment advice.",
       "list.loading": "Loading…",
       "list.empty": "No content yet",

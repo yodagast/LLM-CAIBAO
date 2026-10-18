@@ -6,7 +6,7 @@
   <link rel="icon" href="/static/img/apple-touch-icon.png?v=3" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v=3" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=58" />
+  <link rel="stylesheet" href="/static/css/style.css?v=59" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -1404,16 +1404,16 @@
       </div><!-- /bt-panel ptf -->
     </section><!-- /tab-backtest -->
 
-    <!-- ================= Tab: 页面管理 (公司文化 / 行业研究 / 新闻浏览) ================= -->
+    <!-- ================= Tab: 页面管理 (公司文化 / 行业研究 / 公司新闻) ================= -->
     <section id="tab-sitepage" class="hidden">
       <div class="card form-card">
         <div class="card-title">
           <h2>内容管理</h2>
-          <span class="hint">管理官网内容: 公司文化 / 行业研究 / 新闻浏览</span>
+          <span class="hint">管理官网内容: 公司文化 / 行业研究 / 公司新闻</span>
           <div class="seg-group" style="margin-left:auto" id="sp-seg-kind">
             <button type="button" class="seg-btn" data-kind="culture">公司文化</button>
             <button type="button" class="seg-btn" data-kind="research">行业研究</button>
-            <button type="button" class="seg-btn" data-kind="news">新闻浏览</button>
+            <button type="button" class="seg-btn" data-kind="news">公司新闻</button>
           </div>
         </div>
 
@@ -1433,7 +1433,7 @@
           </div>
         </div>
 
-        <!-- 视图: 文章管理 (行业研究 / 新闻浏览 共用, 类型由 seg 决定) -->
+        <!-- 视图: 文章管理 (行业研究 / 公司新闻 共用, 类型由 seg 决定) -->
         <div id="sp-view-articles" class="hidden">
           <div class="form-actions">
             <button type="button" class="btn-primary" id="article-create-btn">
@@ -1445,6 +1445,32 @@
             <input type="file" id="article-import-file" accept=".html,.htm,text/html" class="hidden" />
             <span class="hint" id="sp-art-hint">导入的 HTML 报告默认打上「AI研究」标签, 在站点页面内展示, 可点击标签筛选</span>
           </div>
+
+          <!-- 筛选 / 排序 / 分页工具栏 -->
+          <div class="sp-toolbar">
+            <input type="search" id="art-filter-q" class="sp-input" placeholder="搜索标题 / 正文…" />
+            <select id="art-filter-tag" class="sp-input">
+              <option value="">全部标签</option>
+            </select>
+            <select id="art-sort" class="sp-input">
+              <option value="newest">最新创建</option>
+              <option value="oldest">最早创建</option>
+              <option value="updated_desc">最近更新</option>
+              <option value="updated_asc">最早更新</option>
+              <option value="date_desc">日期倒序</option>
+              <option value="date_asc">日期正序</option>
+              <option value="title_asc">标题升序</option>
+              <option value="title_desc">标题降序</option>
+            </select>
+            <select id="art-page-size" class="sp-input">
+              <option value="10">每页 10 条</option>
+              <option value="20">每页 20 条</option>
+              <option value="50">每页 50 条</option>
+            </select>
+            <button type="button" class="btn-ghost btn-sm" id="art-filter-btn">筛选</button>
+            <button type="button" class="btn-ghost btn-sm" id="art-filter-reset">重置</button>
+          </div>
+
           <div class="table-wrap" style="max-height:560px;overflow:auto;">
             <table id="articles-table">
               <thead>
@@ -1460,6 +1486,7 @@
               <tbody></tbody>
             </table>
           </div>
+          <div class="pager-box" id="articles-pager"></div>
         </div>
       </div>
     </section>
@@ -1518,6 +1545,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=5"></script>
-  <script src="/static/js/app.js?v=95"></script>
+  <script src="/static/js/app.js?v=96"></script>
 </body>
 </html>

@@ -176,7 +176,7 @@ blockquote.quote {
 .research-item:hover .research-title { color: var(--accent); }
 .research-summary { font-size: 14px; color: var(--soft); margin-top: 8px; line-height: 1.8; }
 
-/* ---------- 新闻浏览 ---------- */
+/* ---------- 公司新闻 ---------- */
 .news-list { display: flex; flex-direction: column; margin-top: 16px; }
 .news-item {
   display: flex; align-items: baseline; gap: 24px;
@@ -196,7 +196,7 @@ blockquote.quote {
   margin-left: 10px; white-space: nowrap;
 }
 
-/* ---------- 文章列表 (行业研究 / 新闻浏览列表页) ---------- */
+/* ---------- 文章列表 (行业研究 / 公司新闻列表页) ---------- */
 /* ---------- 列表页标签筛选 ---------- */
 .tag-filter { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0 4px; }
 .tag-filter:empty { display: none; }
@@ -277,7 +277,7 @@ blockquote.quote {
 .article-back .btn-hero.solid { background: var(--navy); color: #fff; }
 .article-back .btn-hero.solid:hover { background: var(--accent); }
 
-/* ---------- Markdown 正文 (行业研究 / 新闻浏览页) ---------- */
+/* ---------- Markdown 正文 (行业研究 / 公司新闻页) ---------- */
 .md-body { font-size: 15px; line-height: 2; color: var(--ink); }
 .md-body h1, .md-body h2, .md-body h3 {
   font-family: var(--serif); color: var(--navy);

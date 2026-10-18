@@ -40,7 +40,7 @@
           <label for="ae-kind">类型 <em>*</em></label>
           <select id="ae-kind">
             <option value="research">行业研究</option>
-            <option value="news">新闻浏览</option>
+            <option value="news">公司新闻</option>
           </select>
         </div>
         <div class="field">
@@ -100,7 +100,7 @@
         var back = document.getElementById("ae-back");
         if (back) {
           back.href = "/admin?sitepage=" + kind;
-          back.textContent = "← 返回" + (kind === "news" ? "新闻浏览" : "行业研究");
+          back.textContent = "← 返回" + (kind === "news" ? "公司新闻" : "行业研究");
         }
       }
       updateBack(defKind);

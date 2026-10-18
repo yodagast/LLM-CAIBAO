@@ -1,4 +1,4 @@
-/* 行业研究 / 新闻浏览列表页: 服务端分页 + 标签筛选 + 加载状态
+/* 行业研究 / 公司新闻列表页: 服务端分页 + 标签筛选 + 加载状态
  *
  * 用法: initArticleList({ kind: "research", listId: "research-list",
  *                       tagsId: "research-tags", pagerId: "research-pager",

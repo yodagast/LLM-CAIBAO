@@ -153,7 +153,7 @@ def _render_html_article_page(art: dict) -> HTMLResponse:
                            if tags else ""),
         "{{TITLE_BLOCK}}": title_block,
         "{{BACK_HREF}}": "/news" if is_news else "/research",
-        "{{BACK_LABEL}}": "← 返回新闻浏览" if is_news else "← 返回行业研究",
+        "{{BACK_LABEL}}": "← 返回公司新闻" if is_news else "← 返回行业研究",
         "{{NAV_NEWS_ACTIVE}}": " active" if is_news else "",
         "{{NAV_RESEARCH_ACTIVE}}": "" if is_news else " active",
         # 页面标题由前端脚本拼接, 这里以 JSON 形式注入标题 (转义 < 防 </script> 截断)
@@ -337,8 +337,8 @@ class SiteContentBatchRequest(BaseModel):
 
 
 class SiteArticleRequest(BaseModel):
-    """官网文章 (行业研究 / 新闻浏览) 创建/更新。"""
-    kind: str = Field(..., description="类型: research 行业研究 / news 新闻浏览")
+    """官网文章 (行业研究 / 公司新闻) 创建/更新。"""
+    kind: str = Field(..., description="类型: research 行业研究 / news 公司新闻")
     title: str = Field(..., min_length=1, max_length=200, description="标题")
     date: str = Field("", max_length=32, description="展示日期 (如 2026-08-26)")
     tags: list[str] = Field(default_factory=list, max_length=10, description="标签列表")
@@ -349,7 +349,7 @@ class SiteArticleRequest(BaseModel):
 
 class SiteArticleImportRequest(BaseModel):
     """导入本地 HTML 文件为官网文章 (后台「内容管理」导入 HTML 用)。"""
-    kind: str = Field(..., description="类型: research 行业研究 / news 新闻浏览")
+    kind: str = Field(..., description="类型: research 行业研究 / news 公司新闻")
     html: str = Field(..., min_length=1, max_length=MAX_ARTICLE_BODY, description="HTML 文件全文")
     filename: str = Field("", max_length=255, description="原始文件名 (如 盐湖股份000792-SZ深度调研报告.html)")
     title: str = Field("", max_length=200, description="标题 (空=自动取 <title>)")
@@ -477,7 +477,7 @@ async def research_page() -> FileResponse:
 
 @app.get("/news", include_in_schema=False)
 async def news_page() -> FileResponse:
-    """新闻浏览列表页 (文章列表, 点击进正文页)。"""
+    """公司新闻列表页 (文章列表, 点击进正文页)。"""
     return FileResponse(STATIC_DIR / "news.html",
                         headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
@@ -1605,28 +1605,29 @@ async def site_content_save(req: SiteContentBatchRequest, request: Request) -> d
 
 
 # ---------------------------------------------------------------------------
-# 官网文章管理 (行业研究 / 新闻浏览, 后台文章管理; 前台 /research /news 列表 + /article/{id} 正文)
+# 官网文章管理 (行业研究 / 公司新闻, 后台文章管理; 前台 /research /news 列表 + /article/{id} 正文)
 # 正文支持两种格式: format=md 的 Markdown, 或 format=html 的导入报告 (内嵌于站点外壳页)
 # HTML 文档拆解 / CSS 作用域隔离见 site_html_service
 # ---------------------------------------------------------------------------
 
 @app.get("/api/site/articles")
-async def site_articles_list(kind: str = Query("research", description="research 行业研究 / news 新闻浏览"),
+async def site_articles_list(kind: str = Query("research", description="research 行业研究 / news 公司新闻"),
                              page: int = Query(1, ge=1, description="页码 (从 1 开始)"),
                              page_size: int = Query(10, ge=1, le=500, description="每页数量"),
                              q: str = Query("", description="内容搜索关键词 (标题 + 正文), 空=不搜索"),
-                             tag: str = Query("", description="标签筛选, 空=全部")) -> dict:
-    """公开: 文章分页列表 / 内容搜索 (不含正文体; 搜索时附带摘要 snippet)。"""
+                             tag: str = Query("", description="标签筛选, 空=全部"),
+                             sort: str = Query("newest", description="排序: newest/oldest/updated_desc/updated_asc/date_desc/date_asc/title_asc/title_desc")) -> dict:
+    """公开: 文章分页列表 / 内容搜索 / 标签筛选 / 排序 (不含正文体; 搜索时附带摘要 snippet)。"""
     kind_clean = kind.strip() or "research"
     try:
         items, total = await pg_service.list_site_articles(
-            kind_clean, page, page_size, q, tag)
+            kind_clean, page, page_size, q, tag, sort)
         tag_counts = await pg_service.site_article_tag_counts(kind_clean)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取文章列表失败: {e}")
     return {"kind": kind_clean, "page": page, "page_size": page_size,
             "total": total, "count": len(items), "items": items,
-            "tags": tag_counts, "q": q.strip()}
+            "tags": tag_counts, "q": q.strip(), "sort": sort}
 
 
 @app.get("/api/site/articles/{aid}")

@@ -267,8 +267,25 @@
     }
   }
 
-  // ---------- 内容管理 (公司文化 / 行业研究 / 新闻浏览) ----------
-  let spView = "culture";    // culture 公司文化 / research 行业研究 / news 新闻浏览
+  // ---------- 内容管理 (公司文化 / 行业研究 / 公司新闻) ----------
+  let spView = "culture";    // culture 公司文化 / research 行业研究 / news 公司新闻
+  let artPage = 1;
+  let artPageSize = 10;
+  let artQ = "";
+  let artTag = "";
+  let artSort = "newest";
+
+  function resetArticleFilters() {
+    artPage = 1;
+    artPageSize = 10;
+    artQ = "";
+    artTag = "";
+    artSort = "newest";
+    const q = $("#art-filter-q"); if (q) q.value = "";
+    const tag = $("#art-filter-tag"); if (tag) tag.value = "";
+    const sort = $("#art-sort"); if (sort) sort.value = "newest";
+    const size = $("#art-page-size"); if (size) size.value = "10";
+  }
 
   function setSpView(view) {
     spView = view;
@@ -284,11 +301,18 @@
     const createBtn = $("#article-create-btn");
     if (createBtn) {
       createBtn.dataset.kind = view;
-      createBtn.innerHTML = svgIcon("icon-plus") + " 新建" + (view === "news" ? "新闻" : "研究文章");
+      createBtn.innerHTML = svgIcon("icon-plus") + " 新建" + (view === "news" ? "公司新闻" : "研究文章");
     }
-    if (isArticles) loadArticles();
-    else loadSitePageContent();
+    if (isArticles) {
+      resetArticleFilters();
+      loadArticles();
+    } else {
+      loadSitePageContent();
+    }
   }
+
+  const escHtml = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   function renderArticlesTable(list) {
     const tbody = document.querySelector("#articles-table tbody");
@@ -297,20 +321,18 @@
       tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-soft)">暂无文章, 点击「新建文章」创建</td></tr>';
       return;
     }
-    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     tbody.innerHTML = list.map((a) => {
       let tags = [];
       try { tags = JSON.parse(a.tags || "[]") || []; } catch (e) { tags = []; }
       const isHtml = String(a.format || "md") === "html";
-      const srcTip = isHtml && a.src_file ? ' title="' + esc("导入自 " + a.src_file) + '"' : "";
+      const srcTip = isHtml && a.src_file ? ' title="' + escHtml("导入自 " + a.src_file) + '"' : "";
       return (
         '<tr>' +
         '  <td>' + a.id + "</td>" +
-        '  <td><a href="/article/' + a.id + '" target="_blank" class="stock-link">' + esc(a.title) + "</a>" +
+        '  <td><a href="/article/' + a.id + '" target="_blank" class="stock-link">' + escHtml(a.title) + "</a>" +
         (isHtml ? ' <span class="filter-badge" style="background:var(--accent,#b08d57);color:#fff"' + srcTip + ">HTML</span>" : "") + "</td>" +
-        '  <td>' + esc(a.date || "") + "</td>" +
-        '  <td>' + (tags.map((t) => '<span class="filter-badge">' + esc(t) + "</span>").join(" ") || "") + "</td>" +
+        '  <td>' + escHtml(a.date || "") + "</td>" +
+        '  <td>' + (tags.map((t) => '<span class="filter-badge">' + escHtml(t) + "</span>").join(" ") || "") + "</td>" +
         '  <td>' + String(a.updated_at || "").slice(0, 16).replace("T", " ") + "</td>" +
         '  <td style="white-space:nowrap">' +
         '    <a class="btn-ghost btn-sm" href="/admin/article_edit?id=' + a.id + '&kind=' + a.kind + '">编辑</a> ' +
@@ -329,18 +351,117 @@
     });
   }
 
-  async function loadArticles() {
+  // 标签筛选下拉 (含全部标签)
+  function renderArticleTagOptions(tags) {
+    const sel = $("#art-filter-tag");
+    if (!sel) return;
+    const opts = (tags || []).map((t) =>
+      '<option value="' + escHtml(t.name) + '">' + escHtml(t.name) + " (" + t.count + ")</option>").join("");
+    sel.innerHTML = '<option value="">全部标签</option>' + opts;
+    sel.value = artTag;
+  }
+
+  // 后台文章列表分页
+  function renderArticlePager(total) {
+    const box = $("#articles-pager");
+    if (!box) return;
+    const totalPages = Math.max(1, Math.ceil((total || 0) / artPageSize));
+    if ((total || 0) === 0) { box.innerHTML = ""; return; }
+    if (totalPages <= 1) {
+      box.innerHTML = '<div class="pager"><span class="pager-info">第 1 / 1 页 · 共 ' + total + " 条</span></div>";
+      return;
+    }
+    let nums = "";
+    const start = Math.max(1, artPage - 2), end = Math.min(totalPages, artPage + 2);
+    if (start > 1) {
+      nums += '<button type="button" class="page-btn" data-page="1">1</button>';
+      if (start > 2) nums += '<span class="pager-gap">…</span>';
+    }
+    for (let i = start; i <= end; i++) {
+      nums += '<button type="button" class="page-btn' + (i === artPage ? " active" : "") +
+        '" data-page="' + i + '">' + i + "</button>";
+    }
+    if (end < totalPages) {
+      if (end < totalPages - 1) nums += '<span class="pager-gap">…</span>';
+      nums += '<button type="button" class="page-btn" data-page="' + totalPages + '">' + totalPages + "</button>";
+    }
+    box.innerHTML =
+      '<div class="pager">' +
+      '<button type="button" class="page-btn" data-page="' + (artPage - 1) + '"' +
+      (artPage <= 1 ? " disabled" : "") + ">上一页</button>" + nums +
+      '<button type="button" class="page-btn" data-page="' + (artPage + 1) + '"' +
+      (artPage >= totalPages ? " disabled" : "") + ">下一页</button>" +
+      '<span class="pager-info">第 ' + artPage + " / " + totalPages + " 页 · 共 " + total + " 条</span>" +
+      "</div>";
+    box.querySelectorAll("[data-page]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const p = parseInt(btn.dataset.page, 10);
+        if (!p || p === artPage || p < 1 || p > totalPages) return;
+        artPage = p;
+        loadArticles(true);
+      });
+    });
+  }
+
+  async function loadArticles(scrollTop) {
     const tbody = document.querySelector("#articles-table tbody");
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-soft)">加载中…</td></tr>';
+    const params = new URLSearchParams({
+      kind: spView,
+      page: String(artPage),
+      page_size: String(artPageSize),
+      sort: artSort,
+    });
+    if (artQ) params.set("q", artQ);
+    if (artTag) params.set("tag", artTag);
     try {
-      const r = await fetch("/api/site/articles?kind=" + spView + "&page=1&page_size=500");
+      const r = await fetch("/api/site/articles?" + params.toString());
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || "读取失败");
+      const totalPages = Math.max(1, Math.ceil((d.total || 0) / artPageSize));
+      if (artPage > totalPages) {   // 删除/筛选后当前页越界, 回到最后一页
+        artPage = totalPages;
+        return loadArticles(scrollTop);
+      }
       renderArticlesTable(d.items || []);
+      renderArticleTagOptions(d.tags || []);
+      renderArticlePager(d.total || 0);
+      if (scrollTop) {
+        const table = $("#articles-table");
+        if (table && table.scrollIntoView) table.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     } catch (e) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--red)">加载失败: ' + String(e.message || e).replace(/</g, "&lt;") + "</td></tr>";
     }
+  }
+
+  function initArticleFilters() {
+    const q = $("#art-filter-q");
+    const tag = $("#art-filter-tag");
+    const sort = $("#art-sort");
+    const size = $("#art-page-size");
+    const apply = () => {
+      artQ = q ? q.value.trim() : "";
+      artTag = tag ? tag.value : "";
+      artSort = sort ? sort.value : "newest";
+      artPageSize = size ? (parseInt(size.value, 10) || 10) : 10;
+      artPage = 1;
+      loadArticles();
+    };
+    const applyBtn = $("#art-filter-btn");
+    if (applyBtn) applyBtn.addEventListener("click", apply);
+    if (q) q.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); apply(); }
+    });
+    if (tag) tag.addEventListener("change", apply);
+    if (sort) sort.addEventListener("change", apply);
+    if (size) size.addEventListener("change", apply);
+    const resetBtn = $("#art-filter-reset");
+    if (resetBtn) resetBtn.addEventListener("click", () => {
+      resetArticleFilters();
+      loadArticles();
+    });
   }
 
   async function deleteArticle(aid) {
@@ -355,7 +476,7 @@
     }
   }
 
-  // ---------- 导入本地 HTML 文件为文章 (行业研究 / 新闻浏览 共用) ----------
+  // ---------- 导入本地 HTML 文件为文章 (行业研究 / 公司新闻 共用) ----------
   let importReplaceId = null;   // null=导入新文章; 数字=替换该文章的 HTML 原文
 
   function readFileAsText(file) {
@@ -464,7 +585,7 @@
   }
 
   function initArticleManager() {
-    // 三视图切换 (公司文化 / 行业研究 / 新闻浏览)
+    // 三视图切换 (公司文化 / 行业研究 / 公司新闻)
     document.querySelectorAll("#sp-seg-kind .seg-btn").forEach((btn) => {
       btn.addEventListener("click", () => setSpView(btn.dataset.kind));
     });
@@ -476,6 +597,7 @@
       });
     }
     initHtmlImport();   // 导入本地 HTML 文件为文章
+    initArticleFilters();   // 文章列表筛选 / 排序 / 分页
     // 从编辑页返回时 (URL ?sitepage=kind) 自动激活「页面管理」tab 并恢复对应视图
     const q = new URLSearchParams(location.search);
     const initView = q.get("sitepage");

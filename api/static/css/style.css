@@ -835,3 +835,28 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
 .sp-textarea { resize: vertical; min-height: 88px; line-height: 1.7; }
 #sitepage-actions { margin-top: 6px; }
 #sitepage-hint { align-self: center; }
+
+/* 文章管理: 筛选 / 排序 / 分页工具栏 */
+.sp-toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  margin: 12px 0; padding: 12px 14px;
+  background: #f7f9fc; border: 1px solid var(--border); border-radius: 10px;
+}
+.sp-toolbar .sp-input { width: auto; min-width: 140px; padding: 7px 10px; }
+.sp-toolbar #art-filter-q { min-width: 220px; flex: 1 1 220px; }
+.pager-box:empty { display: none; }
+.pager {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);
+}
+.page-btn {
+  min-width: 34px; height: 34px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: 8px; background: #fff;
+  font-family: inherit; font-size: 13px; color: var(--text-soft, #6b7280);
+  cursor: pointer; transition: all .15s;
+}
+.page-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.page-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.page-btn:disabled { opacity: .45; cursor: not-allowed; }
+.pager-gap { color: var(--text-soft, #9ca3af); padding: 0 2px; }
+.pager-info { margin-left: auto; font-size: 12.5px; color: var(--text-soft, #6b7280); }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""官网文章 (行业研究 / 新闻浏览) 创建、编辑、列表、删除 全链路测试脚本。
+"""官网文章 (行业研究 / 公司新闻) 创建、编辑、列表、删除 全链路测试脚本。
 
 用根目录 .env 的 user/passwd 登录后走真实 HTTP API 验证:
   1. 登录 (GET /api/auth/login)
@@ -123,7 +123,7 @@ async def main() -> int:
         check("编辑后标题生效", detail2.get("title") == edit_payload["title"], str(detail2.get("title")))
         check("编辑后正文生效", detail2.get("body") == edit_payload["body"], "")
 
-        print("\n== 创建新闻浏览文章 + 编辑 (kind=news) ==")
+        print("\n== 创建公司新闻文章 + 编辑 (kind=news) ==")
         news_payload = {
             "kind": "news",
             "title": "测试-公司新闻",

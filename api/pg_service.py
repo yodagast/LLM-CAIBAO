@@ -2502,8 +2502,8 @@ SITE_PAGES_DEFAULTS = [
      '{"name": "持续学习 · 知行合一", "desc": "把学习作为终身习惯，在不确定性中持续进化；让认知落到行动，让行动验证认知，循环精进。"}]'),
     ("industry_research", "行业研究",
      '# 行业研究\n\n我们持续对重点行业与企业展开深度研究，以下为部分研究成果。\n\n## 白酒行业深度\n\n高端化与库存周期……\n'),
-    ("news", "新闻浏览",
-     '# 新闻浏览\n\n## 研究平台上线\n\nQICIFIER 研究平台全面上线智能选股回测系统。\n'),
+    ("news", "公司新闻",
+     '# 公司新闻\n\n## 研究平台上线\n\nQICIFIER 研究平台全面上线智能选股回测系统。\n'),
 ]
 
 
@@ -2528,7 +2528,7 @@ async def init_site_pages_schema() -> None:
                 import json as _json
                 old_news = _json.loads(news_row["content"])
                 if isinstance(old_news, list):
-                    lines = ["# 新闻浏览", ""]
+                    lines = ["# 公司新闻", ""]
                     for n in old_news:
                         title = (n.get("title") or "").strip()
                         date = (n.get("date") or "").strip()
@@ -2577,14 +2577,14 @@ async def upsert_site_page(key: str, title: str, content: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 官网文章表 site_articles (行业研究 / 新闻浏览, 后台文章管理增删改查)
+# 官网文章表 site_articles (行业研究 / 公司新闻, 后台文章管理增删改查)
 # 前端 /research /news 显示文章列表(标题/日期/标签), 点击进正文页
 # ---------------------------------------------------------------------------
 
 SITE_ARTICLES_SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS site_articles (
     id          BIGSERIAL PRIMARY KEY,
-    kind        VARCHAR(16)  NOT NULL,   -- research 行业研究 / news 新闻浏览
+    kind        VARCHAR(16)  NOT NULL,   -- research 行业研究 / news 公司新闻
     title       VARCHAR(200) NOT NULL,   -- 标题 (列表展示, 点击进正文) 中文
     title_en    VARCHAR(200) DEFAULT '', -- 英文标题
     date        VARCHAR(32)  DEFAULT '', -- 显示日期 (如 2026-08-26)
@@ -2623,7 +2623,7 @@ async def init_site_articles_schema() -> None:
                     "SELECT title, content FROM site_pages WHERE key=$1", key)
                 if not row or not row["content"]:
                     continue
-                title = str(row["title"]) or ("行业研究" if kind == "research" else "新闻浏览")
+                title = str(row["title"]) or ("行业研究" if kind == "research" else "公司新闻")
                 # 解析 markdown: 二级标题"## X" 为文章标题, 其后内容为正文
                 lines = str(row["content"]).splitlines()
                 current_title = ""
@@ -2657,6 +2657,18 @@ async def init_site_articles_schema() -> None:
 
 SITE_ARTICLE_LIST_COLUMNS = "id, kind, title, date, tags, format, src_file, updated_at"
 
+# 后台文章列表排序白名单 (防 SQL 注入)
+SITE_ARTICLE_SORTS = {
+    "newest": "id DESC",
+    "oldest": "id ASC",
+    "updated_desc": "updated_at DESC, id DESC",
+    "updated_asc": "updated_at ASC, id ASC",
+    "date_desc": "date DESC, id DESC",
+    "date_asc": "date ASC, id ASC",
+    "title_asc": "title ASC",
+    "title_desc": "title DESC",
+}
+
 
 def _plain_text(raw: str) -> str:
     """把 Markdown / HTML 正文转为纯文本 (用于搜索摘要)。"""
@@ -2685,8 +2697,8 @@ def _make_snippet(raw: str, keyword: str, radius: int = 70) -> str:
 
 
 async def list_site_articles(kind: str, page: int = 1, page_size: int = 10,
-                             q: str = "", tag: str = "") -> tuple[list[dict], int]:
-    """分页列出文章; q 非空时按标题/正文搜索, tag 按标签筛选。
+                             q: str = "", tag: str = "", sort: str = "newest") -> tuple[list[dict], int]:
+    """分页列出文章; q 非空时按标题/正文搜索, tag 按标签筛选, sort 排序。
 
     返回 (items, total)。搜索时每条附带 snippet 摘要。
     """
@@ -2696,6 +2708,7 @@ async def list_site_articles(kind: str, page: int = 1, page_size: int = 10,
     page_size = max(1, min(500, int(page_size or 10)))
     q = (q or "").strip()
     tag = (tag or "").strip()
+    order_by = SITE_ARTICLE_SORTS.get((sort or "newest").strip(), SITE_ARTICLE_SORTS["newest"])
 
     conds = ["kind = $1"]
     params: list = [kind]
@@ -2713,7 +2726,7 @@ async def list_site_articles(kind: str, page: int = 1, page_size: int = 10,
         total = await conn.fetchval(f"SELECT count(*) FROM site_articles WHERE {where}", *params)
         rows = await conn.fetch(
             f"SELECT {select_cols} FROM site_articles WHERE {where} "
-            f"ORDER BY id DESC LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
+            f"ORDER BY {order_by} LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
             *params, page_size, (page - 1) * page_size)
     items = []
     for r in rows:

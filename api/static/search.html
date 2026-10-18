@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/static/img/apple-touch-icon.png?v=3" />
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v=3" />
+  <title>内容搜索 · QICIFIER</title>
+  <link rel="stylesheet" href="/static/css/home.css?v=16" />
+</head>
+<body>
+
+  <!-- 顶部导航 -->
+  <header class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">Q</span>
+        <span class="brand-text"><b>QICIFIER</b></span>
+      </a>
+      <nav class="nav-links">
+        <a class="lnk" href="/">公司文化</a>
+        <a class="lnk active" href="/research">行业研究</a>
+        <a class="lnk" href="/news">新闻浏览</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- 搜索结果 -->
+  <section class="block block-alt" id="search">
+    <div class="block-inner">
+      <div class="section-kicker">搜索</div>
+      <h2 class="section-title">内容搜索</h2>
+
+      <form class="article-search" id="search-form" action="/search" method="get" role="search">
+        <input type="hidden" name="kind" value="research" />
+        <input type="search" name="q" id="search-q" placeholder="输入关键词，搜索行业研究内容…" autocomplete="off" aria-label="搜索行业研究内容" />
+        <button type="submit">搜索</button>
+      </form>
+
+      <div class="search-summary" id="search-summary"></div>
+      <div class="article-list" id="search-list">
+        <div class="loading-inline">加载中…</div>
+      </div>
+      <div class="pager-box" id="search-pager"></div>
+    </div>
+  </section>
+
+  <!-- 页脚 -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-grid">
+        <div>
+          <h5>QICIFIER</h5>
+          <p>创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
+        </div>
+        <div>
+          <h5>快捷导航</h5>
+          <p><a href="/">公司文化</a></p>
+          <p><a href="/research">行业研究</a></p>
+          <p><a href="/news">新闻浏览</a></p>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 杭州余杭波动粒子信息经营部 版权所有</span>
+        <span class="filing"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-globe"/></svg><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">浙ICP备2026077052号</a></span>
+        <span class="filing"><img src="/static/img/gongan-beian.png" alt="公安备案" width="20" height="20" /><a href="https://beian.mps.gov.cn/#/query/webSearch?code=33011002020623" target="_blank" rel="noopener">浙公网安备33011002020623号</a></span>
+        <span>本站内容仅供研究参考，不构成投资建议。</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // 搜索结果页: /search?kind=research&q=关键词&page=1
+    (function () {
+      "use strict";
+      var PAGE_SIZE = 10;
+      var qs = new URLSearchParams(location.search);
+      var kind = qs.get("kind") === "news" ? "news" : "research";
+      var q = (qs.get("q") || "").trim();
+      var page = parseInt(qs.get("page") || "1", 10) || 1;
+
+      var input = document.getElementById("search-q");
+      var summary = document.getElementById("search-summary");
+      var box = document.getElementById("search-list");
+      var pagerBox = document.getElementById("search-pager");
+      input.value = q;
+
+      function esc(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+          return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+        });
+      }
+
+      // 转义后高亮关键词
+      function highlight(text, keyword) {
+        var safe = esc(text);
+        if (!keyword) return safe;
+        var safeKw = esc(keyword).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        try {
+          return safe.replace(new RegExp(safeKw, "gi"), function (m) {
+            return "<mark>" + m + "</mark>";
+          });
+        } catch (e) {
+          return safe;
+        }
+      }
+
+      function tagsOf(it) {
+        var arr = [];
+        try { arr = JSON.parse(it.tags || "[]") || []; } catch (e) { arr = []; }
+        return Array.isArray(arr) ? arr.map(String) : [];
+      }
+
+      function showState(text) {
+        box.innerHTML = '<div class="loading-inline">' + esc(text) + "</div>";
+        pagerBox.innerHTML = "";
+      }
+
+      function renderPager(total) {
+        var totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+        if (totalPages <= 1) { pagerBox.innerHTML = ""; return; }
+        var nums = "";
+        var start = Math.max(1, page - 2), end = Math.min(totalPages, page + 2);
+        if (start > 1) {
+          nums += '<button type="button" class="page-btn" data-page="1">1</button>';
+          if (start > 2) nums += '<span class="pager-gap">…</span>';
+        }
+        for (var i = start; i <= end; i++) {
+          nums += '<button type="button" class="page-btn' + (i === page ? " active" : "") +
+            '" data-page="' + i + '">' + i + "</button>";
+        }
+        if (end < totalPages) {
+          if (end < totalPages - 1) nums += '<span class="pager-gap">…</span>';
+          nums += '<button type="button" class="page-btn" data-page="' + totalPages + '">' + totalPages + "</button>";
+        }
+        pagerBox.innerHTML =
+          '<nav class="pager" aria-label="分页">' +
+          '<button type="button" class="page-btn page-prev" data-page="' + (page - 1) + '"' +
+          (page <= 1 ? " disabled" : "") + ">上一页</button>" + nums +
+          '<button type="button" class="page-btn page-next" data-page="' + (page + 1) + '"' +
+          (page >= totalPages ? " disabled" : "") + ">下一页</button>" +
+          '<span class="pager-info">第 ' + page + " / " + totalPages + " 页 · 共 " + total + " 条</span>" +
+          "</nav>";
+        Array.prototype.forEach.call(pagerBox.querySelectorAll("[data-page]"), function (btn) {
+          btn.addEventListener("click", function () {
+            var p = parseInt(btn.getAttribute("data-page"), 10);
+            if (!p || p === page || p < 1 || p > totalPages) return;
+            var next = new URLSearchParams(location.search);
+            next.set("page", String(p));
+            location.href = "/search?" + next.toString();
+          });
+        });
+      }
+
+      function renderList(items, total, keyword) {
+        if (!items.length) {
+          showState(keyword ? "没有找到相关内容" : "请输入关键词");
+          return;
+        }
+        box.innerHTML = items.map(function (it) {
+          var tagHtml = tagsOf(it).map(function (x) {
+            return '<span class="news-tag">' + esc(x) + "</span>";
+          }).join("");
+          var snippet = it.snippet
+            ? '<p class="search-snippet">' + highlight(it.snippet, keyword) + "</p>" : "";
+          return (
+            '<a class="article-item" href="/article/' + it.id + '">' +
+            '  <div class="article-head">' +
+            '    <span class="news-date">' + esc(it.date || "") + "</span>" +
+            '    <span class="article-title">' + highlight(it.title || "", keyword) + "</span>" +
+            tagHtml +
+            "  </div>" + snippet +
+            "</a>"
+          );
+        }).join("");
+        renderPager(total);
+      }
+
+      function load() {
+        if (!q) {
+          summary.textContent = "";
+          showState("请输入关键词");
+          return;
+        }
+        summary.innerHTML = "关键词 “<b>" + esc(q) + "</b>” 的搜索结果";
+        showState("搜索中…");
+        fetch("/api/site/articles?kind=" + encodeURIComponent(kind) +
+          "&q=" + encodeURIComponent(q) + "&page=" + page + "&page_size=" + PAGE_SIZE)
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })
+          .then(function (d) {
+            summary.innerHTML = "关键词 “<b>" + esc(q) + "</b>” · 共 <b>" + (d.total || 0) + "</b> 条结果";
+            renderList(d.items || [], d.total || 0, q);
+          })
+          .catch(function () { showState("搜索失败，请稍后重试"); });
+      }
+
+      // 搜索表单: 空关键词不跳转
+      document.getElementById("search-form").addEventListener("submit", function (e) {
+        if (!input.value.trim()) e.preventDefault();
+      });
+
+      load();
+    })();
+  </script>
+
+</body>
+</html>

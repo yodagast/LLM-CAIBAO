@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import html as _html
+import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -2500,7 +2503,7 @@ SITE_PAGES_DEFAULTS = [
     ("industry_research", "行业研究",
      '# 行业研究\n\n我们持续对重点行业与企业展开深度研究，以下为部分研究成果。\n\n## 白酒行业深度\n\n高端化与库存周期……\n'),
     ("news", "新闻浏览",
-     '# 新闻浏览\n\n## 研究平台上线\n\n杭州波动粒子研究平台全面上线智能选股回测系统。\n'),
+     '# 新闻浏览\n\n## 研究平台上线\n\nQICIFIER 研究平台全面上线智能选股回测系统。\n'),
 ]
 
 
@@ -2552,25 +2555,24 @@ async def init_site_pages_schema() -> None:
 
 
 async def get_site_pages() -> dict[str, dict]:
-    """读取全部官网内容, 返回 {key: {title, content, content_en, updated_at}}。"""
+    """读取全部官网内容, 返回 {key: {title, content, updated_at}}。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT key, title, content, content_en, updated_at FROM site_pages")
+        rows = await conn.fetch("SELECT key, title, content, updated_at FROM site_pages")
     return {str(r["key"]): {"title": r["title"], "content": r["content"],
-                            "content_en": r["content_en"] or "",
                             "updated_at": str(r["updated_at"])} for r in rows}
 
 
-async def upsert_site_page(key: str, title: str, content: str, content_en: str = "") -> bool:
-    """写入/更新一个官网内容块 (key 唯一 upsert, 双语)。"""
+async def upsert_site_page(key: str, title: str, content: str) -> bool:
+    """写入/更新一个官网内容块 (key 唯一 upsert); 同时清空英文内容。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO site_pages (key, title, content, content_en, updated_at) "
-            "VALUES ($1, $2, $3, $4, now()) "
+            "VALUES ($1, $2, $3, '', now()) "
             "ON CONFLICT (key) DO UPDATE SET title = EXCLUDED.title, "
-            "content = EXCLUDED.content, content_en = EXCLUDED.content_en, updated_at = now()",
-            key, title, content, content_en or "")
+            "content = EXCLUDED.content, content_en = '', updated_at = now()",
+            key, title, content)
     return True
 
 
@@ -2653,17 +2655,96 @@ async def init_site_articles_schema() -> None:
                         kind, title, "", "", str(row["content"]).strip())
 
 
-async def list_site_articles(kind: str, limit: int = 100) -> list[dict]:
-    """列出某类型的全部文章 (按 id 降序, 列表页用, 不含 body 以减负)。"""
+SITE_ARTICLE_LIST_COLUMNS = "id, kind, title, date, tags, format, src_file, updated_at"
+
+
+def _plain_text(raw: str) -> str:
+    """把 Markdown / HTML 正文转为纯文本 (用于搜索摘要)。"""
+    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", str(raw or ""))
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = _html.unescape(text)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[#>*`_~]+", " ", text)
+    text = re.sub(r"\|", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _make_snippet(raw: str, keyword: str, radius: int = 70) -> str:
+    """截取包含关键词的上下文片段。"""
+    text = _plain_text(raw)
+    if not keyword:
+        return text[: radius * 2]
+    i = text.lower().find(keyword.lower())
+    if i < 0:
+        return text[: radius * 2]
+    start = max(0, i - radius)
+    end = min(len(text), i + len(keyword) + radius)
+    return ("…" if start > 0 else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+async def list_site_articles(kind: str, page: int = 1, page_size: int = 10,
+                             q: str = "", tag: str = "") -> tuple[list[dict], int]:
+    """分页列出文章; q 非空时按标题/正文搜索, tag 按标签筛选。
+
+    返回 (items, total)。搜索时每条附带 snippet 摘要。
+    """
+    if kind not in ("research", "news"):
+        kind = "research"
+    page = max(1, int(page or 1))
+    page_size = max(1, min(500, int(page_size or 10)))
+    q = (q or "").strip()
+    tag = (tag or "").strip()
+
+    conds = ["kind = $1"]
+    params: list = [kind]
+    if q:
+        params.append(f"%{q}%")
+        conds.append(f"(title ILIKE ${len(params)} OR body ILIKE ${len(params)})")
+    if tag:
+        params.append(f'%"{tag}"%')
+        conds.append(f"tags LIKE ${len(params)}")
+    where = " AND ".join(conds)
+    select_cols = SITE_ARTICLE_LIST_COLUMNS + (", body" if q else "")
+
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(f"SELECT count(*) FROM site_articles WHERE {where}", *params)
+        rows = await conn.fetch(
+            f"SELECT {select_cols} FROM site_articles WHERE {where} "
+            f"ORDER BY id DESC LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
+            *params, page_size, (page - 1) * page_size)
+    items = []
+    for r in rows:
+        it = dict(r)
+        if q:
+            it["snippet"] = _make_snippet(str(it.pop("body", "") or ""), q)
+        items.append(it)
+    return items, int(total or 0)
+
+
+async def site_article_tag_counts(kind: str) -> list[dict]:
+    """统计某类型文章的标签分布 (按数量降序)。"""
     if kind not in ("research", "news"):
         kind = "research"
     pool = await _get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, kind, title, title_en, date, date_en, tags, tags_en, format, src_file, updated_at "
-            "FROM site_articles WHERE kind = $1 ORDER BY id DESC LIMIT $2::int",
-            kind, int(limit))
-    return [dict(r) for r in rows]
+        rows = await conn.fetch("SELECT tags FROM site_articles WHERE kind = $1", kind)
+    counts: dict[str, int] = {}
+    for r in rows:
+        try:
+            tags = json.loads(str(r["tags"] or "[]"))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(tags, list):
+            continue
+        for t in tags:
+            name = str(t).strip()
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+    return [{"name": k, "count": v}
+            for k, v in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
 
 
 async def get_site_article(aid: int) -> dict | None:
@@ -2671,41 +2752,34 @@ async def get_site_article(aid: int) -> dict | None:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
-            "SELECT id, kind, title, title_en, date, date_en, tags, tags_en, body, body_en, "
-            "format, src_file, updated_at FROM site_articles WHERE id = $1", aid)
+            "SELECT id, kind, title, date, tags, body, format, src_file, updated_at "
+            "FROM site_articles WHERE id = $1", aid)
     return dict(r) if r else None
 
 
 async def create_site_article(kind: str, title: str, date: str, tags: str,
-                              body: str, title_en: str = "", body_en: str = "",
-                              date_en: str = "", tags_en: str = "",
-                              format: str = "md", src_file: str = "") -> int:
+                              body: str, format: str = "md", src_file: str = "") -> int:
     """创建文章, 返回 id。format=html 时 body 为完整 HTML 文档。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         aid = await conn.fetchval(
-            "INSERT INTO site_articles (kind, title, title_en, date, date_en, tags, tags_en, "
-            "body, body_en, format, src_file) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id",
-            kind, title, title_en or "", date, date_en or "", tags, tags_en or "", body, body_en or "",
-            format or "md", src_file or "")
+            "INSERT INTO site_articles (kind, title, date, tags, body, format, src_file) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            kind, title, date, tags, body, format or "md", src_file or "")
     return int(aid)
 
 
 async def update_site_article(aid: int, kind: str, title: str, date: str,
-                              tags: str, body: str, title_en: str = "",
-                              body_en: str = "", date_en: str = "",
-                              tags_en: str = "", format: str = "md",
+                              tags: str, body: str, format: str = "md",
                               src_file: str = "") -> int:
     """更新文章, 返回受影响行数。"""
     pool = await _get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "UPDATE site_articles SET kind=$1, title=$2, title_en=$3, date=$4, date_en=$5, "
-            "tags=$6, tags_en=$7, body=$8, body_en=$9, format=$10, src_file=$11, updated_at=now() "
-            "WHERE id=$12 RETURNING id",
-            kind, title, title_en or "", date, date_en or "", tags, tags_en or "", body, body_en or "",
-            format or "md", src_file or "", aid)
+            "UPDATE site_articles SET kind=$1, title=$2, date=$3, tags=$4, body=$5, "
+            "format=$6, src_file=$7, updated_at=now() "
+            "WHERE id=$8 RETURNING id",
+            kind, title, date, tags, body, format or "md", src_file or "", aid)
     return len(rows)
 
 

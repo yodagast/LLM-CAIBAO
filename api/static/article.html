@@ -5,10 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/static/img/apple-touch-icon.png?v=3" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v=3" />
-  <title data-i18n-title="article.title">文章 · 杭州波动粒子 Hangzhou Wave Particle</title>
-  <link rel="stylesheet" href="/static/css/home.css?v=13" />
+  <title>文章 · QICIFIER</title>
+  <link rel="stylesheet" href="/static/css/home.css?v=16" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="/static/js/i18n.js?v=4"></script>
 </head>
 <body>
 
@@ -16,13 +15,13 @@
   <header class="nav">
     <div class="nav-inner">
       <a class="brand" href="/">
-        <span class="brand-mark">波</span>
-        <span class="brand-text"><b data-i18n="brand.name">杭州波动粒子</b><span data-i18n="brand.sub">Hangzhou Wave Particle</span></span>
+        <span class="brand-mark">Q</span>
+        <span class="brand-text"><b>QICIFIER</b></span>
       </a>
       <nav class="nav-links">
-        <a class="lnk" data-i18n="nav.culture" href="/">公司文化</a>
-        <a class="lnk" data-i18n="nav.research" id="nav-research" href="/research">行业研究</a>
-        <a class="lnk" data-i18n="nav.news" id="nav-news" href="/news">新闻浏览</a>
+        <a class="lnk" href="/">公司文化</a>
+        <a class="lnk" id="nav-research" href="/research">行业研究</a>
+        <a class="lnk" id="nav-news" href="/news">新闻浏览</a>
       </nav>
     </div>
   </header>
@@ -34,12 +33,12 @@
         <span class="news-date" id="art-date">—</span>
         <span class="news-tag" id="art-tags" style="margin-left:8px"></span>
       </div>
-      <h1 class="article-h1" id="art-title" data-i18n="list.loading">加载中…</h1>
+      <h1 class="article-h1" id="art-title">加载中…</h1>
       <article class="md-body" id="art-body">
-        <div class="loading-inline" data-i18n="list.loading">加载中…</div>
+        <div class="loading-inline">加载中…</div>
       </article>
       <div class="article-back">
-        <a class="btn-hero solid" data-i18n="back.list" id="art-back" href="/research">← 返回列表</a>
+        <a class="btn-hero solid" id="art-back" href="/research">← 返回列表</a>
       </div>
     </div>
   </section>
@@ -49,39 +48,26 @@
     <div class="footer-inner">
       <div class="footer-grid">
         <div>
-          <h5 data-i18n="footer.capital">杭州波动粒子</h5>
-          <p data-i18n="footer.desc">创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
+          <h5>QICIFIER</h5>
+          <p>创造时间和知识的复利，一视同仁地为客户创造合理的、可持续的、超过社会平均的收益。</p>
         </div>
         <div>
-          <h5 data-i18n="footer.nav">快捷导航</h5>
-          <p><a href="/" data-i18n="footer.culture">公司文化</a></p>
-          <p><a href="/research" data-i18n="footer.research">行业研究</a></p>
-          <p><a href="/news" data-i18n="footer.news">新闻浏览</a></p>
+          <h5>快捷导航</h5>
+          <p><a href="/">公司文化</a></p>
+          <p><a href="/research">行业研究</a></p>
+          <p><a href="/news">新闻浏览</a></p>
         </div>
       </div>
       <div class="footer-bottom">
-        <span data-i18n="footer.rights">© 2026 杭州余杭波动粒子信息经营部 版权所有</span>
+        <span>© 2026 杭州余杭波动粒子信息经营部 版权所有</span>
         <span class="filing"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-globe"/></svg><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">浙ICP备2026077052号</a></span>
         <span class="filing"><img src="/static/img/gongan-beian.png" alt="公安备案" width="20" height="20" /><a href="https://beian.mps.gov.cn/#/query/webSearch?code=33011002020623" target="_blank" rel="noopener">浙公网安备33011002020623号</a></span>
-        <span data-i18n="footer.disclaimer">本站内容仅供研究参考，不构成投资建议。</span>
+        <span>本站内容仅供研究参考，不构成投资建议。</span>
       </div>
     </div>
   </footer>
 
   <script>
-    /* 文章正文页词典 */
-    if (window.I18N) {
-      window.I18N.register({
-        zh: {
-          "article.title": "文章 · 杭州波动粒子 Hangzhou Wave Particle",
-          "article.suffix": " · 杭州波动粒子 Hangzhou Wave Particle"
-        },
-        en: {
-          "article.title": "Article · Hangzhou Wave Particle",
-          "article.suffix": " · Hangzhou Wave Particle"
-        }
-      });
-    }
     // 文章正文页: 从 API 读取文章详情 (标题/日期/标签/正文 markdown) 并渲染
     (function () {
       var aid = parseInt((location.pathname.match(/\/article\/(\d+)/) || [])[1] || "0", 10);
@@ -90,10 +76,8 @@
           return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
         });
       }
-      var t = function (k) { return window.I18N ? window.I18N.t(k) : ""; };
-      var backHref = "/research";
       if (!aid) {
-        document.getElementById("art-title").textContent = t("article.notfound");
+        document.getElementById("art-title").textContent = "文章不存在";
         return;
       }
       var back = document.getElementById("art-back");
@@ -110,20 +94,13 @@
       }
       // 渲染一篇文章 (format=html 的导入报告由服务端渲染成独立的站点外壳页)
       function paint(it) {
-        var useEn = (window.I18N && window.I18N.getLang() === "en");
-        var showTitle = (useEn && it.title_en) ? it.title_en : it.title;
-        var showBody = (useEn && it.body_en) ? it.body_en : it.body;
-        var showDate = (useEn && it.date_en) ? it.date_en : it.date;
-        var showTagsRaw = (useEn && it.tags_en) ? it.tags_en : (it.tags || "");
-        document.title = (showTitle || "") + t("article.suffix");
-        var titleEl = document.getElementById("art-title");
-        titleEl.textContent = showTitle || "";
-        titleEl.removeAttribute("data-i18n");   // 已加载真实标题, 不再受语言切换影响
-        document.getElementById("art-date").textContent = showDate || "";
+        document.title = (it.title || "文章") + " · QICIFIER";
+        document.getElementById("art-title").textContent = it.title || "";
+        document.getElementById("art-date").textContent = it.date || "";
         var tags = [];
-        try { tags = JSON.parse(showTagsRaw || "[]") || []; } catch (e) { tags = []; }
+        try { tags = JSON.parse(it.tags || "[]") || []; } catch (e) { tags = []; }
         document.getElementById("art-tags").textContent = tags.join(" · ");
-        document.getElementById("art-body").innerHTML = marked.parse(showBody || "");
+        document.getElementById("art-body").innerHTML = marked.parse(it.body || "");
         // 高亮对应导航 + 返回链接
         if (it.kind === "news") {
           back.dataset.kind = "news";
@@ -132,7 +109,6 @@
           back.dataset.kind = "research";
           back.href = "/research";
         }
-        backHref = back.href;
         setActiveNav();
       }
       fetch("/api/site/articles/" + aid)
@@ -140,19 +116,9 @@
         .then(function (d) { paint(d.item); })
         .catch(function () {
           var errEl = document.getElementById("art-title");
-          errEl.textContent = t("article.deleted");
-          errEl.removeAttribute("data-i18n");
+          errEl.textContent = "文章不存在或已删除";
           document.getElementById("art-body").innerHTML = "";
         });
-      if (window.I18N) {
-        // 语言切换时重载文章正文 (标题/正文切换中英)
-        window.I18N.onApply = function () {
-          fetch("/api/site/articles/" + aid)
-            .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("status " + r.status)); })
-            .then(function (d) { paint(d.item); })
-            .catch(function () {});
-        };
-      }
     })();
   </script>
 

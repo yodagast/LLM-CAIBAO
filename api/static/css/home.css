@@ -1,4 +1,4 @@
-/* 杭州波动粒子 Hangzhou Wave Particle - 公司官网样式 (参考喜马拉雅资本风格: 庄重/留白/衬线标题) */
+/* QICIFIER - 公司官网样式 (参考喜马拉雅资本风格: 庄重/留白/衾线标题) */
 :root {
   --navy: #0f2540;
   --navy-2: #1e3d63;
@@ -70,21 +70,6 @@ a { color: inherit; text-decoration: none; }
 .btn-admin:hover { background: var(--navy); color: #fff; }
 .nav-toggle { display: none; }
 
-/* ---------- 语言切换按钮 (i18n) ---------- */
-.lang-switch {
-  margin-left: 6px;
-  flex: none;
-  min-width: 44px; height: 32px; padding: 0 12px;
-  border: 1px solid var(--navy); border-radius: 999px;
-  background: transparent; color: var(--navy);
-  font-family: var(--sans); font-size: 13px; font-weight: 700; letter-spacing: 1px;
-  cursor: pointer; transition: all .2s;
-}
-.lang-switch:hover { background: var(--navy); color: #fff; }
-@media (max-width: 768px) {
-  .lang-switch { min-width: 40px; height: 30px; padding: 0 10px; }
-}
-
 /* ---------- Hero ---------- */
 .hero {
   background:
@@ -129,6 +114,12 @@ section.block { padding: 96px 28px; }
   font-family: var(--serif); font-weight: 700; font-size: clamp(24px, 3.6vw, 34px);
   color: var(--navy); margin: 10px 0 30px;
 }
+/* 标题与搜索框同一行 (标题左 / 搜索右) */
+.section-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 24px; flex-wrap: wrap; margin-bottom: 26px;
+}
+.section-head .section-title { margin: 10px 0 0; }
 .section-lede {
   font-family: var(--serif); font-size: 18px; color: #3a4552; line-height: 2;
 }
@@ -206,6 +197,20 @@ blockquote.quote {
 }
 
 /* ---------- 文章列表 (行业研究 / 新闻浏览列表页) ---------- */
+/* ---------- 列表页标签筛选 ---------- */
+.tag-filter { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0 4px; }
+.tag-filter:empty { display: none; }
+.tag-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); background: #fff; color: var(--soft);
+  border-radius: 999px; padding: 6px 15px; font-size: 12.5px; letter-spacing: .5px;
+  cursor: pointer; transition: all .2s;
+}
+.tag-chip:hover { border-color: var(--accent); color: var(--accent); }
+.tag-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tag-chip .cnt { opacity: .6; font-variant-numeric: tabular-nums; }
+.tag-chip.active .cnt { opacity: .85; }
+
 .article-list { display: flex; flex-direction: column; margin-top: 16px; }
 .article-item {
   display: block; padding: 22px 6px; border-bottom: 1px solid var(--line);
@@ -215,6 +220,52 @@ blockquote.quote {
 .article-head { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
 .article-title { font-family: var(--serif); font-size: 18px; color: var(--ink); }
 .article-item:hover .article-title { color: var(--accent); }
+
+/* ---------- 列表页内容搜索 ---------- */
+.article-search { display: flex; gap: 10px; margin: 18px 0 4px; }
+.article-search-inline { margin: 0; flex: 0 1 440px; width: 100%; }
+.article-search input[type="search"] {
+  flex: 1; min-width: 0; height: 42px; padding: 0 18px;
+  border: 1px solid var(--line); border-radius: 999px; background: #fff;
+  font-family: var(--sans); font-size: 14px; color: var(--ink); outline: none;
+  transition: border-color .2s, box-shadow .2s;
+}
+.article-search input[type="search"]:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px rgba(176, 141, 87, .12);
+}
+.article-search button {
+  flex: none; height: 42px; padding: 0 26px; border: none; border-radius: 999px;
+  background: var(--navy); color: #fff; font-family: var(--sans);
+  font-size: 14px; letter-spacing: 1px; cursor: pointer; transition: background .2s;
+}
+.article-search button:hover { background: var(--accent); }
+
+/* ---------- 搜索结果 ---------- */
+.search-summary { margin: 14px 0 0; font-size: 13.5px; color: var(--soft); }
+.search-summary b { color: var(--navy); }
+.search-snippet { margin-top: 8px; font-size: 14px; line-height: 1.9; color: var(--soft); }
+.search-snippet mark, .article-title mark {
+  background: rgba(176, 141, 87, .22); color: var(--accent);
+  padding: 0 2px; border-radius: 3px;
+}
+
+/* ---------- 分页 ---------- */
+.pager-box:empty { display: none; }
+.pager {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--line);
+}
+.page-btn {
+  min-width: 36px; height: 36px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  font-family: var(--sans); font-size: 13.5px; color: var(--soft);
+  cursor: pointer; transition: all .2s;
+}
+.page-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.page-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.page-btn:disabled { opacity: .45; cursor: not-allowed; }
+.pager-gap { color: var(--soft); padding: 0 2px; }
+.pager-info { margin-left: auto; font-size: 12.5px; color: var(--soft); }
 
 /* ---------- 文章正文页 ---------- */
 .article-meta { display: flex; align-items: baseline; margin-bottom: 12px; }
@@ -318,4 +369,9 @@ blockquote.quote {
   .principles-grid, .culture-list { grid-template-columns: 1fr; }
   .footer-grid { grid-template-columns: 1fr; gap: 26px; }
   .news-item { flex-direction: column; gap: 6px; }
+  .article-search { flex-direction: column; }
+  .article-search button { width: 100%; }
+  .section-head { align-items: stretch; }
+  .article-search-inline { flex: 1 1 100%; }
+  .pager-info { margin-left: 0; width: 100%; }
 }

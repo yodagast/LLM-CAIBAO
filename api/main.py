@@ -33,8 +33,11 @@ from . import site_html_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# 导入 HTML 报告的页面标题后缀 (与 static/article.html 的 article.suffix 一致)
-SITE_TITLE_SUFFIX = " · 杭州波动粒子 Hangzhou Wave Particle"
+# 导入 HTML 报告的页面标题后缀 (与 static/article.html 的标题一致)
+SITE_TITLE_SUFFIX = " · QICIFIER"
+
+# 导入 HTML 报告未指定标签时的默认标签 (前台可按标签筛选)
+DEFAULT_IMPORT_TAGS = ["AI研究"]
 
 # 官网文章正文上限 (导入的完整 HTML 文件可能上百 KB, 放宽校验)
 MAX_ARTICLE_BODY = 8_000_000
@@ -150,7 +153,6 @@ def _render_html_article_page(art: dict) -> HTMLResponse:
                            if tags else ""),
         "{{TITLE_BLOCK}}": title_block,
         "{{BACK_HREF}}": "/news" if is_news else "/research",
-        "{{BACK_I18N_KEY}}": "html.back.news" if is_news else "html.back.research",
         "{{BACK_LABEL}}": "← 返回新闻浏览" if is_news else "← 返回行业研究",
         "{{NAV_NEWS_ACTIVE}}": " active" if is_news else "",
         "{{NAV_RESEARCH_ACTIVE}}": "" if is_news else " active",
@@ -327,7 +329,6 @@ class SiteContentRequest(BaseModel):
     key: str = Field(..., description="内容块标志: vision/mission/values/news")
     title: str = Field(..., max_length=64, description="板块标题")
     content: str = Field("", max_length=20000, description="内容 (JSON 字符串, values/news 为数组)")
-    content_en: str = Field("", max_length=20000, description="英文内容 (同格式, 空=无英文版)")
 
 
 class SiteContentBatchRequest(BaseModel):
@@ -339,13 +340,9 @@ class SiteArticleRequest(BaseModel):
     """官网文章 (行业研究 / 新闻浏览) 创建/更新。"""
     kind: str = Field(..., description="类型: research 行业研究 / news 新闻浏览")
     title: str = Field(..., min_length=1, max_length=200, description="标题")
-    title_en: str = Field("", max_length=200, description="英文标题")
     date: str = Field("", max_length=32, description="展示日期 (如 2026-08-26)")
-    date_en: str = Field("", max_length=32, description="英文展示日期 (如 February 2026)")
     tags: list[str] = Field(default_factory=list, max_length=10, description="标签列表")
-    tags_en: list[str] = Field(default_factory=list, max_length=10, description="英文标签列表")
     body: str = Field("", max_length=MAX_ARTICLE_BODY, description="正文 (Markdown, 或 format=html 时的完整 HTML)")
-    body_en: str = Field("", max_length=MAX_ARTICLE_BODY, description="英文正文 (Markdown)")
     format: str = Field("md", description="正文格式: md Markdown / html 导入的完整 HTML 文档")
     src_file: str = Field("", max_length=255, description="导入来源文件名 (format=html 时记录)")
 
@@ -482,6 +479,13 @@ async def research_page() -> FileResponse:
 async def news_page() -> FileResponse:
     """新闻浏览列表页 (文章列表, 点击进正文页)。"""
     return FileResponse(STATIC_DIR / "news.html",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/search", include_in_schema=False)
+async def search_page() -> FileResponse:
+    """行业研究内容搜索结果页 (?q=关键词&page=页码)。"""
+    return FileResponse(STATIC_DIR / "search.html",
                         headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
@@ -1594,8 +1598,7 @@ async def site_content_save(req: SiteContentBatchRequest, request: Request) -> d
     await _require_site_admin(request)
     try:
         for it in req.items:
-            await pg_service.upsert_site_page(
-                it.key.strip(), it.title.strip(), it.content, it.content_en)
+            await pg_service.upsert_site_page(it.key.strip(), it.title.strip(), it.content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存官网内容失败: {e}")
     return {"ok": True, "saved": len(req.items)}
@@ -1609,13 +1612,21 @@ async def site_content_save(req: SiteContentBatchRequest, request: Request) -> d
 
 @app.get("/api/site/articles")
 async def site_articles_list(kind: str = Query("research", description="research 行业研究 / news 新闻浏览"),
-                             limit: int = Query(100, ge=1, le=500)) -> dict:
-    """公开: 某类型文章列表 (不含正文体, 列表页用)。"""
+                             page: int = Query(1, ge=1, description="页码 (从 1 开始)"),
+                             page_size: int = Query(10, ge=1, le=500, description="每页数量"),
+                             q: str = Query("", description="内容搜索关键词 (标题 + 正文), 空=不搜索"),
+                             tag: str = Query("", description="标签筛选, 空=全部")) -> dict:
+    """公开: 文章分页列表 / 内容搜索 (不含正文体; 搜索时附带摘要 snippet)。"""
+    kind_clean = kind.strip() or "research"
     try:
-        items = await pg_service.list_site_articles(kind.strip(), limit)
+        items, total = await pg_service.list_site_articles(
+            kind_clean, page, page_size, q, tag)
+        tag_counts = await pg_service.site_article_tag_counts(kind_clean)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取文章列表失败: {e}")
-    return {"kind": kind, "count": len(items), "items": items}
+    return {"kind": kind_clean, "page": page, "page_size": page_size,
+            "total": total, "count": len(items), "items": items,
+            "tags": tag_counts, "q": q.strip()}
 
 
 @app.get("/api/site/articles/{aid}")
@@ -1641,8 +1652,6 @@ async def site_articles_create(req: SiteArticleRequest, request: Request) -> dic
         aid = await pg_service.create_site_article(
             req.kind, req.title.strip(), req.date.strip(),
             __import__("json").dumps(req.tags, ensure_ascii=False), req.body,
-            req.title_en.strip(), req.body_en,
-            req.date_en.strip(), __import__("json").dumps(req.tags_en, ensure_ascii=False),
             fmt, req.src_file.strip())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建文章失败: {e}")
@@ -1651,7 +1660,7 @@ async def site_articles_create(req: SiteArticleRequest, request: Request) -> dic
 
 @app.post("/api/site/articles/import")
 async def site_articles_import(req: SiteArticleImportRequest, request: Request) -> dict:
-    """导入本地 HTML 文件为文章 (仅管理员)。标题/日期缺省时自动从 HTML 内容识别。"""
+    """导入本地 HTML 文件为文章 (仅管理员)。标题/日期缺省时自动从 HTML 内容识别, 标签缺省为 AI研究。"""
     await _require_site_admin(request)
     if req.kind not in ("research", "news"):
         raise HTTPException(status_code=400, detail="kind 须为 research 或 news")
@@ -1665,10 +1674,11 @@ async def site_articles_import(req: SiteArticleImportRequest, request: Request) 
     # 日期优先级: 报告内「数据截至/报告日期」 > 文件名 > 前端给的文件时间 > 今天
     date = (site_html_service.extract_date(raw, filename) or req.date.strip()
             or datetime.now().strftime("%Y-%m-%d"))
+    tags = [str(x).strip() for x in req.tags if str(x).strip()] or list(DEFAULT_IMPORT_TAGS)
     try:
         aid = await pg_service.create_site_article(
             req.kind, title, date,
-            __import__("json").dumps(req.tags, ensure_ascii=False), raw,
+            __import__("json").dumps(tags, ensure_ascii=False), raw,
             format="html", src_file=filename)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"导入失败: {e}")
@@ -1702,8 +1712,6 @@ async def site_articles_update(aid: int, req: SiteArticleRequest, request: Reque
         n = await pg_service.update_site_article(
             aid, req.kind, req.title.strip(), req.date.strip(),
             __import__("json").dumps(req.tags, ensure_ascii=False), req.body,
-            req.title_en.strip(), req.body_en,
-            req.date_en.strip(), __import__("json").dumps(req.tags_en, ensure_ascii=False),
             fmt, req.src_file.strip())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新文章失败: {e}")

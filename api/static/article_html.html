@@ -11,7 +11,7 @@
      * 站点样式整体放进低优先级层 @layer site —— 报告自带的类名/标签可能与官网样式重名
      * (如 .hero / .wrap / .brand), 分层后容器内的隔离规则与报告自身样式 (均未分层) 恒优先。
      */
-    @import url("/static/css/home.css?v=16") layer(site);
+    @import url("/static/css/home.css?v=17") layer(site);
     /* 报告容器隔离: 先让容器内元素回退到浏览器默认值, 再由下面报告自身样式逐项覆盖 */
     .html-doc, .html-doc * { all: revert; }
     /* 容器宽度交给报告自身的 .wrap/.hero-inner, 宽表格横向滚动不撑破页面 */

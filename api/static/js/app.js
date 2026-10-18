@@ -387,9 +387,9 @@
     }
     box.innerHTML =
       '<div class="pager">' +
-      '<button type="button" class="page-btn" data-page="' + (artPage - 1) + '"' +
+      '<button type="button" class="page-btn page-prev" data-page="' + (artPage - 1) + '"' +
       (artPage <= 1 ? " disabled" : "") + ">上一页</button>" + nums +
-      '<button type="button" class="page-btn" data-page="' + (artPage + 1) + '"' +
+      '<button type="button" class="page-btn page-next" data-page="' + (artPage + 1) + '"' +
       (artPage >= totalPages ? " disabled" : "") + ">下一页</button>" +
       '<span class="pager-info">第 ' + artPage + " / " + totalPages + " 页 · 共 " + total + " 条</span>" +
       "</div>";

@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import html as _html
 import json
+import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -35,6 +37,59 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # 导入 HTML 报告的页面标题后缀 (与 static/article.html 的标题一致)
 SITE_TITLE_SUFFIX = " · QICIFIER"
+
+# ---------------------------------------------------------------------------
+# Google Analytics 4 (衡量 ID 从根目录 .env 的 GA_MEASUREMENT_ID 读取)
+# ---------------------------------------------------------------------------
+
+_GA_ID_RE = re.compile(r"^G-[A-Z0-9]{4,20}$")
+
+
+def _load_env() -> None:
+    """加载项目根目录 .env (仅注入未设置的环境变量)。"""
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and "=" in line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
+
+
+def _ga_measurement_id() -> str:
+    """返回合法的 GA4 衡量 ID, 未配置/格式非法时返回空串。"""
+    _load_env()
+    ga_id = os.getenv("GA_MEASUREMENT_ID", "").strip()
+    return ga_id if _GA_ID_RE.match(ga_id) else ""
+
+
+def _ga_head_snippet() -> str:
+    """GA4 gtag.js 代码 (未配置衡量 ID 时返回空串)。"""
+    ga_id = _ga_measurement_id()
+    if not ga_id:
+        return ""
+    return (
+        '<script async src="https://www.googletagmanager.com/gtag/js?id=' + ga_id + '"></script>\n'
+        "<script>window.dataLayer=window.dataLayer||[];"
+        "function gtag(){dataLayer.push(arguments);}"
+        "gtag('js',new Date());gtag('config','" + ga_id + "');</script>\n"
+    )
+
+
+def _inject_ga(html_text: str) -> str:
+    """把 GA4 代码注入页面 </head> 前。"""
+    snippet = _ga_head_snippet()
+    if not snippet or "</head>" not in html_text:
+        return html_text
+    return html_text.replace("</head>", snippet + "</head>", 1)
+
+
+def _html_page(filename: str) -> HTMLResponse:
+    """返回公开站点页面 (服务端注入 GA4, 禁止缓存)。"""
+    content = (STATIC_DIR / filename).read_text(encoding="utf-8")
+    return HTMLResponse(content=_inject_ga(content),
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # 导入 HTML 报告未指定标签时的默认标签 (前台可按标签筛选)
 DEFAULT_IMPORT_TAGS = ["AI研究"]
@@ -162,9 +217,9 @@ def _render_html_article_page(art: dict) -> HTMLResponse:
     for token, value in tokens.items():
         template = template.replace(token, value)
     # 报告内容/样式/脚本最后注入, 避免其正文里出现同名字样时被误替换
-    return HTMLResponse(content=template.replace("{{SCOPED_CSS}}", scoped_css)
+    return HTMLResponse(content=_inject_ga(template.replace("{{SCOPED_CSS}}", scoped_css)
                         .replace("{{CONTENT}}", content)
-                        .replace("{{SCRIPTS}}", scripts),
+                        .replace("{{SCRIPTS}}", scripts)),
                         headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
@@ -462,31 +517,27 @@ class EtfScreenRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.get("/", include_in_schema=False)
-async def index() -> FileResponse:
+async def index() -> HTMLResponse:
     """公司官网首页 (公司文化: 愿景 / 使命 / 价值观)。"""
-    return FileResponse(STATIC_DIR / "home.html",
-                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return _html_page("home.html")
 
 
 @app.get("/research", include_in_schema=False)
-async def research_page() -> FileResponse:
+async def research_page() -> HTMLResponse:
     """行业研究列表页 (文章列表, 点击进正文页)。"""
-    return FileResponse(STATIC_DIR / "research.html",
-                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return _html_page("research.html")
 
 
 @app.get("/news", include_in_schema=False)
-async def news_page() -> FileResponse:
+async def news_page() -> HTMLResponse:
     """公司新闻列表页 (文章列表, 点击进正文页)。"""
-    return FileResponse(STATIC_DIR / "news.html",
-                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return _html_page("news.html")
 
 
 @app.get("/search", include_in_schema=False)
-async def search_page() -> FileResponse:
+async def search_page() -> HTMLResponse:
     """行业研究内容搜索结果页 (?q=关键词&page=页码)。"""
-    return FileResponse(STATIC_DIR / "search.html",
-                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return _html_page("search.html")
 
 
 @app.get("/admin/article_edit", include_in_schema=False)
@@ -509,8 +560,7 @@ async def article_page(aid: int) -> Response:
         raise HTTPException(status_code=500, detail=f"读取文章失败: {e}")
     if art and str(art.get("format") or "md") == "html" and art.get("body"):
         return _render_html_article_page(art)
-    return FileResponse(STATIC_DIR / "article.html",
-                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return _html_page("article.html")
 
 
 @app.get("/article/{aid}/html", include_in_schema=False)

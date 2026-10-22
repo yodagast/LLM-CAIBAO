@@ -6,7 +6,7 @@
   <link rel="icon" href="/static/img/apple-touch-icon.png?v=3" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v=3" />
   <title>智能选股回测平台</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=60" />
+  <link rel="stylesheet" href="/static/css/style.css?v=62" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -196,6 +196,7 @@
           <button type="button" class="seg-btn active" data-mkt="a">A股</button>
           <button type="button" class="seg-btn" data-mkt="hk">港股</button>
           <button type="button" class="seg-btn" data-mkt="etf">ETF</button>
+          <button type="button" class="seg-btn" data-mkt="index">指数计算</button>
         </div>
         <div class="seg-group" id="seg-strat">
           <button type="button" class="seg-btn active" data-strat="rlv">红利低波</button>
@@ -207,6 +208,61 @@
 
       <!-- ETF 筛选 (内容由 app.js 从原 #tab-etf 注入) -->
       <div data-view="etf" class="hidden"></div>
+
+      <!-- 指数计算: 申万 31 个一级行业指数统计 -->
+      <div data-view="index" class="hidden">
+        <div class="card">
+          <div class="card-title" style="flex-wrap:wrap;gap:10px;">
+            <h2>申万一级行业指数 (31 个)</h2>
+            <span class="hint">涨跌 / 成交额 / 成交量 / 52周高低 / 分位数 · 数据源: 申万宏源官网 + tushare</span>
+            <div class="form-actions" style="margin-left:auto;margin-top:0;">
+              <button type="button" class="btn-primary" id="idx-btn">
+                <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-search"/></svg> 计算指数
+              </button>
+              <button type="button" class="btn-ghost" id="idx-refresh-btn">
+                <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-refresh"/></svg> 强制刷新
+              </button>
+              <span class="range-hint" id="idx-hint"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="loading hidden" id="idx-loading">
+          <div class="spinner"></div>
+          <span>正在获取申万行业指数行情并计算 52 周高低分位数…</span>
+        </div>
+        <div class="error hidden" id="idx-error"></div>
+
+        <section class="result hidden" id="idx-result">
+          <div class="result-head">
+            <h2>申万行业指数统计</h2>
+            <span class="hint" id="idx-sub"></span>
+          </div>
+          <div class="card table-card">
+            <div class="table-wrap" style="max-height:640px;overflow:auto;">
+              <table id="idx-table">
+                <thead>
+                  <tr>
+                    <th class="sortable" data-sort="name">行业<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="code">指数代码<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="close">最新指数<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="pct_chg">涨跌幅<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="amount">成交额(亿)<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="volume">成交量(亿股)<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="high52">52周高<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="low52">52周低<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="pos52">52周分位<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="dev_low_pct">距52周低<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="dev_high_pct">距52周高<span class="sort-arrow"></span></th>
+                    <th class="sortable" data-sort="date">日期<span class="sort-arrow"></span></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
 
       <!-- A股 × 红利低波 -->
       <div data-view="a-rlv">
@@ -1442,6 +1498,13 @@
             <button type="button" class="btn-ghost" id="article-import-btn">
               <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-upload"/></svg> 导入 HTML
             </button>
+            <button type="button" class="btn-ghost" id="article-mcp-btn">
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-robot"/></svg> MCP 导入
+            </button>
+            <button type="button" class="btn-ghost" id="article-review-btn">
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-check-circle"/></svg> 待校验
+              <em class="review-badge hidden" id="article-review-badge">0</em>
+            </button>
             <input type="file" id="article-import-file" accept=".html,.htm,text/html" class="hidden" />
             <select id="art-filter-tag" class="sp-input art-tag-filter" aria-label="标签筛选">
               <option value="">全部标签</option>
@@ -1494,10 +1557,140 @@
             <div class="pager-box" id="articles-pager"></div>
           </div>
         </div>
+
+        <!-- 视图: 人工校验 (MCP 导入待校验草稿) -->
+        <div id="sp-view-review" class="hidden">
+          <div class="form-actions article-actions">
+            <button type="button" class="btn-ghost" id="review-back-btn">
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-x"/></svg> 返回文章列表
+            </button>
+            <select id="review-status" class="sp-input art-tag-filter" aria-label="校验状态">
+              <option value="pending">待校验</option>
+              <option value="published">已通过</option>
+              <option value="rejected">已驳回</option>
+              <option value="all">全部</option>
+            </select>
+            <button type="button" class="btn-ghost btn-sm" id="review-reload-btn">
+              <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-refresh"/></svg> 刷新
+            </button>
+            <span class="hint" id="review-hint"></span>
+          </div>
+
+          <div class="review-layout">
+            <!-- 左: 待校验列表 -->
+            <div class="review-list-wrap">
+              <div class="review-list-head">
+                <b>导入队列</b><span class="hint" id="review-count"></span>
+              </div>
+              <div class="review-list" id="review-list">
+                <div class="loading-inline">加载中…</div>
+              </div>
+            </div>
+
+            <!-- 右: 草稿详情 + 校验表单 + 预览 -->
+            <div class="review-detail-wrap">
+              <div id="review-empty" class="review-empty">
+                <p>请从左侧队列选择一条待校验草稿</p>
+                <p class="hint">MCP 接口导入的 HTML 都会先进入此队列, 人工复核确认后才对外发布。</p>
+              </div>
+              <div id="review-panel" class="hidden">
+                <div class="review-checks" id="review-checks"></div>
+                <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div class="field">
+                    <label for="review-kind">类型</label>
+                    <select id="review-kind" class="sp-input">
+                      <option value="research">行业研究</option>
+                      <option value="news">公司新闻</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="review-date">日期</label>
+                    <input type="text" id="review-date" class="sp-input" placeholder="如 2026-03-28" />
+                  </div>
+                  <div class="field" style="grid-column:1/-1;">
+                    <label for="review-title">标题 <em>*</em></label>
+                    <input type="text" id="review-title" class="sp-input" placeholder="文章标题 (列表展示)" />
+                  </div>
+                  <div class="field" style="grid-column:1/-1;">
+                    <label for="review-tags">标签 (逗号分隔)</label>
+                    <input type="text" id="review-tags" class="sp-input" placeholder="如 AI研究, 深度报告" />
+                  </div>
+                  <div class="field" style="grid-column:1/-1;">
+                    <label for="review-note">校验备注 / 驳回原因</label>
+                    <input type="text" id="review-note" class="sp-input" placeholder="驳回时建议填写原因" />
+                  </div>
+                </div>
+
+                <div class="review-actions">
+                  <button type="button" class="btn-primary" id="review-publish-btn">
+                    <svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-check"/></svg> 通过并发布
+                  </button>
+                  <button type="button" class="btn-ghost" id="review-save-btn">仅保存修改</button>
+                  <button type="button" class="btn-ghost" id="review-reject-btn">驳回</button>
+                  <button type="button" class="btn-ghost btn-sm" id="review-preview-btn">预览原文</button>
+                  <button type="button" class="btn-ghost btn-sm" id="review-open-btn">新窗口打开</button>
+                  <span class="hint" id="review-detail-hint"></span>
+                </div>
+
+                <div class="review-preview hidden" id="review-preview"></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
   </main>
+
+  <!-- MCP 导入说明模态框 (展示接入方式 / token / 调用示例) -->
+  <div class="modal-mask hidden" id="mcp-modal">
+    <div class="modal modal-lg">
+      <h3>MCP 接口导入 HTML</h3>
+      <p class="hint" style="margin:6px 0 14px;">
+        MCP 导入用于让外部 Agent / LLM 工具把生成的 HTML 报告推送到本站。
+        导入后<b>不会直接发布</b>，会先进入「待校验」队列，由管理员人工复核后发布。
+      </p>
+
+      <div class="mcp-section">
+        <h4>1. 接口地址</h4>
+        <div class="mcp-code" id="mcp-endpoint">—</div>
+      </div>
+
+      <div class="mcp-section">
+        <h4>2. 鉴权 Token</h4>
+        <div class="mcp-row">
+          <div class="mcp-code" id="mcp-token">—</div>
+          <button type="button" class="btn-ghost btn-sm" id="mcp-token-toggle">显示</button>
+          <button type="button" class="btn-ghost btn-sm" id="mcp-token-copy">复制</button>
+        </div>
+        <p class="hint">请求头携带 <code>X-MCP-Token: &lt;token&gt;</code>（或用 <code>Authorization: Bearer &lt;token&gt;</code>）。</p>
+      </div>
+
+      <div class="mcp-section">
+        <h4>3. 调用示例</h4>
+        <pre class="mcp-code mcp-pre" id="mcp-example">—</pre>
+        <button type="button" class="btn-ghost btn-sm" id="mcp-example-copy">复制示例</button>
+      </div>
+
+      <div class="mcp-section">
+        <h4>4. 可用接口</h4>
+        <table class="mcp-api-table">
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>GET</td><td><code>/api/mcp/health</code></td><td>连通性与鉴权自检</td></tr>
+            <tr><td>POST</td><td><code>/api/mcp/articles/import</code></td><td>导入 HTML（自动校验 + 入待校验队列）</td></tr>
+            <tr><td>POST</td><td><code>/api/mcp/articles/validate</code></td><td>仅做自动校验，不入库</td></tr>
+            <tr><td>GET</td><td><code>/api/mcp/articles/drafts</code></td><td>查询草稿与其校验状态</td></tr>
+          </tbody>
+        </table>
+        <p class="hint">完整文档见仓库 <code>docs/mcp-content-api.md</code>。</p>
+      </div>
+
+      <div class="form-actions" style="margin-top:16px;">
+        <button type="button" class="btn-ghost" id="mcp-modal-close">关闭</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 思想编辑模态框 (一个页面多字段输入, 替代多次 prompt) -->
   <div class="modal-mask hidden" id="idea-modal">
@@ -1551,6 +1744,6 @@
   </footer>
 
   <script src="/static/js/auth.js?v=5"></script>
-  <script src="/static/js/app.js?v=97"></script>
+  <script src="/static/js/app.js?v=99"></script>
 </body>
 </html>

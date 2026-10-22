@@ -1983,6 +1983,103 @@ async def query_etf(calc_date: str = "", keyword: str = "", fund_type: str = "",
 
 
 # ---------------------------------------------------------------------------
+# 申万一级行业指数 (31 个) 统计表 sw_index_screen
+# ---------------------------------------------------------------------------
+SW_INDEX_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS sw_index_screen (
+    index_code     VARCHAR(16) PRIMARY KEY,   -- 申万指数代码 (如 801010.SI)
+    code           VARCHAR(8)  DEFAULT '',    -- 纯数字代码 (801010)
+    name           VARCHAR(32) DEFAULT '',    -- 行业名称
+    date           VARCHAR(8)  DEFAULT '',    -- 数据日期 YYYYMMDD
+    close          DOUBLE PRECISION,          -- 最新收盘指数
+    pct_chg        DOUBLE PRECISION,          -- 涨跌幅 %
+    open           DOUBLE PRECISION,          -- 开盘指数
+    high           DOUBLE PRECISION,          -- 最高指数
+    low            DOUBLE PRECISION,          -- 最低指数
+    prev_close     DOUBLE PRECISION,          -- 昨收指数
+    amount         DOUBLE PRECISION,          -- 成交额 (亿元)
+    volume         DOUBLE PRECISION,          -- 成交量 (亿股)
+    high52         DOUBLE PRECISION,          -- 52周最高
+    low52          DOUBLE PRECISION,          -- 52周最低
+    pos52          DOUBLE PRECISION,          -- 52周分位数 (0~1)
+    dev_high_pct   DOUBLE PRECISION,          -- 距 52 周高点 %
+    dev_low_pct    DOUBLE PRECISION,          -- 距 52 周低点 %
+    calc_date      VARCHAR(8)  DEFAULT '',    -- 计算日 (最新交易日)
+    updated_at     TIMESTAMP DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sw_index_calc ON sw_index_screen (calc_date);
+"""
+
+SW_INDEX_SORTABLE_COLUMNS = {
+    "index_code": "index_code",
+    "code": "code",
+    "name": "name",
+    "close": "close",
+    "pct_chg": "pct_chg",
+    "amount": "amount",
+    "volume": "volume",
+    "high52": "high52",
+    "low52": "low52",
+    "pos52": "pos52",
+    "dev_high_pct": "dev_high_pct",
+    "dev_low_pct": "dev_low_pct",
+    "date": "date",
+}
+
+_SW_INDEX_COLS = [
+    "index_code", "code", "name", "date", "close", "pct_chg", "open", "high",
+    "low", "prev_close", "amount", "volume", "high52", "low52", "pos52",
+    "dev_high_pct", "dev_low_pct", "calc_date",
+]
+
+_SW_INDEX_UPSERT_SQL = _upsert_sql("sw_index_screen", _SW_INDEX_COLS, ("index_code",))
+
+
+async def init_sw_index_schema() -> None:
+    """创建 sw_index_screen 表与索引 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(SW_INDEX_SCHEMA_DDL)
+
+
+async def upsert_sw_index_rows(rows: list[dict]) -> int:
+    """写入/更新申万行业指数行 (幂等)。"""
+    if not rows:
+        return 0
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(_SW_INDEX_UPSERT_SQL,
+                               [tuple(r.get(c) for c in _SW_INDEX_COLS) for r in rows])
+    return len(rows)
+
+
+async def latest_sw_index_calc_date() -> str:
+    """sw_index_screen 中最近计算日 (空串=尚无数据)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        v = await conn.fetchval("SELECT max(calc_date) FROM sw_index_screen;")
+    return str(v) if v else ""
+
+
+async def query_sw_index(calc_date: str = "", sort_by: str = "pct_chg",
+                         order: str = "desc") -> list[dict]:
+    """查询申万行业指数统计 (按计算日 + 排序, NULL 值排最后)。"""
+    col = SW_INDEX_SORTABLE_COLUMNS.get(sort_by, "pct_chg")
+    order_sql = "ASC" if str(order).lower() == "asc" else "DESC"
+    where_sql = "WHERE calc_date = $1" if calc_date else ""
+    sql = f"""
+        SELECT {", ".join(_SW_INDEX_COLS)}
+        FROM sw_index_screen
+        {where_sql}
+        ORDER BY {col} {order_sql} NULLS LAST, index_code ASC;
+    """
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, calc_date) if calc_date else await conn.fetch(sql)
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # 自定义策略 (策略 Hub, 按用户隔离) + 策略公司
 # ---------------------------------------------------------------------------
 CUSTOM_STRATEGY_SCHEMA_DDL = """
@@ -2812,4 +2909,164 @@ async def delete_site_article(aid: int) -> int:
     pool = await _get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("DELETE FROM site_articles WHERE id=$1 RETURNING id", aid)
+    return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# MCP 导入待校验暂存表 site_article_drafts
+# MCP 接口导入的 HTML 先入暂存区 (不直接发布), 管理员在后台「人工校验」确认后才
+# 转正为 site_articles 文章。校验动作仅限 通过(publish) / 驳回(reject)。
+# ---------------------------------------------------------------------------
+
+SITE_ARTICLE_DRAFTS_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS site_article_drafts (
+    id          BIGSERIAL PRIMARY KEY,
+    kind        VARCHAR(16)  NOT NULL,       -- research 行业研究 / news 公司新闻
+    title       VARCHAR(200) DEFAULT '',     -- 标题 (空=未识别)
+    date        VARCHAR(32)  DEFAULT '',     -- 展示日期
+    tags        TEXT         DEFAULT '',     -- 标签 (JSON 数组字符串)
+    body        TEXT         DEFAULT '',     -- HTML 全文 (待校验)
+    src_file    VARCHAR(255) DEFAULT '',     -- 来源文件名
+    status      VARCHAR(16)  DEFAULT 'pending', -- pending 待校验 / published 已通过 / rejected 已驳回
+    source      VARCHAR(32)  DEFAULT 'mcp',  -- 导入来源 (mcp / manual)
+    checks      TEXT         DEFAULT '',      -- 自动校验结果 (JSON: {passed, warnings[], fields})
+    review_note TEXT         DEFAULT '',      -- 人工校验备注/驳回原因
+    article_id  BIGINT,                       -- 通过后生成的 site_articles.id
+    created_at  TIMESTAMP    DEFAULT now(),
+    reviewed_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_drafts_status ON site_article_drafts (status, id);
+CREATE INDEX IF NOT EXISTS idx_drafts_kind   ON site_article_drafts (kind);
+"""
+
+_DRAFT_COLS = ["kind", "title", "date", "tags", "body", "src_file", "status",
+               "source", "checks", "review_note"]
+
+
+async def init_site_article_drafts_schema() -> None:
+    """创建 site_article_drafts 表与索引 (幂等)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(SITE_ARTICLE_DRAFTS_SCHEMA_DDL)
+
+
+async def create_site_article_draft(kind: str, title: str, date: str, tags: str,
+                                    body: str, src_file: str = "",
+                                    source: str = "mcp", checks: str = "") -> int:
+    """创建待校验草稿, 返回 id。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        did = await conn.fetchval(
+            "INSERT INTO site_article_drafts "
+            "(kind, title, date, tags, body, src_file, status, source, checks) "
+            "VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8) RETURNING id",
+            kind, title, date, tags, body, src_file or "", source or "mcp", checks or "")
+    return int(did)
+
+
+async def get_site_article_draft(did: int, with_body: bool = True) -> dict | None:
+    """按 id 查草稿 (含 body)。"""
+    cols = "id, kind, title, date, tags, src_file, status, source, checks, " \
+           "review_note, article_id, created_at, reviewed_at"
+    if with_body:
+        cols += ", body"
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            f"SELECT {cols} FROM site_article_drafts WHERE id = $1", did)
+    return dict(r) if r else None
+
+
+async def list_site_article_drafts(status: str = "pending", kind: str = "",
+                                   page: int = 1, page_size: int = 20) -> tuple[list[dict], int]:
+    """分页列出草稿 (默认仅待校验, 按 id 升序便于按导入顺序逐条校验)。"""
+    page = max(1, int(page or 1))
+    page_size = max(1, min(200, int(page_size or 20)))
+    conds: list[str] = []
+    params: list = []
+    if status and status != "all":
+        params.append(status)
+        conds.append(f"status = ${len(params)}")
+    if kind:
+        params.append(kind)
+        conds.append(f"kind = ${len(params)}")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    params.extend([page_size, (page - 1) * page_size])
+    select_cols = ("id, kind, title, date, tags, src_file, status, source, checks, "
+                   "review_note, article_id, created_at, reviewed_at")
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(
+            f"SELECT count(*) FROM site_article_drafts {where}",
+            *params[:-2] if params[:-2] else [])
+        rows = await conn.fetch(
+            f"SELECT {select_cols} FROM site_article_drafts {where} "
+            f"ORDER BY id ASC LIMIT ${len(params) - 1} OFFSET ${len(params)}",
+            *params)
+    return [dict(r) for r in rows], int(total or 0)
+
+
+async def count_site_article_drafts(status: str = "pending") -> int:
+    """统计指定状态的草稿数量 (后台红点提示待校验数)。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        if status and status != "all":
+            return int(await conn.fetchval(
+                "SELECT count(*) FROM site_article_drafts WHERE status = $1", status))
+        return int(await conn.fetchval("SELECT count(*) FROM site_article_drafts"))
+
+
+async def update_site_article_draft(did: int, title: str | None = None,
+                                    date: str | None = None,
+                                    tags: str | None = None,
+                                    kind: str | None = None,
+                                    body: str | None = None) -> int:
+    """人工校验时修正草稿字段 (仅待校验草稿可改), 返回受影响行数。"""
+    sets: list[str] = []
+    params: list = []
+
+    def ph(v) -> str:
+        params.append(v)
+        return f"${len(params)}"
+
+    if title is not None:
+        sets.append(f"title = {ph(title)}")
+    if date is not None:
+        sets.append(f"date = {ph(date)}")
+    if tags is not None:
+        sets.append(f"tags = {ph(tags)}")
+    if kind is not None:
+        sets.append(f"kind = {ph(kind)}")
+    if body is not None:
+        sets.append(f"body = {ph(body)}")
+    if not sets:
+        return 0
+    params.append(did)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"UPDATE site_article_drafts SET {', '.join(sets)} "
+            f"WHERE id = ${len(params)} AND status = 'pending' RETURNING id", *params)
+    return len(rows)
+
+
+async def mark_site_article_draft(did: int, status: str, note: str = "",
+                                  article_id: int | None = None) -> int:
+    """标记草稿校验结果: published (通过, 记录文章 id) / rejected (驳回), 返回受影响行数。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "UPDATE site_article_drafts SET status = $1, review_note = $2, "
+            "article_id = $3, reviewed_at = now() "
+            "WHERE id = $4 AND status = 'pending' RETURNING id",
+            status, note or "", article_id, did)
+    return len(rows)
+
+
+async def delete_site_article_draft(did: int) -> int:
+    """删除草稿, 返回受影响行数。"""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "DELETE FROM site_article_drafts WHERE id = $1 RETURNING id", did)
     return len(rows)

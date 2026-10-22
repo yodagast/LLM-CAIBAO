@@ -814,6 +814,10 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
 .bt-menu .bt-menu-tip { font-style: normal; font-size: 11px; color: #9ca3af; }
 .alpha-pool-loading { color: #6b7280; font-size: 13px; }
 
+/* 指数计算结果表格 */
+#idx-table td:first-child { font-weight: 600; color: var(--text); }
+#idx-table .num { font-variant-numeric: tabular-nums; }
+
 /* ---------- 页面管理 (官网 愿景/使命/价值观/新闻 编辑) ---------- */
 .sp-card {
   margin-bottom: 16px; padding: 18px 20px;
@@ -897,3 +901,92 @@ td.neg { color: var(--green); } /* 跌 = 绿 (红涨绿跌) */
 .page-next::after { content: "›"; font-size: 18px; line-height: 1; margin-top: -1px; }
 .pager-gap { color: var(--text-soft, #9ca3af); padding: 0 2px; }
 .pager-info { margin-left: auto; font-size: 12.5px; color: var(--text-soft, #6b7280); }
+
+/* 待校验红点徽章 (按钮内数字) */
+.review-badge {
+  font-style: normal; margin-left: 6px; min-width: 18px;
+  padding: 1px 6px; border-radius: 999px;
+  background: var(--red, #dc2626); color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 16px; text-align: center;
+}
+
+/* ---------- 人工校验面板 (MCP 导入待校验队列) ---------- */
+.review-layout {
+  display: grid; grid-template-columns: 300px 1fr; gap: 16px;
+  margin-top: 14px; align-items: start;
+}
+.review-list-wrap {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: #f7f9fc; overflow: hidden;
+}
+.review-list-head {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  background: #eef2f7; font-size: 13px;
+}
+.review-list { max-height: 620px; overflow-y: auto; }
+.review-item {
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background .15s;
+}
+.review-item:hover { background: #eef2f7; }
+.review-item.active { background: var(--primary-light, #e8eef5); box-shadow: inset 3px 0 0 var(--primary); }
+.review-item .ri-title {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; line-height: 1.5;
+}
+.review-item .ri-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px; font-size: 11px; color: var(--text-soft); }
+.review-item .ri-kind {
+  padding: 0 6px; border-radius: 4px; background: var(--primary-light, #e8eef5);
+  color: var(--primary); font-weight: 600;
+}
+.review-item .ri-flag { font-weight: 700; }
+.review-item .ri-flag.err { color: var(--red, #dc2626); }
+.review-item .ri-flag.warn { color: var(--warning, #d97706); }
+.review-item .ri-flag.ok { color: var(--green, #16a34a); }
+.review-empty { padding: 60px 20px; text-align: center; color: var(--text-soft); }
+.review-empty p { margin-bottom: 6px; }
+
+.review-checks {
+  padding: 10px 14px; margin-bottom: 14px; border-radius: 10px;
+  font-size: 13px; line-height: 1.8;
+  border-left: 3px solid var(--primary); background: var(--primary-light, #e8eef5);
+}
+.review-checks.is-err { border-left-color: var(--red, #dc2626); background: #fef2f2; }
+.review-checks.is-warn { border-left-color: var(--warning, #d97706); background: #fffbeb; }
+.review-checks.is-ok { border-left-color: var(--green, #16a34a); background: #f0fdf4; }
+.review-checks .rc-line { color: var(--text); }
+.review-checks .rc-line.err { color: var(--red, #dc2626); font-weight: 600; }
+.review-checks .rc-line.warn { color: var(--warning, #b45309); }
+.review-checks .rc-line.ok { color: var(--green, #15803d); font-weight: 600; }
+.review-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.review-actions #review-detail-hint { align-self: center; }
+.review-preview {
+  margin-top: 16px; padding: 14px; border: 1px solid var(--border);
+  border-radius: 10px; max-height: 520px; overflow: auto; background: #fff;
+}
+.review-preview .html-doc { overflow-x: auto; }
+
+/* MCP 说明模态框 */
+.mcp-section { margin-bottom: 16px; }
+.mcp-section h4 { font-size: 13.5px; color: var(--text); margin-bottom: 8px; }
+.mcp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mcp-code {
+  padding: 8px 12px; border-radius: 8px; background: #0f2540; color: #e8eef5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  word-break: break-all;
+}
+.mcp-row .mcp-code { flex: 1 1 280px; min-width: 0; }
+.mcp-pre { white-space: pre-wrap; max-height: 260px; overflow: auto; margin-bottom: 8px; }
+.mcp-api-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.mcp-api-table th, .mcp-api-table td {
+  border: 1px solid var(--border); padding: 7px 10px; text-align: left;
+}
+.mcp-api-table th { background: #eef2f7; font-weight: 600; }
+.mcp-api-table code { background: var(--primary-light, #e8eef5); padding: 1px 5px; border-radius: 4px; }
+
+@media (max-width: 900px) {
+  .review-layout { grid-template-columns: 1fr; }
+  .review-list { max-height: 260px; }
+}

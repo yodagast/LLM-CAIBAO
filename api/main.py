@@ -14,6 +14,7 @@ import html as _html
 import json
 import os
 import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,11 +33,13 @@ from . import alpha158_service
 from . import portfolio_service
 from . import events_service
 from . import site_html_service
+from . import sw_index_service
+from . import mcp_import_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # 导入 HTML 报告的页面标题后缀 (与 static/article.html 的标题一致)
-SITE_TITLE_SUFFIX = " · QICIFIER"
+SITE_TITLE_SUFFIX = " · 杭州波动粒子"
 
 # ---------------------------------------------------------------------------
 # Google Analytics 4 (衡量 ID 从根目录 .env 的 GA_MEASUREMENT_ID 读取)
@@ -126,9 +129,11 @@ async def _startup() -> None:
         await pg_service.init_stock_events_jobs_schema()
         await pg_service.init_site_pages_schema()
         await pg_service.init_site_articles_schema()
+        await pg_service.init_site_article_drafts_schema()
         await pg_service.init_low_price_schema()
         await pg_service.init_hk_low_price_schema()
         await pg_service.init_hk_stock_basic_schema()
+        await pg_service.init_sw_index_schema()
         # 启动公司大事生成 worker (持久化任务队列, 多进程靠 pg 抢占安全)
         try:
             if events_service.worker_task is None or events_service.worker_task.done():
@@ -171,6 +176,36 @@ async def _require_site_admin(request: Request) -> dict:
     if user["username"] != SITE_ADMIN:
         raise HTTPException(status_code=403, detail="无权限: 仅管理员可管理官网内容")
     return user
+
+
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol) 接口鉴权
+# 外部 Agent / LLM 工具通过 X-MCP-Token 头调用导入接口 (token 见根 .env 的 MCP_TOKEN)
+# ---------------------------------------------------------------------------
+
+def _mcp_token() -> str:
+    """从 .env 读取 MCP_TOKEN (每次读文件, 便于改 .env 后无需重启即生效)。"""
+    _load_env()
+    return os.getenv("MCP_TOKEN", "").strip()
+
+
+async def _require_mcp_token(request: Request) -> str:
+    """校验 MCP 调用凭证: 支持 X-MCP-Token 头或 Authorization: Bearer <token>。"""
+    expect = _mcp_token()
+    if not expect:
+        raise HTTPException(
+            status_code=503,
+            detail="服务端未配置 MCP_TOKEN (请在 .env 中设置 MCP_TOKEN 后重试)")
+    got = (request.headers.get("X-MCP-Token") or "").strip()
+    if not got:
+        auth = (request.headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            got = auth[7:].strip()
+    if not got:
+        raise HTTPException(status_code=401, detail="缺少 MCP 凭证: 请提供 X-MCP-Token 请求头")
+    if not secrets.compare_digest(got, expect):
+        raise HTTPException(status_code=403, detail="MCP 凭证无效")
+    return got
 
 
 # ---------------------------------------------------------------------------
@@ -1140,6 +1175,26 @@ async def etf_screen(req: EtfScreenRequest) -> dict:
         raise HTTPException(status_code=500, detail=f"ETF 筛选失败: {e}")
 
 
+@app.get("/api/index/sw")
+async def sw_index_list(sort_by: str = Query("pct_chg", description="排序字段"),
+                        order: str = Query("desc", description="排序方向: asc / desc"),
+                        refresh: bool = Query(False, description="是否强制重新计算")) -> dict:
+    """申万 31 个一级行业指数统计: 涨跌 / 成交额 / 成交量 / 52周高低 / 分位数。"""
+    try:
+        if refresh:
+            data = await sw_index_service.screen_sw_indexes(sort_by, order)
+            rows = [dict(it, calc_date=data.get("calc_date") or "") for it in data["items"]]
+            try:
+                await pg_service.upsert_sw_index_rows(rows)
+                data["source"] = "live"
+            except Exception:
+                pass
+            return data
+        return await sw_index_service.get_sw_indexes(sort_by, order)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"申万行业指数统计失败: {e}")
+
+
 @app.post("/api/redlowvol/sync")
 async def redlowvol_sync(req: RedLowVolRequest) -> dict:
     """按行业+多个年份计算红利低波指标并写入 PostgreSQL (幂等 upsert)。"""
@@ -1781,4 +1836,173 @@ async def site_articles_delete(aid: int, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=f"删除文章失败: {e}")
     if not n:
         raise HTTPException(status_code=404, detail="文章不存在")
+    return {"ok": True, "deleted": n}
+
+
+# ---------------------------------------------------------------------------
+# MCP 接口: 外部 Agent / LLM 工具导入 HTML 报告
+# 鉴权: X-MCP-Token 头 (token 见 .env 的 MCP_TOKEN)
+# 流程: 导入 → 自动校验 → 落待校验暂存区 → 后台人工校验 → 通过后发布
+# 文档: docs/mcp-content-api.md
+# ---------------------------------------------------------------------------
+
+@app.get("/api/mcp/health")
+async def mcp_health(request: Request) -> dict:
+    """MCP 连通性 + 鉴权自检 (校验 token 是否正确)。"""
+    await _require_mcp_token(request)
+    try:
+        pending = await pg_service.count_site_article_drafts("pending")
+    except Exception:
+        pending = -1
+    return {"ok": True, "service": "qicifier-content-mcp", "version": "1.0",
+            "pending_reviews": pending}
+
+
+@app.post("/api/mcp/articles/import")
+async def mcp_articles_import(req: SiteArticleImportRequest, request: Request) -> dict:
+    """MCP 导入 HTML 报告 (自动校验 + 入待校验暂存区, 不直接发布)。
+
+    - 鉴权: 请求头 `X-MCP-Token: <MCP_TOKEN>`
+    - 返回 draft_id, 后台管理员在「内容管理 → 待校验」复核后发布
+    """
+    await _require_mcp_token(request)
+    raw = req.html
+    if not str(raw or "").strip():
+        raise HTTPException(status_code=400, detail="html 不能为空")
+    try:
+        return await mcp_import_service.import_html(
+            raw=raw, kind=req.kind, filename=req.filename,
+            title=req.title, date=req.date, tags=req.tags, source="mcp")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MCP 导入失败: {e}")
+
+
+@app.post("/api/mcp/articles/validate")
+async def mcp_articles_validate(req: SiteArticleImportRequest, request: Request) -> dict:
+    """MCP 只做自动校验 (不入库), 供 Agent 导入前自查 HTML 质量。"""
+    await _require_mcp_token(request)
+    checks = mcp_import_service.validate_html(
+        req.html, Path(str(req.filename or "")).name, req.title, req.date, req.kind)
+    return {"ok": True, "auto_checks": checks}
+
+
+@app.get("/api/mcp/articles/drafts")
+async def mcp_articles_drafts(request: Request,
+                              status: str = Query("pending", description="pending/published/rejected/all"),
+                              page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200)) -> dict:
+    """MCP 查询待校验/已校验草稿 (供 Agent 跟踪导入进度)。"""
+    await _require_mcp_token(request)
+    try:
+        items, total = await pg_service.list_site_article_drafts(status, "", page, page_size)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取草稿失败: {e}")
+    return {"status": status, "page": page, "page_size": page_size,
+            "total": total, "count": len(items), "items": items}
+
+
+@app.get("/api/site/mcp-token")
+async def site_mcp_token(request: Request) -> dict:
+    """读取 MCP_TOKEN (仅管理员, 后台「MCP 导入」说明框展示/复制用)。"""
+    await _require_site_admin(request)
+    token = _mcp_token()
+    return {"ok": True, "configured": bool(token), "token": token}
+
+
+# ---------------------------------------------------------------------------
+# 后台人工校验 (仅管理员): 待校验草稿列表 / 修正 / 通过发布 / 驳回
+# ---------------------------------------------------------------------------
+
+class DraftReviewRequest(BaseModel):
+    """人工校验请求: 可同时修正标题/日期/标签/类型 (留空则用草稿原值)。"""
+    title: str | None = Field(None, max_length=200, description="修正后的标题")
+    date: str | None = Field(None, max_length=32, description="修正后的展示日期")
+    tags: list[str] | None = Field(None, max_length=10, description="修正后的标签列表")
+    kind: str | None = Field(None, description="修正后的类型: research / news")
+    note: str = Field("", max_length=1000, description="校验备注 / 驳回原因 (驳回时建议填写)")
+
+
+@app.get("/api/site/drafts")
+async def site_drafts_list(request: Request,
+                           status: str = Query("pending", description="pending/published/rejected/all"),
+                           kind: str = Query("", description="research / news / 空=全部"),
+                           page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200)) -> dict:
+    """待校验草稿列表 (仅管理员, 后台人工校验面板用)。"""
+    await _require_site_admin(request)
+    try:
+        items, total = await pg_service.list_site_article_drafts(status, kind, page, page_size)
+        pending = await pg_service.count_site_article_drafts("pending")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取待校验列表失败: {e}")
+    return {"status": status, "page": page, "page_size": page_size,
+            "total": total, "count": len(items), "items": items,
+            "pending_total": pending}
+
+
+@app.get("/api/site/drafts/{did}")
+async def site_draft_get(did: int, request: Request) -> dict:
+    """草稿详情 (含 HTML 全文, 仅管理员; 后台预览用)。"""
+    await _require_site_admin(request)
+    try:
+        d = await pg_service.get_site_article_draft(did)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取草稿失败: {e}")
+    if not d:
+        raise HTTPException(status_code=404, detail="草稿不存在")
+    return {"item": d}
+
+
+@app.put("/api/site/drafts/{did}")
+async def site_draft_update(did: int, req: DraftReviewRequest, request: Request) -> dict:
+    """人工校验时修正草稿字段 (仅待校验草稿可改)。"""
+    await _require_site_admin(request)
+    try:
+        n = await pg_service.update_site_article_draft(
+            did, title=req.title, date=req.date,
+            tags=(json.dumps(req.tags, ensure_ascii=False) if req.tags is not None else None),
+            kind=req.kind)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"修正草稿失败: {e}")
+    if not n:
+        raise HTTPException(status_code=404, detail="草稿不存在或已校验完成")
+    return {"ok": True, "updated": n}
+
+
+@app.post("/api/site/drafts/{did}/publish")
+async def site_draft_publish(did: int, req: DraftReviewRequest, request: Request) -> dict:
+    """人工校验通过: 转正为正式文章 (仅管理员)。"""
+    await _require_site_admin(request)
+    try:
+        res = await mcp_import_service.publish_draft(
+            did, title=req.title or "", date=req.date or "",
+            tags=req.tags, kind=req.kind or "", note=req.note)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"发布失败: {e}")
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message") or "发布失败")
+    return res
+
+
+@app.post("/api/site/drafts/{did}/reject")
+async def site_draft_reject(did: int, req: DraftReviewRequest, request: Request) -> dict:
+    """人工校验驳回: 记录原因归档, 不发布 (仅管理员)。"""
+    await _require_site_admin(request)
+    try:
+        res = await mcp_import_service.reject_draft(did, req.note)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"驳回失败: {e}")
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message") or "驳回失败")
+    return res
+
+
+@app.delete("/api/site/drafts/{did}")
+async def site_draft_delete(did: int, request: Request) -> dict:
+    """删除草稿 (仅管理员, 清理已驳回记录用)。"""
+    await _require_site_admin(request)
+    try:
+        n = await pg_service.delete_site_article_draft(did)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除草稿失败: {e}")
+    if not n:
+        raise HTTPException(status_code=404, detail="草稿不存在")
     return {"ok": True, "deleted": n}

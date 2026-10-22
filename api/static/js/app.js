@@ -546,6 +546,318 @@
     });
   }
 
+  // ---------- MCP 导入说明 + 人工校验 (MCP 导入的 HTML 待校验队列) ----------
+  let reviewItems = [];
+  let currentDraft = null;
+
+  function mcpEndpoint() {
+    return location.origin + "/api/mcp/articles/import";
+  }
+
+  // MCP 说明模态框: 展示接口地址 / token / 调用示例
+  function openMcpModal() {
+    const box = $("#mcp-modal");
+    if (!box) return;
+    box.classList.remove("hidden");
+    const ep = mcpEndpoint();
+    $("#mcp-endpoint").textContent = "POST " + ep;
+    const tk = $("#mcp-token");
+    // token 默认打码 (点「显示」才明文)
+    tk.dataset.token = mcpImportToken || "";
+    tk.textContent = mcpImportToken ? "•".repeat(Math.min(32, mcpImportToken.length)) : "(未配置 MCP_TOKEN)";
+    tk.dataset.shown = "0";
+    const sample = 'curl -X POST "' + ep + '" \\\n'
+      + '  -H "Content-Type: application/json" \\\n'
+      + '  -H "X-MCP-Token: <你的 MCP_TOKEN>" \\\n'
+      + '  -d \'{"kind":"research","html":"<html>…</html>","filename":"报告.html"}\'';
+    $("#mcp-example").textContent = sample;
+  }
+
+  function closeMcpModal() {
+    const box = $("#mcp-modal");
+    if (box) box.classList.add("hidden");
+  }
+
+  async function loadMcpToken() {
+    // token 由后端在管理员登录后下发 (避免写死在静态文件里)
+    try {
+      const r = await fetch("/api/site/mcp-token", { cache: "no-store" });
+      if (!r.ok) return;
+      const d = await r.json();
+      mcpImportToken = String(d.token || "");
+    } catch (e) { /* 非管理员/未配置时不展示 token */ }
+  }
+  let mcpImportToken = "";
+
+  function initMcpModal() {
+    $("#article-mcp-btn")?.addEventListener("click", openMcpModal);
+    $("#mcp-modal-close")?.addEventListener("click", closeMcpModal);
+    const box = $("#mcp-modal");
+    box?.addEventListener("click", (e) => { if (e.target === box) closeMcpModal(); });
+
+    $("#mcp-token-toggle")?.addEventListener("click", () => {
+      const tk = $("#mcp-token");
+      const shown = tk.dataset.shown === "1";
+      tk.textContent = shown
+        ? (tk.dataset.token ? "•".repeat(Math.min(32, tk.dataset.token.length)) : "(未配置 MCP_TOKEN)")
+        : (tk.dataset.token || "(未配置 MCP_TOKEN)");
+      tk.dataset.shown = shown ? "0" : "1";
+      $("#mcp-token-toggle").textContent = shown ? "显示" : "隐藏";
+    });
+
+    const copy = (text, btn, label) => {
+      navigator.clipboard?.writeText(text).then(() => {
+        const old = btn.textContent;
+        btn.textContent = "✅ 已复制";
+        setTimeout(() => { btn.textContent = label || old; }, 1500);
+      }).catch(() => alert("复制失败, 请手动选择文本复制"));
+    };
+    $("#mcp-token-copy")?.addEventListener("click", () => {
+      copy(mcpImportToken || "", $("#mcp-token-copy"));
+    });
+    $("#mcp-example-copy")?.addEventListener("click", () => {
+      copy($("#mcp-example").textContent, $("#mcp-example-copy"));
+    });
+  }
+
+  // ---- 人工校验面板 ----
+  function setSpViewReview() {
+    const isReview = true;
+    document.querySelectorAll("#sp-seg-kind .seg-btn").forEach((b) => b.classList.remove("active"));
+    $("#sp-view-culture")?.classList.add("hidden");
+    $("#sp-view-articles")?.classList.add("hidden");
+    $("#sp-view-review")?.classList.remove("hidden");
+    void isReview;
+    loadReviewDrafts();
+  }
+
+  function exitReview(backToList) {
+    $("#sp-view-review")?.classList.add("hidden");
+    setSpView(spView);   // 回到 公司文化/行业研究/公司新闻 视图
+    if (backToList) loadArticles();
+  }
+
+  function _checksOf(d) {
+    try { return JSON.parse(d.checks || "{}"); } catch (e) { return {}; }
+  }
+
+  async function loadReviewDrafts() {
+    const box = $("#review-list");
+    if (!box) return;
+    box.innerHTML = '<div class="loading-inline">加载中…</div>';
+    $("#review-count").textContent = "";
+    const status = $("#review-status")?.value || "pending";
+    try {
+      const r = await fetch(`/api/site/drafts?status=${encodeURIComponent(status)}&page=1&page_size=100`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "读取失败");
+      reviewItems = d.items || [];
+      renderReviewList(reviewItems);
+      updateReviewBadge(d.pending_total);
+      $("#review-count").textContent = `共 ${d.total} 条`;
+      if (reviewItems.length && (!currentDraft || !reviewItems.some((x) => x.id === currentDraft.id))) {
+        selectDraft(reviewItems[0].id);
+      } else if (!reviewItems.length) {
+        $("#review-list").innerHTML = '<div class="loading-inline">暂无待校验记录</div>';
+        $("#review-panel")?.classList.add("hidden");
+        $("#review-empty")?.classList.remove("hidden");
+        currentDraft = null;
+      }
+    } catch (e) {
+      box.innerHTML = `<div class="loading-inline">加载失败: ${escHtml(e.message || e)}</div>`;
+    }
+  }
+
+  function renderReviewList(items) {
+    const box = $("#review-list");
+    if (!box) return;
+    if (!items.length) { box.innerHTML = '<div class="loading-inline">暂无待校验记录</div>'; return; }
+    box.innerHTML = items.map((d) => {
+      const c = _checksOf(d);
+      const errs = (c.errors || []).length;
+      const warns = (c.warnings || []).length;
+      const flag = errs ? `<span class="ri-flag err">✕ ${errs} 错误</span>`
+        : (warns ? `<span class="ri-flag warn">! ${warns} 提示</span>`
+          : '<span class="ri-flag ok">✓ 无异常</span>');
+      const st = { pending: "待校验", published: "已通过", rejected: "已驳回" }[d.status] || d.status;
+      return `<div class="review-item${currentDraft && currentDraft.id === d.id ? " active" : ""}" data-id="${d.id}">
+        <div class="ri-title">${escHtml(d.title || "(未识别标题)")}</div>
+        <div class="ri-meta">
+          <span class="ri-kind">${d.kind === "news" ? "公司新闻" : "行业研究"}</span>
+          <span>#${d.id}</span><span>${escHtml(d.date || "无日期")}</span>
+          <span>${escHtml(st)}</span>${flag}
+        </div>
+      </div>`;
+    }).join("");
+    box.querySelectorAll(".review-item").forEach((el) => {
+      el.addEventListener("click", () => selectDraft(parseInt(el.dataset.id, 10)));
+    });
+  }
+
+  async function selectDraft(did) {
+    try {
+      const r = await fetch(`/api/site/drafts/${did}`, { cache: "no-store" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "读取失败");
+      currentDraft = d.item;
+    } catch (e) {
+      $("#review-detail-hint").textContent = "读取失败: " + (e.message || e);
+      return;
+    }
+    const it = currentDraft;
+    renderReviewList(reviewItems);   // 刷新选中态
+    $("#review-empty")?.classList.add("hidden");
+    $("#review-panel")?.classList.remove("hidden");
+    $("#review-preview")?.classList.add("hidden");
+    $("#review-preview").innerHTML = "";
+    $("#review-kind").value = it.kind || "research";
+    $("#review-title").value = it.title || "";
+    $("#review-date").value = it.date || "";
+    let tags = [];
+    try { tags = JSON.parse(it.tags || "[]") || []; } catch (e) { tags = []; }
+    $("#review-tags").value = tags.join(", ");
+    $("#review-note").value = "";
+    $("#review-detail-hint").textContent = "";
+
+    const c = _checksOf(it);
+    const errs = c.errors || [], warns = c.warnings || [];
+    const cls = errs.length ? "is-err" : (warns.length ? "is-warn" : "is-ok");
+    const fl = c.fields || {};
+    const lines = [];
+    lines.push(`<div class="rc-line ${errs.length ? "err" : "ok"}">自动校验: `
+      + (errs.length ? `发现 ${errs.length} 个错误` : "通过")
+      + (warns.length ? `, ${warns.length} 个提示` : "") + "</div>");
+    errs.forEach((x) => lines.push(`<div class="rc-line err">✕ ${escHtml(x)}</div>`));
+    warns.forEach((x) => lines.push(`<div class="rc-line warn">! ${escHtml(x)}</div>`));
+    lines.push(`<div class="rc-line">来源: ${escHtml(it.src_file || "—")} · ${escHtml(it.source || "mcp")}`
+      + ` · 正文 ${fl.body_len || 0} 字符`
+      + (fl.has_chart ? " · 含图表" : "") + (fl.has_script ? " · 含脚本" : "") + "</div>");
+    if (!errs.length && !warns.length) lines.push('<div class="rc-line ok">✓ 未发现异常, 可预览确认后发布</div>');
+    const cbox = $("#review-checks");
+    cbox.className = "review-checks " + cls;
+    cbox.innerHTML = lines.join("");
+
+    // 已校验完成的草稿: 禁用操作按钮
+    const done = it.status !== "pending";
+    ["review-publish-btn", "review-save-btn", "review-reject-btn"].forEach((id) => {
+      const b = document.getElementById(id);
+      if (b) b.disabled = done;
+    });
+    if (done) {
+      const st = { published: "已通过", rejected: "已驳回" }[it.status] || it.status;
+      $("#review-detail-hint").textContent = `${st}${it.article_id ? " · 文章 id=" + it.article_id : ""}`
+        + (it.review_note ? " · 备注: " + it.review_note : "");
+      $("#review-open-btn").dataset.href = it.article_id ? "/article/" + it.article_id : "";
+    } else {
+      $("#review-open-btn").dataset.href = "";
+    }
+  }
+
+  async function reviewPayload(extra) {
+    const tagsRaw = $("#review-tags").value;
+    const tags = tagsRaw.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    return Object.assign({
+      kind: $("#review-kind").value,
+      title: $("#review-title").value.trim(),
+      date: $("#review-date").value.trim(),
+      tags: tags,
+      note: $("#review-note").value.trim(),
+    }, extra || {});
+  }
+
+  async function reviewAction(action) {
+    if (!currentDraft) return;
+    const did = currentDraft.id;
+    const hint = $("#review-detail-hint");
+    const payload = await reviewPayload();
+    if ((action === "publish" || action === "save") && !payload.title) {
+      if (hint) hint.textContent = "标题不能为空";
+      return;
+    }
+    const url = action === "save" ? `/api/site/drafts/${did}`
+      : `/api/site/drafts/${did}/${action}`;   // publish / reject
+    const method = action === "save" ? "PUT" : "POST";
+    const btns = ["review-publish-btn", "review-save-btn", "review-reject-btn"]
+      .map((id) => document.getElementById(id));
+    btns.forEach((b) => { if (b) b.disabled = true; });
+    try {
+      const r = await fetch(url, {
+        method, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "操作失败");
+      if (action === "publish") {
+        if (hint) hint.innerHTML = `✅ 已发布为文章 (id=${d.article_id})`;
+        currentDraft = null;
+        await loadReviewDrafts();
+        loadArticles();
+      } else if (action === "reject") {
+        if (hint) hint.textContent = "已驳回";
+        currentDraft = null;
+        await loadReviewDrafts();
+      } else {
+        if (hint) hint.textContent = "✅ 已保存修改";
+        await selectDraft(did);
+      }
+    } catch (e) {
+      if (hint) hint.textContent = "失败: " + (e.message || e);
+      btns.forEach((b) => { if (b) b.disabled = false; });
+    }
+  }
+
+  function toggleReviewPreview() {
+    if (!currentDraft) return;
+    const box = $("#review-preview");
+    if (!box) return;
+    if (!box.classList.contains("hidden")) { box.classList.add("hidden"); return; }
+    box.classList.remove("hidden");
+    box.innerHTML = '<div class="loading-inline">渲染中…</div>';
+    // 用 sandbox iframe 预览原文 (隔离报告自带脚本/样式, 不影响后台页面)
+    const f = document.createElement("iframe");
+    f.style.cssText = "width:100%;height:480px;border:0;background:#fff";
+    f.setAttribute("sandbox", "allow-scripts");
+    f.srcdoc = String(currentDraft.body || "");
+    box.innerHTML = "";
+    box.appendChild(f);
+  }
+
+  function updateReviewBadge(n) {
+    const b = $("#article-review-badge");
+    if (!b) return;
+    const cnt = Number(n || 0);
+    b.textContent = String(cnt);
+    b.classList.toggle("hidden", cnt <= 0);
+  }
+
+  async function refreshReviewBadge() {
+    try {
+      const r = await fetch("/api/site/drafts?status=pending&page=1&page_size=1", { cache: "no-store" });
+      if (!r.ok) return;
+      const d = await r.json();
+      updateReviewBadge(d.pending_total);
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function initReviewPanel() {
+    $("#article-review-btn")?.addEventListener("click", () => { setSpViewReview(); refreshReviewBadge(); });
+    $("#review-back-btn")?.addEventListener("click", () => exitReview(true));
+    $("#review-reload-btn")?.addEventListener("click", loadReviewDrafts);
+    $("#review-status")?.addEventListener("change", () => { currentDraft = null; loadReviewDrafts(); });
+    $("#review-publish-btn")?.addEventListener("click", () => reviewAction("publish"));
+    $("#review-save-btn")?.addEventListener("click", () => reviewAction("save"));
+    $("#review-reject-btn")?.addEventListener("click", () => {
+      if (!window.confirm("确定驳回该草稿? 驳回后不会发布。")) return;
+      reviewAction("reject");
+    });
+    $("#review-preview-btn")?.addEventListener("click", toggleReviewPreview);
+    $("#review-open-btn")?.addEventListener("click", () => {
+      const href = $("#review-open-btn").dataset.href;
+      if (href) window.open(href, "_blank");
+      else alert("该草稿尚未发布, 无可用链接");
+    });
+  }
+
   // ---------- 页面管理权限: 仅管理员 (yodagast) 可见/可编辑 ----------
   const SITE_ADMIN_USER = "yodagast";
 
@@ -598,6 +910,10 @@
     }
     initHtmlImport();   // 导入本地 HTML 文件为文章
     initArticleFilters();   // 文章列表筛选 / 排序 / 分页
+    initMcpModal();         // MCP 导入说明
+    initReviewPanel();      // MCP 导入的人工校验面板
+    loadMcpToken();         // 取 MCP token (仅管理员可读)
+    refreshReviewBadge();   // 待校验红点
     // 从编辑页返回时 (URL ?sitepage=kind) 自动激活「页面管理」tab 并恢复对应视图
     const q = new URLSearchParams(location.search);
     const initView = q.get("sitepage");
@@ -887,13 +1203,15 @@
     document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mkt === mkt));
     document.querySelectorAll("#seg-strat .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.strat === strat));
     const isEtf = mkt === "etf";
-    // ETF 模式: 隐藏 红利低波/基本面/低价选股 策略段 与 顶部存入按钮 (ETF 结果区自带保存按钮)
-    document.getElementById("seg-strat")?.classList.toggle("hidden", isEtf);
-    document.getElementById("screener-save-btn")?.classList.toggle("hidden", isEtf);
+    const isIndex = mkt === "index";
+    // ETF / 指数计算模式: 隐藏 红利低波/基本面/低价选股 策略段 与 顶部存入按钮
+    document.getElementById("seg-strat")?.classList.toggle("hidden", isEtf || isIndex);
+    document.getElementById("screener-save-btn")?.classList.toggle("hidden", isEtf || isIndex);
     document.querySelectorAll('#tab-screener [data-view]').forEach((v) => {
-      const target = isEtf ? "etf" : mkt + "-" + strat;
+      const target = isEtf ? "etf" : (isIndex ? "index" : mkt + "-" + strat);
       v.classList.toggle("hidden", v.dataset.view !== target);
     });
+    if (isIndex) loadSwIndexes();   // 切到指数计算时自动加载一次
   }
   document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) =>
     b.addEventListener("click", () => setScreenerView(b.dataset.mkt, screenerState.strat)));
@@ -3346,6 +3664,125 @@
         etfSort.order = "desc";
       }
       _renderEtfTable();
+    });
+  });
+
+  // ---------- 指数计算 (申万 31 个一级行业指数统计) ----------
+  let idxItems = [];
+  const idxSort = { key: "pct_chg", order: "desc" };
+
+  function _sortedIdx() {
+    const dir = idxSort.order === "desc" ? -1 : 1;
+    const arr = idxItems.slice();
+    return arr.sort((a, b) => {
+      const va = a[idxSort.key], vb = b[idxSort.key];
+      const aNull = (va === null || va === undefined || va === "");
+      const bNull = (vb === null || vb === undefined || vb === "");
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;
+      if (bNull) return -1;
+      const na = parseFloat(va), nb = parseFloat(vb);
+      if (!isNaN(na) && !isNaN(nb)) return (na - nb) * dir;
+      return String(va).localeCompare(String(vb), "zh") * dir;
+    });
+  }
+
+  function updateIdxSortArrows() {
+    document.querySelectorAll("#idx-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === idxSort.key) {
+        arrow.textContent = idxSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else {
+        arrow.textContent = "";
+        th.classList.remove("sorted");
+      }
+    });
+  }
+
+  function _renderIdxTable() {
+    const body = _sortedIdx().map((it) => {
+      const pos = it.pos52;
+      const posTxt = (pos === null || pos === undefined) ? "—" : Number(pos).toFixed(3);
+      return `
+      <tr>
+        <td>${_esc(it.name || "")}</td>
+        <td>${_esc(it.code || "")}<span style="color:var(--text-soft);font-size:11px">.SI</span></td>
+        <td class="num">${_efmt(it.close, 2)}</td>
+        <td class="num ${cls(it.pct_chg || 0)}">${_esign(it.pct_chg, 2, "%")}</td>
+        <td class="num">${_efmt(it.amount, 1)}</td>
+        <td class="num">${_efmt(it.volume, 2)}</td>
+        <td class="num">${_efmt(it.high52, 2)}</td>
+        <td class="num">${_efmt(it.low52, 2)}</td>
+        <td class="num">${posTxt}</td>
+        <td class="num ${cls(it.dev_low_pct || 0)}">${_esign(it.dev_low_pct, 2, "%")}</td>
+        <td class="num ${cls(it.dev_high_pct || 0)}">${_esign(it.dev_high_pct, 2, "%")}</td>
+        <td class="num">${_esc(it.date || "—")}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="12" style="text-align:center;color:var(--text-soft)">暂无数据</td></tr>`;
+    $("#idx-table tbody").innerHTML = body;
+    updateIdxSortArrows();
+  }
+
+  function renderSwIndexes(data) {
+    const idxResult = $("#idx-result");
+    idxResult.classList.remove("hidden");
+    const src = data.source === "db" ? "数据来自 pgsql (定时任务已入库)"
+      : (data.source === "live" ? "实时计算 (已入库)" : "");
+    $("#idx-sub").textContent =
+      `共 ${data.count} 个申万一级行业 · 数据日 ${data.calc_date || "—"}` +
+      (src ? ` · ${src}` : "") + " · 点击表头排序";
+    idxItems = data.items || [];
+    idxSort.key = data.sort_by || "pct_chg";
+    idxSort.order = data.order || "desc";
+    _renderIdxTable();
+    idxResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  async function loadSwIndexes(refresh) {
+    const btn = $("#idx-btn");
+    const refreshBtn = $("#idx-refresh-btn");
+    const loading = $("#idx-loading");
+    const errEl = $("#idx-error");
+    errEl.classList.add("hidden");
+    btn.disabled = true;
+    refreshBtn.disabled = true;
+    loading.classList.remove("hidden");
+    $("#idx-hint").textContent = "";
+    try {
+      const res = await fetch(`/api/index/sw?sort_by=${encodeURIComponent(idxSort.key)}`
+        + `&order=${encodeURIComponent(idxSort.order)}${refresh ? "&refresh=true" : ""}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "计算失败");
+      $("#idx-hint").innerHTML = `${svgIcon("icon-check")} 已计算 ${data.count} 个行业指数`;
+      renderSwIndexes(data);
+    } catch (err) {
+      errEl.textContent = err.message || "请求失败, 请检查后端服务。";
+      errEl.classList.remove("hidden");
+    } finally {
+      loading.classList.add("hidden");
+      btn.disabled = false;
+      refreshBtn.disabled = false;
+    }
+  }
+
+  const idxBtn = $("#idx-btn");
+  if (idxBtn) idxBtn.addEventListener("click", () => loadSwIndexes(false));
+  const idxRefreshBtn = $("#idx-refresh-btn");
+  if (idxRefreshBtn) idxRefreshBtn.addEventListener("click", () => loadSwIndexes(true));
+
+  // 表头点击排序 (本地排序, 无需重新请求)
+  document.querySelectorAll("#idx-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (idxSort.key === by) {
+        idxSort.order = idxSort.order === "desc" ? "asc" : "desc";
+      } else {
+        idxSort.key = by;
+        idxSort.order = "desc";
+      }
+      _renderIdxTable();
     });
   });
 

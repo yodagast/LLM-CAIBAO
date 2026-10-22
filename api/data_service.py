@@ -155,6 +155,22 @@ class _AsyncPro:
     async def hk_basic(self, **kw) -> pd.DataFrame:
         return await self._call("hk_basic", self._nonempty(kw))
 
+    async def index_classify(self, **kw) -> pd.DataFrame:
+        """指数分类 (如 level=L1, src=SW2021 → 申万一级行业列表)。"""
+        return await self._call("index_classify", self._nonempty(kw))
+
+    async def index_weekly(self, **kw) -> pd.DataFrame:
+        """指数周线 (含 close/high/low/vol/amount)。"""
+        return await self._call("index_weekly", self._nonempty(kw))
+
+    async def index_monthly(self, **kw) -> pd.DataFrame:
+        """指数月线。"""
+        return await self._call("index_monthly", self._nonempty(kw))
+
+    async def index_member_all(self, **kw) -> pd.DataFrame:
+        """申万行业成分股 (按 l1_code/l2_code/l3_code/ts_code 查)。"""
+        return await self._call("index_member_all", self._nonempty(kw))
+
     async def pro_bar(self, ts_code: str = "", freq: str = "D", adj: str | None = None,
                       start_date: str = "", end_date: str = "") -> pd.DataFrame:
         """周/月/日 K 线, 支持 qfq/hfq 复权 (与官方 ts.pro_bar 逻辑等价)。"""

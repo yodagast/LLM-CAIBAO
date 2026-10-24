@@ -145,18 +145,31 @@
 
   async function me() {
     try {
-      var r = await fetch("/api/auth/me");
+      var r = await fetch("/api/auth/me", { cache: "no-store" });
+      // 401 = 确实未登录/会话过期 → 清空登录态
+      if (r.status === 401) { user = null; return user; }
+      // 其它非 2xx (后端异常) → 保留上次登录态, 不把用户误判为未登录而踢回登录页
+      if (!r.ok) return user;
       var d = await r.json();
       user = d && d.user ? d.user : null;
-    } catch (e) { user = null; }
+    } catch (e) {
+      // 网络异常 (超时/断网/页面被浏览器挂起) → 同样保留上次登录态, 避免误跳转
+    }
     return user;
   }
 
   function isLoggedIn() { return !!user; }
+  // 当前页面地址 (含 hash, 便于登录后回到同一 tab 而非默认「我的股票」)
+  function _currentPath() {
+    return location.pathname + location.search + location.hash;
+  }
+  // 未登录 → 跳登录页, 并带上 next 以便登录后回到**当前页面**
+  function redirectToLogin() {
+    location.replace("/static/login.html?next=" + encodeURIComponent(_currentPath()));
+  }
   function requireLogin() {
     if (user) return true;
-    location.href = "/static/login.html?next=" +
-      encodeURIComponent(location.pathname + location.search);
+    location.href = "/static/login.html?next=" + encodeURIComponent(_currentPath());
     return false;
   }
   function getUser() { return user; }
@@ -247,7 +260,7 @@
 
   window.CaiBaoAuth = {
     init: init, me: me, render: renderZone,
-    isLoggedIn: isLoggedIn, requireLogin: requireLogin,
+    isLoggedIn: isLoggedIn, requireLogin: requireLogin, redirectToLogin: redirectToLogin,
     getUser: getUser, onAuthChange: onAuthChange, doLogout: doLogout,
     initUserPage: initUserPage, deleteAccount: deleteAccount,
     initLoginPage: initLoginPage,

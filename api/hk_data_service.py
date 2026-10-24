@@ -745,6 +745,16 @@ async def qt_quotes_cached(codes: list[str]) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True)
 
 
+async def qt_quotes_force(codes: list[str]) -> pd.DataFrame:
+    """忽略 5 分钟缓存, 强制重新拉取腾讯实时行情 (「重新同步数据」用)。
+
+    先失效这些代码的缓存条目, 再复用 qt_quotes_cached 的写入逻辑 (结果被缓存, 供后续正常请求复用)。
+    """
+    for c in codes:
+        _QT_CACHE.pop(c, None)
+    return await qt_quotes_cached(codes)
+
+
 async def year_volatility(ts_code: str, year: int) -> tuple[float | None, float | None]:
     """返回 (年末收盘价, 年化波动率 %); 无法获取时返回 (None, None)。
 

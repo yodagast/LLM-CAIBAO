@@ -40,6 +40,20 @@
   const hkLowError = $("#hk-low-error");
   const hkLowResult = $("#hk-low-result");
 
+  // 现金选股元素 (A股 / 港股: 账面现金 ÷ 总市值)
+  const cashForm = $("#cash-form");
+  const cashBtn = $("#cash-btn");
+  const cashResyncBtn = $("#cash-resync-btn");
+  const cashLoading = $("#cash-loading");
+  const cashError = $("#cash-error");
+  const cashResult = $("#cash-result");
+  const hkCashForm = $("#hk-cash-form");
+  const hkCashBtn = $("#hk-cash-btn");
+  const hkCashResyncBtn = $("#hk-cash-resync-btn");
+  const hkCashLoading = $("#hk-cash-loading");
+  const hkCashError = $("#hk-cash-error");
+  const hkCashResult = $("#hk-cash-result");
+
   // 区间交易参数估算元素
   const bandForm = $("#band-form");
   const bandBtn = $("#band-btn");
@@ -1134,9 +1148,27 @@
   });
 
   // ---------- Tab 切换 ----------
+  // 当前 tab 同步到 URL hash (#my/#screener/...): 登录过期被踢回登录页后,
+  // next 会带回该 tab, 避免每次都落到默认的「我的股票」。
+  function syncTabHash(tab) {
+    if (!tab) return;
+    const want = "#" + tab;
+    if (location.hash !== want) {
+      try { history.replaceState(null, "", location.pathname + location.search + want); }
+      catch (e) { location.hash = tab; }
+    }
+  }
+  // 进入页面时按 URL hash 恢复 tab (登录页返回 next 带 hash 时生效)
+  function restoreTabFromHash() {
+    const t = (location.hash || "").replace("#", "");
+    if (!t) return;
+    const btn = document.querySelector(`.tab[data-tab="${t}"]`);
+    if (btn && !btn.classList.contains("hidden")) btn.click();
+  }
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === btn));
+      syncTabHash(btn.dataset.tab);
       document.querySelectorAll('[id^="tab-"]').forEach((p) => {
         p.classList.toggle("hidden", p.id !== `tab-${btn.dataset.tab}`);
       });
@@ -1186,7 +1218,7 @@
   });
 
   // ---------- 选股 tab: 市场(A股/港股/ETF) × 策略(红利低波/基本面) 切换 ----------
-  const screenerState = { mkt: "a", strat: "rlv" };
+  const screenerState = { mkt: "", strat: "" };   // 空串=尚未初始化 (确保首次调用会真正应用视图可见性)
   // ETF 筛选并入本 tab: 把原 #tab-etf 的内容注入 data-view="etf" 并移除旧 section
   (function moveEtfIntoScreener() {
     const src = document.getElementById("tab-etf");
@@ -1197,8 +1229,10 @@
     }
   })();
   function setScreenerView(mkt, strat) {
-    // 低价选股支持 A股/港股 (data-view="a-low"/"hk-low"); ETF 无低价选股 → 自动切回 A 股
-    if (strat === "low" && mkt === "etf") mkt = "a";
+    // 低价/现金选股支持 A股/港股 (data-view="a-low"/"hk-low"/"a-cash"/"hk-cash"); ETF 无此策略 → 自动切回 A 股
+    if ((strat === "low" || strat === "cash") && mkt === "etf") mkt = "a";
+    const prevMkt = screenerState.mkt, prevStrat = screenerState.strat;
+    if (prevMkt === mkt && prevStrat === strat) return;   // 同一视图重复点击: 直接忽略 (不隐藏/不清空已有结果)
     screenerState.mkt = mkt; screenerState.strat = strat;
     document.querySelectorAll("#seg-mkt .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mkt === mkt));
     document.querySelectorAll("#seg-strat .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.strat === strat));
@@ -1331,8 +1365,10 @@
     hk_screen: { roe: { min: "#hk_sc_f_roe", max: "#hk_sc_f_roe_max" }, debt_to_assets: { max: "#hk_sc_f_debt" }, gross_margin: { min: "#hk_sc_f_gm" }, free_cashflow: { min: "#hk_sc_f_fcf" } },
     low: { roe: { min: "#low_f_roe_min", max: "#low_f_roe_max" }, gross_margin: { min: "#low_f_gm" } },
     hk_low: { roe: { min: "#hk_low_f_roe_min", max: "#hk_low_f_roe_max" }, gross_margin: { min: "#hk_low_f_gm" } },
+    cash: { cash_mv_ratio: { min: "#cash_f_ratio_min", max: "#cash_f_ratio_max" }, total_mv: { min: "#cash_f_mv" }, roe: { min: "#cash_f_roe_min", max: "#cash_f_roe_max" }, gross_margin: { min: "#cash_f_gm" } },
+    hk_cash: { cash_mv_ratio: { min: "#hk_cash_f_ratio_min", max: "#hk_cash_f_ratio_max" }, total_mv: { min: "#hk_cash_f_mv" }, roe: { min: "#hk_cash_f_roe_min", max: "#hk_cash_f_roe_max" }, gross_margin: { min: "#hk_cash_f_gm" } },
   };
-  const FILTER_BADGE_LABELS = { dividend_yield_ttm: "股息率TTM", volatility: "波动率", roe: "ROE", debt_to_assets: "资产负债率", payout_ratio: "分红率", gross_margin: "毛利率", free_cashflow: "自由现金流" };
+  const FILTER_BADGE_LABELS = { dividend_yield_ttm: "股息率TTM", volatility: "波动率", roe: "ROE", debt_to_assets: "资产负债率", payout_ratio: "分红率", gross_margin: "毛利率", free_cashflow: "自由现金流", cash_mv_ratio: "现金市值比", total_mv: "总市值(亿)" };
   function filterBadges(filters, view) {
     const map = FILTER_BADGE_MAP[view] || {};
     const badges = [];
@@ -1922,6 +1958,143 @@
     });
   });
 
+  // ---------- 现金选股 (账面现金 / 总市值) ----------
+  const cashSort = { by: "cash_mv_ratio", order: "desc" };
+
+  function buildCashPayload() {
+    const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
+    const filters = {};
+    const rMin = fNum("#cash_f_ratio_min"), rMax = fNum("#cash_f_ratio_max");
+    if (rMin !== null || rMax !== null) {
+      filters.cash_mv_ratio = {};
+      if (rMin !== null) filters.cash_mv_ratio.min = rMin;
+      if (rMax !== null) filters.cash_mv_ratio.max = rMax;
+    }
+    const mv = fNum("#cash_f_mv");
+    if (mv !== null) filters.total_mv = { min: mv };
+    const roeMin = fNum("#cash_f_roe_min"), roeMax = fNum("#cash_f_roe_max");
+    if (roeMin !== null || roeMax !== null) {
+      filters.roe = {};
+      if (roeMin !== null) filters.roe.min = roeMin;
+      if (roeMax !== null) filters.roe.max = roeMax;
+    }
+    const gm = fNum("#cash_f_gm");
+    if (gm !== null) filters.gross_margin = { min: gm };
+    return { industry: $("#cash_industry").value.trim(), filters, limit: 500 };
+  }
+
+  // 最近一次成功的结果签名: 避免「重复点击 / 输入框回车」把已渲染的结果意外清空
+  let cashLastRender = null;
+
+  function renderCash(data, payload, opts) {
+    const items = data.items || [];
+    cashLastRender = { data, payload, scroll: !(opts && opts.noScroll) };
+    cashResult.classList.remove("hidden");
+    $("#cash-title").textContent =
+      `现金选股 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"}`;
+    const sourceLabel = data.refreshed
+      ? "已忽略缓存重新计算"
+      : "实时计算 (缓存 5 分钟)";
+    $("#cash-sub").innerHTML =
+      `现金市值比 = 账面现金(最新财年) ÷ 总市值${filterBadges(payload.filters, "cash")} · 按现金市值比降序 (现金最厚的在前) · <span class="hint">${sourceLabel}</span>`;
+    const body = items.map((it) => `
+      <tr>
+        <td class="num pos">${fmtPctVal(it.cash_mv_ratio)}</td>
+        <td>${it.ts_code}</td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
+        <td>${it.industry || ""}</td>
+        <td class="num">${it.close == null ? "—" : Number(it.close).toFixed(2)}</td>
+        <td class="num">${fmtYi(it.total_mv)}</td>
+        <td class="num">${fmtYi(it.money_cap)}</td>
+        <td class="num">${it.financial_year == null ? "—" : it.financial_year}</td>
+        <td class="num ${cls(it.pct_chg || 0)}">${fmtPctVal(it.pct_chg)}</td>
+        <td class="num">${it.pe_ttm == null ? "—" : Number(it.pe_ttm).toFixed(2)}</td>
+        <td class="num">${it.pb == null ? "—" : Number(it.pb).toFixed(2)}</td>
+        <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
+      </tr>`).join("");
+    const isEmpty = !items.length;
+    const noDataTip = `无符合条件的数据 (可放宽现金市值比 / 市值门槛${payload.industry ? `; 「${payload.industry}」行业可能不使用「货币资金」科目 (如银行/保险), 请换个行业或留空` : ""})`;
+    $("#cash-table tbody").innerHTML = body ||
+      `<tr><td colspan="12" style="text-align:center;color:#9ca3af;padding:24px">${noDataTip}</td></tr>`;
+    updateCashSortArrows();
+    if (cashLastRender.scroll) cashResult.scrollIntoView({ behavior: "smooth", block: "start" });
+    return isEmpty;
+  }
+
+  function updateCashSortArrows() {
+    document.querySelectorAll("#cash-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === cashSort.by) {
+        arrow.textContent = cashSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else { arrow.textContent = ""; th.classList.remove("sorted"); }
+    });
+  }
+
+  async function runCashScreen(payload, opts) {
+    const noScroll = !!(opts && opts.noScroll);
+    // 已渲染结果 + 同一筛选条件 → 直接复用, 不再请求 (防止重复点击清空结果)
+    if (noScroll && cashLastRender && !cashResult.classList.contains("hidden")
+        && JSON.stringify(cashLastRender.payload) === JSON.stringify(payload)) {
+      return;
+    }
+    cashError.classList.add("hidden");
+    cashBtn.disabled = true;
+    if (cashResyncBtn) cashResyncBtn.disabled = true;
+    if (!noScroll) cashResult.classList.add("hidden");
+    cashLoading.classList.remove("hidden");
+    try {
+      const res = await fetch("/api/cash/screen", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "筛选失败");
+      renderCash(data, payload, opts);
+    } catch (err) {
+      cashError.textContent = err.message || "请求失败, 请检查后端服务。";
+      cashError.classList.remove("hidden");
+    } finally {
+      cashLoading.classList.add("hidden");
+      cashBtn.disabled = false;
+      if (cashResyncBtn) cashResyncBtn.disabled = false;
+    }
+  }
+
+  cashForm.addEventListener("submit", (e) => { e.preventDefault(); runCashScreen(buildCashPayload()); });
+  // 「重新同步数据」: 忽略 5 分钟缓存重新计算, 结果原地刷新 (不跳页/不清空)
+  if (cashResyncBtn) cashResyncBtn.addEventListener("click", () => {
+    runCashScreen({ ...buildCashPayload(), refresh: true }, { noScroll: true });
+  });
+  bindIndustrySuggest($("#cash_industry"), $("#cash-ind-panel"));
+
+  document.querySelectorAll("#cash-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (cashSort.by === by) cashSort.order = cashSort.order === "desc" ? "asc" : "desc";
+      else { cashSort.by = by; cashSort.order = by === "name" ? "asc" : "desc"; }
+      const tbody = $("#cash-table tbody");
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      const num = (tdEl) => { const t = tdEl.textContent.trim(); if (t === "—") return -Infinity; const n = parseFloat(t.replace(/[亿,万]/g, "")); return isNaN(n) ? -Infinity : n; };
+      const idx = { cash_mv_ratio: 0, name: 2, close: 4, total_mv: 5, money_cap: 6, financial_year: 7, pct_chg: 8, pe_ttm: 9, pb: 10, roe: 11 }[by] ?? 0;
+      const isNum = by !== "name";
+      rows.sort((a, b) => {
+        const av = isNum ? num(a.children[idx]) : a.children[idx].textContent.trim();
+        const bv = isNum ? num(b.children[idx]) : b.children[idx].textContent.trim();
+        if (av === -Infinity && bv === -Infinity) return 0;
+        if (av === -Infinity) return 1;
+        if (bv === -Infinity) return -1;
+        if (isNum) return cashSort.order === "asc" ? av - bv : bv - av;
+        return cashSort.order === "asc"
+          ? String(av).localeCompare(String(bv), "zh-CN")
+          : String(bv).localeCompare(String(av), "zh-CN");
+      });
+      rows.forEach((tr) => tbody.appendChild(tr));
+      updateCashSortArrows();
+    });
+  });
+
   // ---------- 港股选股 (红利低波 / 基本面) ----------
   fillYearSelect($("#hk_sc_year"), 2025);
 
@@ -2318,6 +2491,136 @@
   });
 
   bindHkIndustrySuggest($("#hk_low_industry"), $("#hk-low-ind-panel"));
+
+  // ---------- 港股现金选股 (账面现金 / 总市值) ----------
+  const hkCashSort = { by: "cash_mv_ratio", order: "desc" };
+  // 最近一次成功的结果签名: 避免重复点击把已渲染的结果意外清空
+  let hkCashLastRender = null;
+
+  function buildHkCashPayload() {
+    const fNum = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
+    const filters = {};
+    const rMin = fNum("#hk_cash_f_ratio_min"), rMax = fNum("#hk_cash_f_ratio_max");
+    if (rMin !== null || rMax !== null) {
+      filters.cash_mv_ratio = {};
+      if (rMin !== null) filters.cash_mv_ratio.min = rMin;
+      if (rMax !== null) filters.cash_mv_ratio.max = rMax;
+    }
+    const mv = fNum("#hk_cash_f_mv");
+    if (mv !== null) filters.total_mv = { min: mv };
+    const roeMin = fNum("#hk_cash_f_roe_min"), roeMax = fNum("#hk_cash_f_roe_max");
+    if (roeMin !== null || roeMax !== null) {
+      filters.roe = {};
+      if (roeMin !== null) filters.roe.min = roeMin;
+      if (roeMax !== null) filters.roe.max = roeMax;
+    }
+    const gm = fNum("#hk_cash_f_gm");
+    if (gm !== null) filters.gross_margin = { min: gm };
+    return { industry: $("#hk_cash_industry").value.trim(), filters, limit: 500 };
+  }
+
+  function renderHkCash(data, payload, opts) {
+    const items = data.items || [];
+    hkCashLastRender = { data, payload, scroll: !(opts && opts.noScroll) };
+    hkCashResult.classList.remove("hidden");
+    $("#hk-cash-title").textContent =
+      `港股现金选股 · ${items.length} 条${payload.industry ? ` (${payload.industry})` : " (全市场)"}`;
+    const sourceLabel = data.refreshed ? "已忽略缓存重新计算" : "实时计算 (缓存 5 分钟)";
+    $("#hk-cash-sub").innerHTML =
+      `现金市值比 = 账面现金(最新财年) ÷ 总市值(按最新收盘折算)${filterBadges(payload.filters, "hk_cash")} · 按现金市值比降序 (现金最厚的在前) · <span class="hint">${sourceLabel}</span>`;
+    const body = items.map((it) => `
+      <tr>
+        <td class="num pos">${fmtPctVal(it.cash_mv_ratio)}</td>
+        <td>${it.ts_code}</td>
+        <td><a class="stock-link" href="/static/stock_detail.html?code=${encodeURIComponent(it.ts_code)}" title="查看详情">${it.name}</a></td>
+        <td>${it.industry || ""}</td>
+        <td class="num">${it.close == null ? "—" : Number(it.close).toFixed(2)}</td>
+        <td class="num">${fmtYi(it.total_mv)}</td>
+        <td class="num">${fmtYi(it.money_cap)}</td>
+        <td class="num">${it.financial_year == null ? "—" : it.financial_year}</td>
+        <td class="num ${cls(it.roe || 0)}">${fmtPctVal(it.roe)}</td>
+        <td class="num ${cls(it.gross_margin || 0)}">${fmtPctVal(it.gross_margin)}</td>
+      </tr>`).join("");
+    const noDataTip = `无符合条件的数据 (可放宽现金市值比 / 市值门槛${payload.industry ? `; 「${payload.industry}」行业可能不使用「货币资金」科目, 请换个行业或留空` : ""})`;
+    $("#hk-cash-table tbody").innerHTML = body ||
+      `<tr><td colspan="10" style="text-align:center;color:#9ca3af;padding:24px">${noDataTip}</td></tr>`;
+    updateHkCashSortArrows();
+    if (hkCashLastRender.scroll) hkCashResult.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function updateHkCashSortArrows() {
+    document.querySelectorAll("#hk-cash-table thead th.sortable").forEach((th) => {
+      const arrow = th.querySelector(".sort-arrow");
+      if (!arrow) return;
+      if (th.dataset.sort === hkCashSort.by) {
+        arrow.textContent = hkCashSort.order === "desc" ? " ▼" : " ▲";
+        th.classList.add("sorted");
+      } else { arrow.textContent = ""; th.classList.remove("sorted"); }
+    });
+  }
+
+  async function runHkCashScreen(payload, opts) {
+    const noScroll = !!(opts && opts.noScroll);
+    // 已渲染结果 + 同一筛选条件 → 直接复用, 不再请求 (防止重复点击清空结果)
+    if (noScroll && hkCashLastRender && !hkCashResult.classList.contains("hidden")
+        && JSON.stringify(hkCashLastRender.payload) === JSON.stringify(payload)) {
+      return;
+    }
+    hkCashError.classList.add("hidden");
+    hkCashBtn.disabled = true;
+    if (hkCashResyncBtn) hkCashResyncBtn.disabled = true;
+    if (!noScroll) hkCashResult.classList.add("hidden");
+    hkCashLoading.classList.remove("hidden");
+    try {
+      const res = await fetch("/api/hk/cash/screen", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "筛选失败");
+      renderHkCash(data, payload, opts);
+    } catch (err) {
+      hkCashError.textContent = err.message || "请求失败, 请检查后端服务。";
+      hkCashError.classList.remove("hidden");
+    } finally {
+      hkCashLoading.classList.add("hidden");
+      hkCashBtn.disabled = false;
+      if (hkCashResyncBtn) hkCashResyncBtn.disabled = false;
+    }
+  }
+
+  hkCashForm.addEventListener("submit", (e) => { e.preventDefault(); runHkCashScreen(buildHkCashPayload()); });
+  // 「重新同步数据」: 忽略 5 分钟缓存重新计算, 结果原地刷新 (不跳页/不清空)
+  if (hkCashResyncBtn) hkCashResyncBtn.addEventListener("click", () => {
+    runHkCashScreen({ ...buildHkCashPayload(), refresh: true }, { noScroll: true });
+  });
+  bindHkIndustrySuggest($("#hk_cash_industry"), $("#hk-cash-ind-panel"));
+
+  document.querySelectorAll("#hk-cash-table thead th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const by = th.dataset.sort;
+      if (hkCashSort.by === by) hkCashSort.order = hkCashSort.order === "desc" ? "asc" : "desc";
+      else { hkCashSort.by = by; hkCashSort.order = by === "name" ? "asc" : "desc"; }
+      const tbody = $("#hk-cash-table tbody");
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      const num = (tdEl) => { const t = tdEl.textContent.trim(); if (t === "—") return -Infinity; const n = parseFloat(t.replace(/[亿,万]/g, "")); return isNaN(n) ? -Infinity : n; };
+      const idx = { cash_mv_ratio: 0, name: 2, close: 4, total_mv: 5, money_cap: 6, financial_year: 7, roe: 8, gross_margin: 9 }[by] ?? 0;
+      const isNum = by !== "name";
+      rows.sort((a, b) => {
+        const av = isNum ? num(a.children[idx]) : a.children[idx].textContent.trim();
+        const bv = isNum ? num(b.children[idx]) : b.children[idx].textContent.trim();
+        if (av === -Infinity && bv === -Infinity) return 0;
+        if (av === -Infinity) return 1;
+        if (bv === -Infinity) return -1;
+        if (isNum) return hkCashSort.order === "asc" ? av - bv : bv - av;
+        return hkCashSort.order === "asc"
+          ? String(av).localeCompare(String(bv), "zh-CN")
+          : String(bv).localeCompare(String(av), "zh-CN");
+      });
+      rows.forEach((tr) => tbody.appendChild(tr));
+      updateHkCashSortArrows();
+    });
+  });
 
   // ---------- 港股基本面 ----------
   const HK_SCREEN_SORT_LABELS = {
@@ -3793,7 +4096,8 @@
   async function loadMyStocks() {
     // 首页仅登录后可访问: 未登录跳转独立登录页
     if (!window.CaiBaoAuth || !CaiBaoAuth.isLoggedIn()) {
-      location.replace("/static/login.html");
+      if (window.CaiBaoAuth && CaiBaoAuth.redirectToLogin) CaiBaoAuth.redirectToLogin();
+      else location.replace("/static/login.html");
       return;
     }
     myError.classList.add("hidden");
@@ -3802,7 +4106,11 @@
     myRefreshBtn.disabled = true;
     try {
       const res = await fetch("/api/my_stocks", { cache: "no-store" });
-      if (res.status === 401) { location.replace("/static/login.html"); return; }
+      if (res.status === 401) {
+        if (CaiBaoAuth.redirectToLogin) CaiBaoAuth.redirectToLogin();
+        else location.replace("/static/login.html");
+        return;
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "获取失败");
       renderMyStocks(data.items || []);
@@ -4634,6 +4942,7 @@
         loadMyStocks(); loadStrategies(); loadIdeas(); loadAlpha158Pool();
         initSitePageEditor();   // 登录用户变化时重新 enforce 页面管理权限
       }
+      else if (CaiBaoAuth.redirectToLogin) CaiBaoAuth.redirectToLogin();
       else location.replace("/static/login.html");
     });
     CaiBaoAuth.init().then(() => {
@@ -4645,8 +4954,10 @@
         loadAlpha158Pool();
         // URL 带 ?sitepage= 时自动切换到「页面管理」tab 并恢复对应视图 (从编辑页返回)
         initSitePageEditor();
+        restoreTabFromHash();   // 按 URL hash 恢复上次所在 tab (登录页返回时)
       } else {
-        location.replace("/static/login.html");          // 未登录跳登录页 (不显示 Tab)
+        if (CaiBaoAuth.redirectToLogin) CaiBaoAuth.redirectToLogin();
+        else location.replace("/static/login.html");   // 未登录跳登录页 (不显示 Tab)
       }
     });
   } else {

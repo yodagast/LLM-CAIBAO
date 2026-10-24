@@ -29,6 +29,7 @@ from . import hk_fundamental_service, hk_redlowvol_service, pg_service, redlowvo
 from . import invest_ideas_service, strategy_service
 from . import low_price_service
 from . import hk_low_price_service
+from . import cash_screen_service
 from . import alpha158_service
 from . import portfolio_service
 from . import events_service
@@ -339,6 +340,15 @@ class HkLowPriceRequest(BaseModel):
                                description="最大偏离阈值%%: 最近收盘价相对52周最低价的最大涨幅. 越小越接近年内低点")
     filters: dict = Field(default_factory=dict,
                           description="筛选条件 {字段: {min: x, max: y}}, 如 {'roe': {'min': 10}, 'gross_margin': {'min': 30}}")
+
+
+class CashScreenRequest(BaseModel):
+    """现金选股请求 (选股 tab A股/港股 × 现金选股: 账面现金 ÷ 总市值)。"""
+    industry: str = Field("", description="行业名称(东财分类), 空表示全市场")
+    filters: dict = Field(default_factory=dict,
+                          description="阈值 {字段: {min: x, max: y}}: cash_mv_ratio(%) / total_mv(亿) / roe(%) / gross_margin(%)")
+    limit: int = Field(500, ge=1, le=5000, description="返回数量上限")
+    refresh: bool = Field(False, description="是否忽略缓存重新计算 (「重新同步数据」按钮)")
 
 
 class HkScreenRequest(BaseModel):
@@ -1270,6 +1280,53 @@ async def hk_lowprice_screen(req: HkLowPriceRequest) -> dict:
         "items": items,
         "source": "db" if from_db else "live",
         "calc_date": calc_date,
+    }
+
+
+@app.post("/api/cash/screen")
+async def cash_screen(req: CashScreenRequest) -> dict:
+    """A股现金选股: 现金市值比 = 账面现金(最新财年) / 总市值(当日), 按比值降序。
+
+    实时计算 (1 次 SQL + 批量行情), 结果带 5 分钟进程内缓存; refresh=true 时忽略缓存重算。
+    """
+    industry = req.industry.strip()
+    try:
+        items = await cash_screen_service.get_cash_screen(
+            market="a", industry=industry, filters=req.filters, limit=req.limit,
+            refresh=req.refresh)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"现金选股失败: {e}")
+    return {
+        "market": "a",
+        "industry": industry,
+        "filters": req.filters,
+        "count": len(items),
+        "items": items,
+        "source": "live",
+        "refreshed": req.refresh,
+        "calc_date": datetime.now().strftime("%Y%m%d"),
+    }
+
+
+@app.post("/api/hk/cash/screen")
+async def hk_cash_screen(req: CashScreenRequest) -> dict:
+    """港股现金选股: 现金市值比 = 现金(最新财年) / 总市值(按最新收盘折算), 按比值降序。"""
+    industry = req.industry.strip()
+    try:
+        items = await cash_screen_service.get_cash_screen(
+            market="hk", industry=industry, filters=req.filters, limit=req.limit,
+            refresh=req.refresh)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"港股现金选股失败: {e}")
+    return {
+        "market": "hk",
+        "industry": industry,
+        "filters": req.filters,
+        "count": len(items),
+        "items": items,
+        "source": "live",
+        "refreshed": req.refresh,
+        "calc_date": datetime.now().strftime("%Y%m%d"),
     }
 
 

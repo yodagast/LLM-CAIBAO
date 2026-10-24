@@ -1645,17 +1645,19 @@ async def _latest_daily_map(pro) -> dict[str, dict]:
     return m
 
 
-async def _latest_basic_map(pro) -> dict[str, dict]:
+async def _latest_basic_map(pro, refresh: bool = False) -> dict[str, dict]:
     """全市场指定交易日 daily_basic → {ts_code: {pb, pe, pe_ttm, total_mv, circ_mv, dv_ttm}} (15min 缓存)。
 
     交易日按 _display_trade_dates 规则选取 (与 _latest_daily_map 一致, 保证估值与收盘价同日)。
+    refresh=True 时忽略进程内缓存, 强制重新拉取 (「重新同步数据」用)。
     """
     _, td = await _display_trade_dates(pro)
     cache_key = f"all:{td}"
     now = time.time()
-    hit = _LATEST_BASIC_CACHE.get(cache_key)
-    if hit and now - hit[0] < _LATEST_TTL:
-        return hit[1]
+    if not refresh:
+        hit = _LATEST_BASIC_CACHE.get(cache_key)
+        if hit and now - hit[0] < _LATEST_TTL:
+            return hit[1]
     m: dict[str, dict] = {}
     try:
         _, td = await _display_trade_dates(pro)

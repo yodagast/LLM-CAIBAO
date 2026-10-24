@@ -202,6 +202,7 @@
           <button type="button" class="seg-btn active" data-strat="rlv">红利低波</button>
           <button type="button" class="seg-btn" data-strat="fund">基本面</button>
           <button type="button" class="seg-btn" data-strat="low">低价选股</button>
+          <button type="button" class="seg-btn" data-strat="cash">现金选股</button>
         </div>
         <button type="button" class="btn-ghost btn-sm" id="screener-save-btn" title="把当前筛选结果保存为策略Hub中的自定义策略"><svg class="icon" aria-hidden="true"><use href="/static/img/icons.svg#icon-plus"/></svg> 存入策略Hub</button>
       </div>
@@ -451,6 +452,95 @@
                   <th class="sortable" data-sort="total_mv">总市值<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <!-- A股 × 现金选股 (账面现金 / 总市值) -->
+      <div data-view="a-cash">
+      <div class="card">
+        <form id="cash-form" autocomplete="off">
+          <div class="grid">
+            <div class="field field-suggest">
+              <label for="cash_industry">行业 (东财分类)</label>
+              <input type="text" id="cash_industry" placeholder="如 白酒 / 银行 / 煤炭 / 空=全市场" autocomplete="off" />
+              <div class="ind-panel hidden" id="cash-ind-panel"></div>
+            </div>
+            <div class="field">
+              <label for="cash_f_mv">总市值 ≥ (亿元)</label>
+              <input type="number" id="cash_f_mv" placeholder="如 50" min="0" step="1" />
+              <div class="field-tip">过滤市值过小的公司 (现金市值比在微盘股上易失真)</div>
+            </div>
+          </div>
+
+          <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
+          <div class="grid">
+            <div class="field">
+              <label for="cash_f_ratio_min">现金市值比 ≥ (%)</label>
+              <input type="number" id="cash_f_ratio_min" placeholder="如 30" step="1" />
+            </div>
+            <div class="field">
+              <label for="cash_f_ratio_max">现金市值比 ≤ (%)</label>
+              <input type="number" id="cash_f_ratio_max" placeholder="如 100" step="1" />
+            </div>
+            <div class="field">
+              <label for="cash_f_roe_min">ROE ≥ (%)</label>
+              <input type="number" id="cash_f_roe_min" placeholder="如 10" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="cash_f_roe_max">ROE ≤ (%)</label>
+              <input type="number" id="cash_f_roe_max" placeholder="如 30" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="cash_f_gm">毛利率 ≥ (%)</label>
+              <input type="number" id="cash_f_gm" placeholder="如 30" step="0.5" />
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="cash-btn">
+              <span class="btn-icon">▶</span> 开始选股
+            </button>
+            <button type="button" class="btn-ghost" id="cash-resync-btn" title="忽略 5 分钟缓存, 重新读库并拉取最新行情计算">重新同步数据</button>
+            <button type="button" class="btn-ghost btn-sm filter-reset">重置条件</button>
+            <span class="range-hint" id="cash-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="loading hidden" id="cash-loading">
+        <div class="spinner"></div>
+        <span>正在读取最新财年账面现金与当日总市值, 计算现金市值比…</span>
+      </div>
+      <div class="error hidden" id="cash-error"></div>
+
+      <section class="result hidden" id="cash-result">
+        <div class="result-head">
+          <h2 id="cash-title">现金选股排序</h2>
+          <span class="hint" id="cash-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap" style="max-height:520px;overflow:auto;">
+            <table id="cash-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="cash_mv_ratio">现金市值比<span class="sort-arrow"></span></th>
+                  <th>代码</th>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
+                  <th>行业</th>
+                  <th class="sortable" data-sort="close">最近收盘<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_mv">总市值<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="money_cap">账面现金<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="financial_year">财报年度<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="pct_chg">涨跌幅<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="pe_ttm">PE(TTM)<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="pb">PB<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -836,6 +926,93 @@
                   <th class="sortable" data-sort="pe_ttm">PE(TTM)<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="pb">PB<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="total_mv">总市值<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <!-- 港股 × 现金选股 (账面现金 / 总市值) -->
+      <div data-view="hk-cash">
+      <div class="card">
+        <form id="hk-cash-form" autocomplete="off">
+          <div class="grid">
+            <div class="field field-suggest">
+              <label for="hk_cash_industry">行业 (东财港股行业)</label>
+              <input type="text" id="hk_cash_industry" placeholder="如 银行 / 公用事业 / 空=全市场" autocomplete="off" />
+              <div class="ind-panel hidden" id="hk-cash-ind-panel"></div>
+            </div>
+            <div class="field">
+              <label for="hk_cash_f_mv">总市值 ≥ (亿港元)</label>
+              <input type="number" id="hk_cash_f_mv" placeholder="如 50" min="0" step="1" />
+              <div class="field-tip">过滤市值过小的公司 (现金市值比在微盘股上易失真)</div>
+            </div>
+          </div>
+
+          <div class="filter-title">筛选条件 <span class="hint">(可选, 留空表示不限制)</span></div>
+          <div class="grid">
+            <div class="field">
+              <label for="hk_cash_f_ratio_min">现金市值比 ≥ (%)</label>
+              <input type="number" id="hk_cash_f_ratio_min" placeholder="如 30" step="1" />
+            </div>
+            <div class="field">
+              <label for="hk_cash_f_ratio_max">现金市值比 ≤ (%)</label>
+              <input type="number" id="hk_cash_f_ratio_max" placeholder="如 100" step="1" />
+            </div>
+            <div class="field">
+              <label for="hk_cash_f_roe_min">ROE ≥ (%)</label>
+              <input type="number" id="hk_cash_f_roe_min" placeholder="如 10" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="hk_cash_f_roe_max">ROE ≤ (%)</label>
+              <input type="number" id="hk_cash_f_roe_max" placeholder="如 30" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="hk_cash_f_gm">毛利率 ≥ (%)</label>
+              <input type="number" id="hk_cash_f_gm" placeholder="如 30" step="0.5" />
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary" id="hk-cash-btn">
+              <span class="btn-icon">▶</span> 港股现金选股
+            </button>
+            <button type="button" class="btn-ghost" id="hk-cash-resync-btn" title="忽略 5 分钟缓存, 重新读库并拉取最新行情计算">重新同步数据</button>
+            <button type="button" class="btn-ghost btn-sm filter-reset">重置条件</button>
+            <span class="range-hint" id="hk-cash-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="loading hidden" id="hk-cash-loading">
+        <div class="spinner"></div>
+        <span>正在读取最新财年现金与最新收盘, 折算总市值并计算现金市值比…</span>
+      </div>
+      <div class="error hidden" id="hk-cash-error"></div>
+
+      <section class="result hidden" id="hk-cash-result">
+        <div class="result-head">
+          <h2 id="hk-cash-title">港股现金选股排序</h2>
+          <span class="hint" id="hk-cash-sub"></span>
+        </div>
+        <div class="card table-card">
+          <div class="table-wrap" style="max-height:520px;overflow:auto;">
+            <table id="hk-cash-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="cash_mv_ratio">现金市值比<span class="sort-arrow"></span></th>
+                  <th>代码</th>
+                  <th class="sortable" data-sort="name">名称<span class="sort-arrow"></span></th>
+                  <th>行业</th>
+                  <th class="sortable" data-sort="close">最近收盘<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="total_mv">总市值<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="money_cap">账面现金<span class="sort-arrow"></span></th>
+                  <th class="sortable" data-sort="financial_year">财报年度<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="roe">ROE<span class="sort-arrow"></span></th>
                   <th class="sortable" data-sort="gross_margin">毛利率<span class="sort-arrow"></span></th>
                 </tr>
@@ -1743,7 +1920,7 @@
     <span>仅供研究参考, 不构成投资建议</span>
   </footer>
 
-  <script src="/static/js/auth.js?v=5"></script>
-  <script src="/static/js/app.js?v=99"></script>
+  <script src="/static/js/auth.js?v=7"></script>
+  <script src="/static/js/app.js?v=100"></script>
 </body>
 </html>

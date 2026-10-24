@@ -492,6 +492,53 @@ async def latest_financial_map(codes: list[str]) -> dict[str, dict]:
     return out
 
 
+async def latest_money_cap_map(codes: list[str] | None = None) -> dict[str, dict]:
+    """每只 A 股最近一个「货币资金非空」财年: 货币资金(亿元)/ROE/毛利率 (现金选股用)。
+
+    codes 为空取全市场; 仅取近 3 个财年, 避免退市/停更个股用陈旧数据。
+    """
+    sql = """SELECT DISTINCT ON (ts_code) ts_code, year, money_cap, roe, gross_margin
+             FROM financial_data
+             WHERE money_cap IS NOT NULL AND year >= $1"""
+    params: list = [datetime.now().year - 3]
+    if codes:
+        sql += f" AND ts_code = ANY(${len(params) + 1}::varchar[])"
+        params.append([str(c) for c in codes])
+    sql += " ORDER BY ts_code, year DESC"
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    return {
+        str(r["ts_code"]): {
+            "year": int(r["year"] or 0),
+            "money_cap": r["money_cap"],
+            "roe": r["roe"],
+            "gross_margin": r["gross_margin"],
+        }
+        for r in rows
+    }
+
+
+async def hk_latest_cash_map(industry: str = "") -> list[dict]:
+    """每只港股最近一个「现金与市值均非空」财年 (万港元) — 现金选股用。
+
+    industry 非空时按行业子串过滤。
+    """
+    sql = """SELECT DISTINCT ON (ts_code) ts_code, symbol, name, industry, market, year,
+                    close, money_cap, total_mv, roe, gross_margin
+             FROM hk_fundamental_screen
+             WHERE money_cap IS NOT NULL AND total_mv > 0 AND year >= $1"""
+    params: list = [datetime.now().year - 3]
+    if industry.strip():
+        sql += " AND industry LIKE $2"
+        params.append(f"%{industry.strip()}%")
+    sql += " ORDER BY ts_code, year DESC"
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # 每日区间交易推荐表 daily_band_recommend (全市场每日参数估算结果)
 # ---------------------------------------------------------------------------
